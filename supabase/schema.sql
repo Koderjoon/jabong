@@ -1121,3 +1121,6 @@ do $$ declare f text; begin
     end loop;
   end if;
 end $$;
+
+-- 앱(PostgREST)이 새 함수를 바로 알아보게 한다
+notify pgrst, 'reload schema';
