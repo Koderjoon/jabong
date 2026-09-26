@@ -13,6 +13,10 @@ do $$ declare t text; begin
 end $$;
 drop function if exists history_move(uuid, bigint, boolean);
 drop function if exists history_drop(uuid, bigint, boolean);
+drop function if exists history_restore(uuid, bigint, boolean);
+drop function if exists _history_one(uuid, bigint, boolean, boolean);
+drop function if exists _snap_diff(jsonb, jsonb);
+drop function if exists _op_json(bigint[], boolean);
 drop function if exists ops_list(uuid, integer);
 drop function if exists _apply_op(bigint, boolean, bigint);
 drop function if exists undo_ops(uuid, bigint, text, boolean);

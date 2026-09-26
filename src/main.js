@@ -558,12 +558,13 @@ function vManage() {
 // 작업 내역과 뒤로가기·앞으로 가기. 목록은 탭을 열 때 서버에서 받아 온다.
 // 작업은 한 줄로 이어져 있고, 되돌린 작업(undone)은 "지금" 위쪽에 흐리게 남아 앞으로 가기로 다시 적용할 수 있다.
 // 이동 자체는 작업 내역에 남지 않는다. 되돌린 상태에서 새 작업을 하면 위쪽 작업들은 사라진다.
+// "이 작업만 되돌리기"로 빼 둔 작업(dropped)은 제자리에 흐리게 남고 "다시 살리기"로 되살린다.
 async function loadHistory() {
   UI.hist.list = await rpc('ops_list', { p_token: token(), p_limit: UI.hist.limit });
 }
 function histPos(list) {
-  const cur = list.find((o) => !o.undone) || null;
-  const future = list.filter((o) => o.undone);
+  const cur = list.find((o) => !o.undone && !o.dropped) || null;
+  const future = list.filter((o) => o.undone && !o.dropped);
   const locked = list.some((o) => !o.undoable);
   return {
     cur,
@@ -593,7 +594,6 @@ function vHistory() {
     ? `<div class="card" style="border-color:var(--warn)"><h2>${esc(p.title)}</h2>
     ${p.data.back.length ? `<div class="note">되돌릴 작업 ${p.data.back.length}개</div>${opRows(p.data.back)}` : ''}
     ${p.data.forward.length ? `<div class="note">다시 적용할 작업 ${p.data.forward.length}개</div>${opRows(p.data.forward)}` : ''}
-    ${p.data.discard?.length ? `<div class="note">흐린 작업 ${p.data.discard.length}개는 사라져요 (앞으로 가기 불가)</div>${opRows(p.data.discard)}` : ''}
     <div class="note">무효가 아닌 기록 ${p.data.ledger.before}건 → ${p.data.ledger.after}건</div>
     ${p.data.students.length ? `<div class="note">달라지는 학생 ${p.data.students.length}명</div><div class="mlist" style="max-height:200px">${p.data.students.map((x) => {
       const bits = [];
@@ -602,18 +602,21 @@ function vHistory() {
       if (x.beforeActive !== x.afterActive) bits.push(x.afterActive ? '명단에 다시 들어감' : x.afterActive === false ? '명단에서 빠짐' : '명단에서 사라짐');
       return `<div class="mrow"><span class="mono">${x.no ?? ''}</span><span class="grow">${esc(x.name || '')}</span><span class="note">${bits.join(' · ') || '기록만 바뀜'}</span></div>`;
     }).join('')}</div>` : '<div class="note">학생별 점수·번호는 그대로예요 (요청·신청 같은 기록만 바뀌어요).</div>'}
-    <div class="btns"><button class="btn danger" data-act="hist-run">${p.drop ? '되돌리기' : '이동'}</button><button class="btn ghost" data-act="hist-cancel">그만두기</button></div></div>`
+    <div class="btns"><button class="btn danger" data-act="hist-run">${p.restore ? '다시 살리기' : p.drop ? '되돌리기' : '이동'}</button><button class="btn ghost" data-act="hist-cancel">그만두기</button></div></div>`
     : '';
   const here = '<div class="rec-row" style="color:var(--accent);font-weight:600"><span>▶</span><span>지금 여기</span><span></span></div>';
+  // 빼 둔 작업도 뒤로 가지 않았으면 "지금" 아래(지난 쪽)에 둔다
+  const hereId = h.list.find((o) => !o.undone)?.id;
   const row = (o) => {
     const isCur = pos.cur && o.id === pos.cur.id;
-    const tag = !o.undoable ? '<span class="pill">이 너머로는 못 가요</span>' : o.undone ? '<span class="pill rejected">되돌림</span>' : '';
-    const canGo = !isCur && (o.undoable || !o.undone);
-    const canDrop = o.undoable && !o.undone;
-    return `${isCur ? here : ''}<div class="rec-row"${o.undone ? ' style="opacity:.55"' : ''}><span class="note mono">${esc(o.at.slice(5))}</span><span class="${o.undone ? 'off' : ''}">${esc(o.summary)}<br><span class="d">${esc(o.actor)}</span></span><span>${tag}</span>
-    ${canGo || canDrop ? `<div class="acts">${canGo ? `<button class="btn ghost small" data-act="hist-pv" data-target="${o.id}" data-title="이 작업 직후로 이동">이 시점으로</button>` : ''}${canDrop ? `<button class="btn ghost small" data-act="hist-drop-pv" data-id="${o.id}">이 작업만 되돌리기</button>` : ''}</div>` : ''}</div>`;
+    const tag = !o.undoable ? '<span class="pill">이 너머로는 못 가요</span>' : o.dropped ? '<span class="pill rejected">이 작업만 되돌림</span>' : o.undone ? '<span class="pill rejected">뒤로 감</span>' : '';
+    const canGo = !isCur && !o.dropped;
+    const canDrop = o.undoable && !o.undone && !o.dropped;
+    const dim = o.undone || o.dropped ? ' style="opacity:.55"' : '';
+    return `${o.id === hereId ? here : ''}<div class="rec-row"><span class="note mono"${dim}>${esc(o.at.slice(5))}</span><span class="${o.undone || o.dropped ? 'off' : ''}"${dim}>${esc(o.summary)}<br><span class="d">${esc(o.actor)}</span></span><span>${tag}</span>
+    ${canGo || canDrop || o.dropped ? `<div class="acts">${canGo ? `<button class="btn ghost small" data-act="hist-pv" data-target="${o.id}" data-title="이 작업 직후로 이동">이 시점으로</button>` : ''}${canDrop ? `<button class="btn ghost small" data-act="hist-drop-pv" data-id="${o.id}">이 작업만 되돌리기</button>` : ''}${o.dropped ? `<button class="btn ghost small" data-act="hist-drop-pv" data-id="${o.id}" data-restore="1">다시 살리기</button>` : ''}</div>` : ''}</div>`;
   };
-  const list = h.list.map(row).join('') + (!pos.cur && h.list.length ? here : '');
+  const list = h.list.map(row).join('') + (hereId == null && h.list.length ? here : '');
   const complete = h.list.length < h.limit;
   return `<div><h1>작업 내역</h1><p class="sub">누가 언제 무엇을 바꿨는지 최신순으로 보여요. 뒤로가기·앞으로 가기로 작업 단위로 오가거나, 작업 하나만 되돌릴 수 있어요. 이동이나 되돌리기는 작업 내역에 남지 않아요.</p></div>
   ${previewCard}
@@ -623,7 +626,7 @@ function vHistory() {
   </div>${pos.start != null && complete ? '<button class="btn ghost small" data-act="hist-pv" data-target="0" data-title="맨 처음으로 이동">맨 처음으로</button>' : ''}</div>
   <div class="card" style="gap:0">${list || '<p class="empty">아직 작업이 없어요.</p>'}
   ${!complete ? '<button class="btn ghost" data-act="hist-more" style="margin-top:10px">더 보기</button>' : ''}</div>
-  <p class="hint">흐린 줄은 되돌린 작업이에요. 앞으로 가기나 "이 시점으로"로 다시 적용할 수 있지만, 되돌린 상태에서 새 작업(기록, 승인 등)을 하면 흐린 작업들은 사라져요. 이동하기 전에 무엇이 바뀌는지 먼저 보여줘요. "이 작업만 되돌리기"는 그 작업을 없던 일로 하고 목록에서도 지워요. 뒤의 작업이 같은 기록을 바꿨으면 되돌릴 수 없다고 알려줘요. 보관 후 정리나 백업에서 되살리기 너머로는 갈 수 없어요.</p>`;
+  <p class="hint">"뒤로 감" 줄은 앞으로 가기나 "이 시점으로"로 다시 적용할 수 있어요. 다만 뒤로 간 상태에서 새 작업(기록, 승인 등)을 하면 그 줄들은 사라져요. "이 작업만 되돌리기"는 그 작업 하나만 빼 두고, "다시 살리기"로 언제든 되살릴 수 있어요. 뒤의 작업이 같은 기록을 바꿨으면 할 수 없다고 알려줘요. 이동하기 전에 무엇이 바뀌는지 먼저 보여줘요. 보관 후 정리나 백업에서 되살리기 너머로는 갈 수 없어요.</p>`;
 }
 
 // 백업: 지금 받기, 백업에서 되살리기, 자동 백업 키
@@ -1337,8 +1340,9 @@ const A = {
   },
   'hist-drop-pv': async (d) => {
     const id = Number(d.id);
-    const data = await rpc('history_drop', { p_token: token(), p_op: id, p_preview: true });
-    UI.hist.preview = { drop: id, title: '이 작업만 되돌리기', data };
+    const restore = !!d.restore;
+    const data = await rpc(restore ? 'history_restore' : 'history_drop', { p_token: token(), p_op: id, p_preview: true });
+    UI.hist.preview = { drop: id, restore, title: restore ? '다시 살리기' : '이 작업만 되돌리기', data };
     window.scrollTo(0, 0);
   },
   'hist-cancel': () => {
@@ -1346,14 +1350,14 @@ const A = {
   },
   'hist-run': async () => {
     const p = UI.hist.preview;
-    if (p.drop) await rpc('history_drop', { p_token: token(), p_op: p.drop, p_preview: false });
+    if (p.drop) await rpc(p.restore ? 'history_restore' : 'history_drop', { p_token: token(), p_op: p.drop, p_preview: false });
     else await rpc('history_move', { p_token: token(), p_target: p.target, p_preview: false });
     UI.hist.preview = null;
     UI.draft = {};
     UI.noticeText = null;
     await Promise.all([refresh(), loadHistory()]);
     render();
-    return toast(p.drop ? '되돌렸어요' : '이동했어요');
+    return toast(p.restore ? '다시 살렸어요' : p.drop ? '되돌렸어요' : '이동했어요');
   },
   'hist-more': async () => {
     UI.hist.limit += 50;

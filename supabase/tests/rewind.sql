@@ -104,39 +104,67 @@ set role postgres;
 select pg_temp.ok(pg_temp.sig() = :'sig_out', '멈추면 그대로');
 update ledger set points = 1 where item = '실습';
 
--- 7) 이 작업만 되돌리기: 기록 없이 사라지고, 앞으로 갈 작업도 버린다
-set role anon;
-select history_move(:'t', :op3, false);
-set role postgres; select pg_temp.sig() as sig_b \gset
+-- 7) 이 작업만 되돌리기 → 다시 살리기. 새 작업 기록은 생기지 않고 다른 작업의 위치도 그대로다.
+-- 지금: op1 · op2 · op3 적용, op7(실습) 적용
+select pg_temp.sig() as sig_a \gset
+select count(*) as nops_a from ops \gset
 set role anon;
 select history_drop(:'t', :op2, true)::text as dpv \gset
 set role postgres;
-select pg_temp.ok(pg_temp.sig() = :'sig_b' and (select count(*) from ops) = 4, '이 작업만 되돌리기 미리보기는 바꾸지 않음');
-select pg_temp.ok(position('매점' in :'dpv') > 0 and position('실습' in :'dpv') > 0, '미리보기에 되돌릴 작업과 버릴 작업');
+select pg_temp.ok(pg_temp.sig() = :'sig_a' and not exists (select 1 from ops where dropped), '이 작업만 되돌리기 미리보기는 바꾸지 않음');
+select pg_temp.ok(position('매점' in :'dpv') > 0, '미리보기에 되돌릴 작업');
 set role anon;
 select history_drop(:'t', :op2, false);
 set role postgres;
-select pg_temp.ok(not exists (select 1 from ledger where item = '매점') and (select no from students where id = :'s1') = 2, '매점 기록만 사라지고 번호 변경은 그대로');
-select pg_temp.ok((select count(*) from ops) = 2 and not exists (select 1 from ops where undone or id = :op2), '되돌린 흔적 없음');
-select pg_temp.ok(not exists (select 1 from op_changes c left join ops o on o.id = c.op_id where o.id is null), '남은 변경 기록 없음');
+select pg_temp.ok(not exists (select 1 from ledger where item = '매점') and (select no from students where id = :'s1') = 2
+  and exists (select 1 from ledger where item = '실습'), '매점 기록만 사라지고 나머지는 그대로');
+select pg_temp.ok((select count(*) from ops) = :nops_a and (select dropped and not undone from ops where id = :op2), '작업은 빼 둠으로 남고 새 기록 없음');
+select pg_temp.sig() as sig_d \gset
+set role anon;
+select pg_temp.expect(format('select history_drop(%L, %s, false)', :'t', :op2), 'P0001', '이미 빼 둔 작업');
+-- 뒤로·앞으로 오가도 빼 둔 작업은 적용되지 않는다
+select history_move(:'t', :op1, false);
+set role postgres; select pg_temp.ok(pg_temp.sig() = :'sig1', '빼 둔 작업을 건너 뒤로 (명단만)');
+set role anon;
+select history_move(:'t', :op7, false);
+set role postgres; select pg_temp.ok(pg_temp.sig() = :'sig_d', '빼 둔 채로 다시 맨 끝');
+-- 다시 살리기
+set role anon;
+select history_restore(:'t', :op2, true)::text as rpv \gset
+set role postgres; select pg_temp.ok(pg_temp.sig() = :'sig_d' and position('매점' in :'rpv') > 0, '다시 살리기 미리보기');
+set role anon;
+select history_restore(:'t', :op2, false);
+set role postgres;
+select pg_temp.ok(pg_temp.sig() = :'sig_a' and not exists (select 1 from ops where dropped) and (select count(*) from ops) = :nops_a, '다시 살리면 원래대로, 기록 없음');
+set role anon;
+select pg_temp.expect(format('select history_restore(%L, %s, false)', :'t', :op2), 'P0001', '빼 두지 않은 작업은 살리기 안 됨');
+-- 뒤로 가 있는 동안 빼 둔 작업을 살리면 표시만 풀리고, 앞으로 갈 때 적용된다
+select history_drop(:'t', :op2, false);
+select history_move(:'t', :op1, false);
+select history_restore(:'t', :op2, false);
+set role postgres; select pg_temp.ok(pg_temp.sig() = :'sig1' and (select undone and not dropped from ops where id = :op2), '뒤에서 살리면 데이터는 그대로');
+set role anon;
+select history_move(:'t', :op7, false);
+set role postgres; select pg_temp.ok(pg_temp.sig() = :'sig_a', '앞으로 가면 함께 적용');
 -- 뒤의 작업(번호 변경)이 같은 학생을 바꿨으면 멈춘다
-select pg_temp.sig() as sig_c \gset
 set role anon;
 select pg_temp.expect(format('select history_drop(%L, %s, false)', :'t', :op1), 'P0002', '뒤 작업과 겹치면 멈춤');
-set role postgres; select pg_temp.ok(pg_temp.sig() = :'sig_c', '멈추면 그대로 (이 작업만)');
--- 뒤로가기·맨 처음으로는 여전히 된다
+set role postgres; select pg_temp.ok(pg_temp.sig() = :'sig_a', '멈추면 그대로 (이 작업만)');
+-- 빼 둔 작업 뒤에 같은 기록을 바꾸는 새 작업을 하면 살리기가 멈춘다
 set role anon;
-select history_move(:'t', 0, false);
-set role postgres; select pg_temp.ok(pg_temp.sig() = :'sig0', '되돌린 뒤에도 맨 처음으로');
+select history_drop(:'t', :op7, false);
+select add_entries(:'t', '2026-09-05', array[:'s3']::uuid[], '청소', '', 1);
+set role postgres; select pg_temp.ok((select dropped from ops where id = :op7), '빼 둔 작업은 새 작업 뒤에도 남음');
 set role anon;
-select history_move(:'t', :op3, false);
-set role postgres; select pg_temp.ok(pg_temp.sig() = :'sig_c', '다시 맨 끝으로 (이 작업만 뒤)');
+select history_restore(:'t', :op7, false);
+set role postgres; select pg_temp.ok(exists (select 1 from ledger where item = '실습') and exists (select 1 from ledger where item = '청소'), '겹치지 않으면 새 작업 뒤에도 살아남');
 
 -- 8) 총대단은 이동·목록 불가
 set role anon;
 select pg_temp.expect(format('select ops_list(%L, 10)', :'ot'), '42501', '총대단이 작업 내역을 봄');
 select pg_temp.expect(format('select history_move(%L, 0, false)', :'ot'), '42501', '총대단이 이동함');
 select pg_temp.expect(format('select history_drop(%L, %s, false)', :'ot', :op3), '42501', '총대단이 이 작업만 되돌림');
+select pg_temp.expect(format('select history_restore(%L, %s, false)', :'ot', :op3), '42501', '총대단이 다시 살림');
 
 -- 9) 보관 후 정리 너머로는 못 간다
 select purge(:'t', '2026-09-30');

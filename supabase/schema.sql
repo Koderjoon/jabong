@@ -163,7 +163,8 @@ create table if not exists ops (
   kind text not null,
   summary text not null,
   undoable boolean not null default true,
-  undone boolean not null default false
+  undone boolean not null default false,
+  dropped boolean not null default false
 );
 -- 예전(되돌리기 작업을 따로 남기던) 방식의 로그는 새 방식과 맞지 않으니 비우고 칸을 정리한다
 do $$ begin
@@ -173,6 +174,8 @@ do $$ begin
   end if;
 end $$;
 alter table ops add column if not exists undone boolean not null default false;
+-- "이 작업만 되돌리기"로 빼 둔 작업. 데이터에는 적용되지 않은 채 목록에 남아 "다시 살리기"를 기다린다.
+alter table ops add column if not exists dropped boolean not null default false;
 create table if not exists op_changes (
   id bigserial primary key,
   op_id bigint not null references ops on delete cascade,
@@ -933,18 +936,33 @@ create or replace function _snap() returns jsonb language sql stable security de
   from students s
 $$;
 
+-- 미리보기용: 학생별 전·후 비교
+create or replace function _snap_diff(p_before jsonb, p_after jsonb) returns json language sql stable as $$
+  select coalesce(json_agg(json_build_object(
+      'no', coalesce(a -> 'no', b -> 'no'), 'name', coalesce(a ->> 'name', b ->> 'name'),
+      'beforeNo', b -> 'no', 'afterNo', a -> 'no', 'beforeActive', b -> 'active', 'afterActive', a -> 'active',
+      'before', b -> 'bal', 'after', a -> 'bal') order by coalesce((a ->> 'no')::int, (b ->> 'no')::int)), '[]')
+  from (select k, p_before -> k as b, p_after -> k as a from (select jsonb_object_keys(p_before) k union select jsonb_object_keys(p_after)) keys) d
+  where b is distinct from a
+$$;
+create or replace function _op_json(p_ids bigint[], p_desc boolean) returns json language sql stable security definer set search_path = public as $$
+  select coalesce(json_agg(json_build_object('id', id, 'at', _kst(at), 'actor', actor, 'summary', summary)
+    order by case when p_desc then -id else id end), '[]') from ops where id = any (p_ids)
+$$;
+
 -- p_target 작업 바로 뒤의 상태로 이동한다 (0이면 작업 내역의 맨 처음).
 -- 그 뒤의 적용된 작업은 최신부터 거꾸로, 그 앞의 되돌린 작업은 오래된 것부터 다시 적용한다.
+-- "이 작업만 되돌리기"로 빼 둔 작업(dropped)은 데이터를 건드리지 않고 undone 표시만 함께 옮긴다.
 -- p_preview면 이동해 본 결과만 돌려주고 모두 취소한다.
 create or replace function history_move(p_token uuid, p_target bigint, p_preview boolean) returns json
 language plpgsql security definer set search_path = public as $$
 declare
   who text := _session(p_token, true); x bigint; scratch bigint; back_ids bigint[]; fwd_ids bigint[];
-  before jsonb; after jsonb; result json; nledger int;
+  before jsonb; result json; nledger int;
 begin
-  select coalesce(array_agg(id order by id desc), '{}') into back_ids from ops where id > p_target and not undone;
+  select coalesce(array_agg(id order by id desc), '{}') into back_ids from ops where id > p_target and not undone and kind <> 'scratch';
   select coalesce(array_agg(id order by id), '{}') into fwd_ids from ops where id <= p_target and undone;
-  if cardinality(back_ids) + cardinality(fwd_ids) = 0 then raise exception '이미 그 시점이에요'; end if;
+  if not exists (select 1 from ops where (id = any (back_ids) or id = any (fwd_ids)) and not dropped) then raise exception '이미 그 시점이에요'; end if;
   if exists (select 1 from ops where (id = any (back_ids) or id = any (fwd_ids)) and not undoable) then
     raise exception '보관 후 정리나 백업에서 되살리기 너머로는 이동할 수 없어요';
   end if;
@@ -954,21 +972,21 @@ begin
     -- 이동 중 바뀐 행을 잠깐 받아 둘 임시 작업. 끝나면 지운다.
     insert into ops (actor, kind, summary, undoable, undone) values (who, 'scratch', '', false, true) returning id into scratch;
     perform set_config('jabong.op', scratch::text, true);
-    foreach x in array back_ids loop perform _apply_op(x, true, scratch); end loop;
-    foreach x in array fwd_ids loop perform _apply_op(x, false, scratch); end loop;
+    foreach x in array back_ids loop
+      if (select dropped from ops where id = x) then update ops set undone = true where id = x;
+      else perform _apply_op(x, true, scratch); end if;
+    end loop;
+    foreach x in array fwd_ids loop
+      if (select dropped from ops where id = x) then update ops set undone = false where id = x;
+      else perform _apply_op(x, false, scratch); end if;
+    end loop;
     delete from ops where id = scratch;
     perform set_config('jabong.op', '', true);
-    after := _snap();
     result := json_build_object(
-      'back', (select coalesce(json_agg(json_build_object('id', id, 'at', _kst(at), 'actor', actor, 'summary', summary) order by id desc), '[]') from ops where id = any (back_ids)),
-      'forward', (select coalesce(json_agg(json_build_object('id', id, 'at', _kst(at), 'actor', actor, 'summary', summary) order by id), '[]') from ops where id = any (fwd_ids)),
+      'back', _op_json(array(select id from ops where id = any (back_ids) and not dropped), true),
+      'forward', _op_json(array(select id from ops where id = any (fwd_ids) and not dropped), false),
       'ledger', json_build_object('before', nledger, 'after', (select count(*) from ledger where voided_at is null)),
-      'students', (select coalesce(json_agg(json_build_object(
-          'no', coalesce(a -> 'no', b -> 'no'), 'name', coalesce(a ->> 'name', b ->> 'name'),
-          'beforeNo', b -> 'no', 'afterNo', a -> 'no', 'beforeActive', b -> 'active', 'afterActive', a -> 'active',
-          'before', b -> 'bal', 'after', a -> 'bal') order by coalesce((a ->> 'no')::int, (b ->> 'no')::int)), '[]')
-        from (select k, before -> k as b, after -> k as a from (select jsonb_object_keys(before) k union select jsonb_object_keys(after)) keys) d
-        where b is distinct from a));
+      'students', _snap_diff(before, _snap()));
     if p_preview then raise exception using errcode = 'P0003', message = 'preview'; end if;
   exception when sqlstate 'P0003' then
     return result;
@@ -976,47 +994,50 @@ begin
   return result;
 end $$;
 
--- 이 작업만 되돌리기: 작업 하나를 되돌리고 작업 내역에서 아예 지운다 (되돌린 흔적도 남기지 않는다).
--- 뒤의 작업이 같은 행을 바꿨으면 _apply_op가 알아채고 멈춘다. 새 작업처럼 앞으로 갈 수 있던 작업(undone)도 지운다.
-create or replace function history_drop(p_token uuid, p_op bigint, p_preview boolean) returns json
+-- 이 작업만 되돌리기(p_restore = false) / 다시 살리기(p_restore = true).
+-- 작업은 목록에 "빼 둠"(dropped)으로 남고 새 작업 기록은 생기지 않는다. 다른 작업의 위치(뒤로·앞으로)는 그대로다.
+-- 뒤의 작업이 같은 행을 바꿨으면 _apply_op가 알아채고 멈춘다.
+-- 앞으로 가기 전(undone)인 작업을 살리면 데이터는 그대로 두고 표시만 푼다. 앞으로 갈 때 함께 적용된다.
+create or replace function _history_one(p_token uuid, p_op bigint, p_restore boolean, p_preview boolean) returns json
 language plpgsql security definer set search_path = public as $$
 declare
-  who text := _session(p_token, true); o ops; scratch bigint; before jsonb; after jsonb; result json; nledger int;
+  who text := _session(p_token, true); o ops; scratch bigint; before jsonb; result json; nledger int;
 begin
   select * into o from ops where id = p_op and kind <> 'scratch';
   if not found then raise exception '작업을 찾을 수 없어요'; end if;
-  if o.undone then raise exception '이미 되돌린 작업이에요. 앞으로 가기로 다시 적용하거나 새 작업을 하면 사라져요'; end if;
   if not o.undoable then raise exception '보관 후 정리나 백업에서 되살리기는 되돌릴 수 없어요'; end if;
+  if p_restore and not o.dropped then raise exception '빼 둔 작업이 아니에요'; end if;
+  if not p_restore and o.dropped then raise exception '이미 빼 둔 작업이에요'; end if;
+  if not p_restore and o.undone then raise exception '뒤로 가 있는 작업이에요. 먼저 앞으로 가서 적용한 뒤에 빼세요'; end if;
   before := _snap();
   select count(*) into nledger from ledger where voided_at is null;
   begin
-    insert into ops (actor, kind, summary, undoable, undone) values (who, 'scratch', '', false, true) returning id into scratch;
-    perform set_config('jabong.op', scratch::text, true);
-    perform _apply_op(p_op, true, scratch);
-    perform set_config('jabong.op', '', true);
-    after := _snap();
+    if not o.undone then
+      insert into ops (actor, kind, summary, undoable, undone) values (who, 'scratch', '', false, true) returning id into scratch;
+      perform set_config('jabong.op', scratch::text, true);
+      perform _apply_op(p_op, not p_restore, scratch);
+      delete from ops where id = scratch;
+      perform set_config('jabong.op', '', true);
+    end if;
+    update ops set dropped = not p_restore, undone = o.undone where id = p_op;
     result := json_build_object(
-      'back', json_build_array(json_build_object('id', o.id, 'at', _kst(o.at), 'actor', o.actor, 'summary', o.summary)),
-      'forward', '[]'::json,
-      'discard', (select coalesce(json_agg(json_build_object('id', id, 'at', _kst(at), 'actor', actor, 'summary', summary) order by id desc), '[]')
-        from ops where undone and id <> p_op and kind <> 'scratch'),
+      'back', case when p_restore then '[]'::json else _op_json(array[p_op], true) end,
+      'forward', case when p_restore then _op_json(array[p_op], false) else '[]'::json end,
       'ledger', json_build_object('before', nledger, 'after', (select count(*) from ledger where voided_at is null)),
-      'students', (select coalesce(json_agg(json_build_object(
-          'no', coalesce(a -> 'no', b -> 'no'), 'name', coalesce(a ->> 'name', b ->> 'name'),
-          'beforeNo', b -> 'no', 'afterNo', a -> 'no', 'beforeActive', b -> 'active', 'afterActive', a -> 'active',
-          'before', b -> 'bal', 'after', a -> 'bal') order by coalesce((a ->> 'no')::int, (b ->> 'no')::int)), '[]')
-        from (select k, before -> k as b, after -> k as a from (select jsonb_object_keys(before) k union select jsonb_object_keys(after)) keys) d
-        where b is distinct from a));
-    -- 되돌린 작업, 임시 작업, 앞으로 갈 수 있던 작업을 모두 지운다 (op_changes도 함께 지워진다)
-    delete from ops where undone;
+      'students', _snap_diff(before, _snap()));
     if p_preview then raise exception using errcode = 'P0003', message = 'preview'; end if;
   exception
     when sqlstate 'P0003' then return result;
     when sqlstate 'P0002' then
-      raise exception '"%" 작업 뒤에 같은 기록을 바꾼 작업이 있거나 작업 내역 밖에서 바뀌어서, 이 작업만 되돌릴 수 없어요. "이 시점으로"를 써 보세요', o.summary using errcode = 'P0002';
+      raise exception '"%" 작업 뒤에 같은 기록을 바꾼 작업이 있거나 작업 내역 밖에서 바뀌어서, 이 작업만 %수 없어요. "이 시점으로"를 써 보세요',
+        o.summary, case when p_restore then '다시 살릴 ' else '되돌릴 ' end using errcode = 'P0002';
   end;
   return result;
 end $$;
+create or replace function history_drop(p_token uuid, p_op bigint, p_preview boolean) returns json
+language sql security definer set search_path = public as $$ select _history_one(p_token, p_op, false, p_preview) $$;
+create or replace function history_restore(p_token uuid, p_op bigint, p_preview boolean) returns json
+language sql security definer set search_path = public as $$ select _history_one(p_token, p_op, true, p_preview) $$;
 
 -- 작업 내역 (최신순). undone인 작업은 "앞으로 가기"로 다시 적용할 수 있다.
 create or replace function ops_list(p_token uuid, p_limit int) returns json
@@ -1024,7 +1045,7 @@ language plpgsql security definer set search_path = public as $$
 begin
   perform _session(p_token, true);
   return (select coalesce(json_agg(json_build_object('id', o.id, 'at', _kst(o.at), 'actor', o.actor, 'kind', o.kind, 'summary', o.summary,
-      'undoable', o.undoable, 'undone', o.undone) order by o.id desc), '[]')
+      'undoable', o.undoable, 'undone', o.undone, 'dropped', o.dropped) order by o.id desc), '[]')
     from (select * from ops where kind <> 'scratch' order by id desc limit greatest(coalesce(p_limit, 50), 1)) o);
 end $$;
 
@@ -1115,7 +1136,7 @@ do $$ declare f text; begin
       'change_pw(uuid,text,text)', 'reset_pw(uuid,text,text)', 'new_recovery(uuid,text)', 'ensure_period(uuid,date,text,boolean)',
       'save_attendance(uuid,uuid,jsonb)', 'request_attendance(uuid,uuid,jsonb)', 'review_attendance(uuid,uuid,boolean,text)', 'add_entries(uuid,date,uuid[],text,text,numeric)', 'edit_entry(uuid,uuid,date,text,text,numeric,text)',
       'void_entry(uuid,uuid,text)', 'review_request(uuid,uuid,boolean,text)', 'review_excuse(uuid,uuid,boolean,text)',
-      'roster_apply(uuid,jsonb,jsonb,date)', 'my_presets_save(uuid,jsonb)', 'purge(uuid,date)', 'backup_dump()', 'restore_backup(uuid,jsonb)', 'history_move(uuid,bigint,boolean)', 'history_drop(uuid,bigint,boolean)', 'ops_list(uuid,integer)'
+      'roster_apply(uuid,jsonb,jsonb,date)', 'my_presets_save(uuid,jsonb)', 'purge(uuid,date)', 'backup_dump()', 'restore_backup(uuid,jsonb)', 'history_move(uuid,bigint,boolean)', 'history_drop(uuid,bigint,boolean)', 'history_restore(uuid,bigint,boolean)', 'ops_list(uuid,integer)'
     ] loop
       execute format('grant execute on function %s to anon, authenticated', f);
     end loop;
