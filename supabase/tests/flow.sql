@@ -4,6 +4,12 @@
 \set ON_ERROR_STOP on
 create or replace function pg_temp.ok(cond boolean, msg text) returns void language plpgsql as $$
 begin if cond is not true then raise exception 'FAIL: %', msg; end if; end $$;
+create or replace function pg_temp.expect(q text, state text, msg text) returns void language plpgsql as $$
+declare st text;
+begin
+  begin execute q; exception when others then st := sqlstate; end;
+  if st is distinct from state then raise exception 'FAIL: % (오류 코드 %, 기대 %)', msg, coalesce(st, '없음'), state; end if;
+end $$;
 select init_app('1234') as code \gset
 set role anon;
 
@@ -57,11 +63,7 @@ set role anon;
 select edit_entry(:'t', :'m', '2026-09-25', '실습실 뒷정리 미흡', '전원 안끔', 1, '점수 오기');
 
 -- 총대단은 관리자 함수를 못 쓴다
-do $$ begin
-  begin perform void_entry((select token from sessions where role='학습부장' limit 1), gen_random_uuid(), 'x');
-    raise exception 'FAIL: 총대단이 무효 처리함';
-  exception when insufficient_privilege then null; end;
-end $$;
+select pg_temp.expect(format('select void_entry(%L, gen_random_uuid(), %L)', :'ot', 'x'), '42501', '총대단이 무효 처리함');
 
 -- 공개 상태에는 이름과 기록자가 없어야 한다
 select public_state()::text as pub \gset
@@ -102,29 +104,17 @@ select pg_temp.ok((select version > 0 from app_version), 'app_version 읽기');
 
 -- 사진 칸에 HTML을 넣으면 거절한다
 set role anon;
-do $$ begin
-  begin
-    perform create_excuse((select student_id from excuses limit 1), gen_random_uuid(), '', 'data:image/png;base64,AAA" onerror="alert(1)');
-    raise exception 'FAIL: 이상한 사진 데이터가 통과함';
-  exception when others then
-    if sqlerrm like 'FAIL%' then raise; end if;
-  end;
-  perform _photo('data:image/jpeg;base64,/9j/4AAQSkZJRg==');
-  raise exception 'FAIL: _photo가 anon에게 열려 있음';
-exception when insufficient_privilege then null;
-end $$;
+set role postgres;
+select pg_temp.expect($q$select _photo('data:image/png;base64,AAA" onerror="alert(1)')$q$, 'P0001', '이상한 사진 데이터가 통과함');
+set role anon;
+select pg_temp.expect($q$select _photo('data:image/jpeg;base64,/9j/4AAQSkZJRg==')$q$, '42501', '_photo가 anon에게 열려 있음');
 \echo 사진 검증 통과
 
 -- 직접 입력은 0.5점 단위까지 된다
 set role anon;
 select (login('부총대', '1234')::json ->> 'token') as t2 \gset
 select add_entries(:'t2', '2026-09-26', array[:'s1']::uuid[], '실습', '', 0.5);
-do $$ begin
-  perform add_entries((select token from sessions s join accounts a using (role) where a.is_admin limit 1), '2026-09-26', array[(select id from students limit 1)], '실습', '', 0.3);
-  raise exception 'FAIL: 0.3점이 통과함';
-exception when insufficient_privilege then null;
-  when others then if sqlerrm like 'FAIL%' then raise; end if;
-end $$;
+select pg_temp.expect(format('select add_entries(%L, %L, array[%L]::uuid[], %L, %L, 0.3)', :'t2', '2026-09-26', :'s1', '실습', ''), 'P0001', '0.3점이 통과함');
 select roster_apply(:'t2', '[]', format('[{"name":"사아자","to":2.5}]')::jsonb, '2026-09-26');
 set role postgres;
 select pg_temp.ok((select sum(points) from ledger where student_id = :'s3' and voided_at is null) = 2.5, '명단 붙여넣기 자봉 2.5');
@@ -142,11 +132,7 @@ select photo_id as ph from excuses where id = :'px' \gset
 set role anon;
 select (login('학습부장', '1234')::json ->> 'token') as ot2 \gset
 select pg_temp.ok(get_photo(:'t2', :'ph') like 'data:image/jpeg%', '관리자는 공결 사진을 본다');
-do $$ begin
-  perform get_photo((select token from sessions where role = '학습부장' order by expires_at desc limit 1), (select photo_id from excuses where photo_id is not null limit 1));
-  raise exception 'FAIL: 총대단이 공결 사진을 봄';
-exception when insufficient_privilege then null;
-end $$;
+select pg_temp.expect(format('select get_photo(%L, %L)', :'ot2', :'ph'), '42501', '총대단이 공결 사진을 봄');
 \echo 공결 사진 권한 테스트 통과
 
 -- 부총대의 자주 쓰는 항목 저장 (지우고 다시 넣는다)
@@ -181,21 +167,9 @@ select request_attendance(:'pt', :'pp2', format('{"%s":"late"}', :'s1')::jsonb) 
 select request_attendance(:'pt', :'pp2', format('{"%s":"late","%s":"absent"}', :'s1', :'s2')::jsonb) as ar2 \gset
 select pg_temp.ok(:'ar' = :'ar2', '대기 중 요청은 덮어쓴다');
 select request_attendance(:'ct', :'pp2', '{}') as cr \gset
-do $$ begin
-  perform save_attendance((select token from sessions where role = '실습부장 1' order by expires_at desc limit 1), (select id from periods where date = '2026-09-28'), '{}');
-  raise exception 'FAIL: 실습부장이 출석을 바로 저장함';
-exception when insufficient_privilege then null;
-end $$;
-do $$ begin
-  perform request_attendance((select token from sessions where role = '학습부장' order by expires_at desc limit 1), (select id from periods where date = '2026-09-28'), '{}');
-  raise exception 'FAIL: 학습부장이 출석 요청함';
-exception when insufficient_privilege then null;
-end $$;
-do $$ begin
-  perform add_entries((select token from sessions where role = '총대' order by expires_at desc limit 1), '2026-09-28', array[]::uuid[], 'x', '', 1);
-  raise exception 'FAIL: 총대가 직접 기록함';
-exception when insufficient_privilege then null;
-end $$;
+select pg_temp.expect(format('select save_attendance(%L, %L, %L)', :'pt', :'pp2', '{}'), '42501', '실습부장이 출석을 바로 저장함');
+select pg_temp.expect(format('select request_attendance(%L, %L, %L)', :'ot', :'pp2', '{}'), '42501', '학습부장이 출석 요청함');
+select pg_temp.expect(format('select add_entries(%L, %L, array[%L]::uuid[], %L, %L, 1)', :'ct', '2026-09-28', :'s1', 'x', ''), '42501', '총대가 직접 기록함');
 select review_attendance(:'t2', :'ar', true, null) as an \gset
 select pg_temp.ok(:an = 2, '출석 요청 승인 → 기록 2건');
 select review_attendance(:'t2', :'cr', false, '중복') is null as rj \gset

@@ -36,3 +36,6 @@ jobs:
           psql -v ON_ERROR_STOP=1 -c "create role anon nologin" -c "create role authenticated nologin" -c "create database jabong"
           psql -d jabong -v ON_ERROR_STOP=1 -f supabase/schema.sql
           psql -d jabong -v ON_ERROR_STOP=1 -f supabase/tests/flow.sql
+          psql -v ON_ERROR_STOP=1 -c "create database jabong_rw"
+          psql -d jabong_rw -v ON_ERROR_STOP=1 -f supabase/schema.sql
+          psql -d jabong_rw -v ON_ERROR_STOP=1 -f supabase/tests/rewind.sql

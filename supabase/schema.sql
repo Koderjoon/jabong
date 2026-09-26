@@ -152,6 +152,32 @@ create table if not exists attendance_requests (
   reviewed_at timestamptz
 );
 
+-- 작업 로그 (되돌리기용). 서버 함수 하나를 부를 때마다 ops 한 줄이 생기고,
+-- 그 작업이 바꾼 행의 전·후가 op_changes에 남는다 (트리거 _log_change).
+create table if not exists ops (
+  id bigserial primary key,
+  at timestamptz not null default now(),
+  actor text not null,
+  kind text not null,
+  summary text not null,
+  undoable boolean not null default true,
+  undo_of bigint[],
+  undone_by bigint
+);
+-- 이 작업(되돌리기)이 다른 작업의 "되돌림" 표시를 바꾼 순서: [[작업 id, 바꾸기 전 값], ...]
+-- 이 되돌리기를 다시 되돌릴 때 거꾸로 복원해서, 누가 무엇을 되돌렸는지가 정확히 돌아오게 한다.
+alter table ops add column if not exists meta jsonb not null default '[]';
+create table if not exists op_changes (
+  id bigserial primary key,
+  op_id bigint not null references ops on delete cascade,
+  tbl text not null,
+  row_key jsonb not null,
+  action char(1) not null check (action in ('I', 'U', 'D')),
+  before jsonb,
+  after jsonb
+);
+create index if not exists op_changes_op on op_changes (op_id);
+
 -- 직책별 계정. role이 곧 화면에 보이는 이름이다.
 create table if not exists accounts (
   role text primary key,
@@ -216,6 +242,8 @@ alter table photos enable row level security;
 alter table requests enable row level security;
 alter table excuses enable row level security;
 alter table attendance_requests enable row level security;
+alter table ops enable row level security;
+alter table op_changes enable row level security;
 alter table accounts enable row level security;
 alter table sessions enable row level security;
 alter table settings enable row level security;
@@ -241,6 +269,29 @@ do $$ declare t text; begin
   foreach t in array array['students','presets','periods','attendance','ledger','ledger_revisions','requests','excuses','attendance_requests'] loop
     execute format('drop trigger if exists bump on %I', t);
     execute format('create trigger bump after insert or update or delete on %I for each statement execute function _bump()', t);
+  end loop;
+end $$;
+
+-- 바뀐 행을 지금 작업(jabong.op)에 기록한다. 작업 밖(SQL Editor 등)의 변경은 기록하지 않는다.
+-- 트리거 이름이 zz_로 시작해야 외래키 연쇄 삭제(RI_...)보다 늦게 불려서, 자식 행이 부모보다 먼저 기록된다.
+create or replace function _log_change() returns trigger language plpgsql security definer set search_path = public as $$
+declare
+  op bigint := nullif(current_setting('jabong.op', true), '')::bigint;
+  r jsonb := coalesce(to_jsonb(NEW), to_jsonb(OLD));
+  pk text[] := case TG_TABLE_NAME when 'attendance' then array['period_id', 'student_id'] when 'ledger_private' then array['ledger_id'] else array['id'] end;
+begin
+  if op is null then return null; end if;
+  if TG_OP = 'UPDATE' and to_jsonb(OLD) = to_jsonb(NEW) then return null; end if;
+  insert into op_changes (op_id, tbl, row_key, action, before, after)
+  values (op, TG_TABLE_NAME, (select jsonb_object_agg(c, r -> c) from unnest(pk) c), left(TG_OP, 1),
+    case when TG_OP <> 'INSERT' then to_jsonb(OLD) end, case when TG_OP <> 'DELETE' then to_jsonb(NEW) end);
+  return null;
+end $$;
+
+do $$ declare t text; begin
+  foreach t in array array['students','presets','periods','attendance','ledger','ledger_private','ledger_revisions','requests','excuses','attendance_requests'] loop
+    execute format('drop trigger if exists zz_log on %I', t);
+    execute format('create trigger zz_log after insert or update or delete on %I for each row execute function _log_change()', t);
   end loop;
 end $$;
 
@@ -347,6 +398,33 @@ begin
   end if;
 end $$;
 
+-- 작업을 시작한다. 이후 이 트랜잭션에서 바뀐 행은 모두 이 작업에 기록된다.
+-- 되돌릴 수 없는 작업(정리·되살리기)은 행 변경을 기록하지 않는다.
+create or replace function _op(p_actor text, p_kind text, p_summary text, p_undoable boolean default true) returns bigint
+language plpgsql security definer set search_path = public as $$
+declare nid bigint;
+begin
+  insert into ops (actor, kind, summary, undoable) values (p_actor, p_kind, p_summary, p_undoable) returning id into nid;
+  perform set_config('jabong.op', case when p_undoable then nid::text else '' end, true);
+  return nid;
+end $$;
+
+create or replace function _pt(p numeric) returns text language sql immutable as $$
+  select case when p > 0 then '+' else '' end || regexp_replace(p::text, '\.0$', '')
+$$;
+create or replace function _nums(p_sids uuid[]) returns text language sql stable security definer set search_path = public as $$
+  select coalesce(string_agg(no::text, ' ' order by no), '') from students where id = any (p_sids)
+$$;
+create or replace function _per(p_period uuid) returns text language sql stable security definer set search_path = public as $$
+  select to_char(date, 'FMMM/FMDD') || ' ' || label from periods where id = p_period
+$$;
+create or replace function _attn(p_statuses jsonb) returns text language sql immutable as $$
+  select format('지각 %s · 결석 %s · 공결 %s',
+    (select count(*) from jsonb_each_text(coalesce(p_statuses, '{}')) where value = 'late'),
+    (select count(*) from jsonb_each_text(coalesce(p_statuses, '{}')) where value = 'absent'),
+    (select count(*) from jsonb_each_text(coalesce(p_statuses, '{}')) where value = 'excused'))
+$$;
+
 -- 화면이 쓰는 전체 상태를 JSON 하나로 만든다. p_private가 아니면 이름·기록자를 뺀다.
 create or replace function _state(p_private boolean) returns json
 language sql stable security definer set search_path = public as $$
@@ -411,6 +489,9 @@ begin
   if exists (select 1 from excuses where ledger_id = p_ledger and status = 'pending') then
     raise exception '이미 신청해서 확인을 기다리는 중이에요';
   end if;
+  perform _op((select no from students where id = p_student) || '번 학생', 'create_excuse',
+    format('공결 신청: %s번 %s %s', (select no from students where id = p_student),
+      (select to_char(date, 'FMMM/FMDD') from ledger where id = p_ledger), (select item from ledger where id = p_ledger)));
   insert into excuses (student_id, ledger_id, reason, photo_id)
   values (p_student, p_ledger, left(coalesce(trim(p_reason), ''), 500), _photo(p_photo))
   returning id into nid;
@@ -485,6 +566,7 @@ declare who text := _session(p_token, false); nid uuid;
 begin
   perform _check_items(p_item, p_points);
   if coalesce(array_length(p_sids, 1), 0) = 0 then raise exception '학생을 골라 주세요'; end if;
+  perform _op(who, 'create_request', format('요청: %s %s · %s번', trim(p_item), _pt(p_points), _nums(p_sids)));
   insert into requests (requested_by, date, student_ids, item, detail, points, reason, photo_id)
   values (who, p_date, p_sids, trim(p_item), coalesce(trim(p_detail), ''), p_points, coalesce(trim(p_reason), ''), _photo(p_photo))
   returning id into nid;
@@ -533,6 +615,7 @@ begin
   if coalesce(trim(p_label), '') = '' then raise exception '교시 이름을 입력하세요'; end if;
   select id into pid from periods where date = p_date and label = trim(p_label);
   if pid is null then
+    perform _op(who, 'ensure_period', format('교시 추가: %s %s', to_char(p_date, 'FMMM/FMDD'), trim(p_label)));
     insert into periods (date, label, morning) values (p_date, trim(p_label), coalesce(p_morning, false)) returning id into pid;
   end if;
   return pid;
@@ -577,6 +660,7 @@ create or replace function save_attendance(p_token uuid, p_period uuid, p_status
 language plpgsql security definer set search_path = public as $$
 declare who text := _session(p_token, true);
 begin
+  perform _op(who, 'save_attendance', format('출석 저장: %s (%s)', _per(p_period), _attn(p_statuses)));
   return _apply_attendance(p_period, p_statuses, who, null);
 end $$;
 
@@ -586,6 +670,7 @@ language plpgsql security definer set search_path = public as $$
 declare who text := _session_attend(p_token); rid uuid;
 begin
   if not exists (select 1 from periods where id = p_period) then raise exception '교시를 찾을 수 없어요'; end if;
+  perform _op(who, 'request_attendance', format('출석 요청: %s (%s)', _per(p_period), _attn(p_statuses)));
   select id into rid from attendance_requests where period_id = p_period and requested_by = who and status = 'pending';
   if rid is null then
     insert into attendance_requests (period_id, statuses, requested_by) values (p_period, coalesce(p_statuses, '{}'), who) returning id into rid;
@@ -601,6 +686,7 @@ declare who text := _session(p_token, true); r attendance_requests; n int := 0;
 begin
   select * into r from attendance_requests where id = p_id for update;
   if not found or r.status <> 'pending' then raise exception '이미 처리된 요청이에요'; end if;
+  perform _op(who, 'review_attendance', format('출석 요청 %s: %s의 %s (%s)', case when p_approve then '승인' else '반려' end, r.requested_by, _per(r.period_id), _attn(r.statuses)));
   if p_approve then
     n := _apply_attendance(r.period_id, r.statuses, who, r.requested_by);
     update attendance_requests set status = 'approved', reviewed_by = who, reviewed_at = now() where id = p_id;
@@ -616,6 +702,8 @@ language plpgsql security definer set search_path = public as $$
 declare who text := _session(p_token, true); sid uuid; n int := 0;
 begin
   perform _check_items(p_item, p_points);
+  perform _op(who, 'add_entries', format('기록: %s %s%s · %s번', trim(p_item), _pt(p_points),
+    case when coalesce(trim(p_detail), '') <> '' then ' (' || trim(p_detail) || ')' else '' end, _nums(p_sids)));
   foreach sid in array p_sids loop
     perform _entry(p_date, sid, trim(p_item), trim(p_detail), p_points, 'manual', null, null, who);
     n := n + 1;
@@ -637,6 +725,7 @@ begin
   if e.detail <> coalesce(trim(p_detail), '') then b := b || jsonb_build_object('detail', e.detail); a := a || jsonb_build_object('detail', coalesce(trim(p_detail), '')); end if;
   if e.points <> p_points then b := b || jsonb_build_object('points', e.points); a := a || jsonb_build_object('points', p_points); end if;
   if a = '{}' then raise exception '바뀐 내용이 없어요'; end if;
+  perform _op(who, 'edit_entry', format('수정: %s번 %s %s (%s)', (select no from students where id = e.student_id), e.item, _pt(e.points), trim(p_reason)));
   update ledger set date = p_date, item = trim(p_item), detail = coalesce(trim(p_detail), ''), points = p_points where id = p_id;
   insert into ledger_revisions (ledger_id, before, after, reason, edited_by) values (p_id, b, a, trim(p_reason), who);
 end $$;
@@ -647,6 +736,8 @@ declare who text := _session(p_token, true);
 begin
   if coalesce(trim(p_reason), '') = '' then raise exception '무효 처리 사유를 입력하세요'; end if;
   if not exists (select 1 from ledger where id = p_id and voided_at is null) then raise exception '이미 무효 처리된 기록이에요'; end if;
+  perform _op(who, 'void_entry', (select format('무효 처리: %s번 %s %s (%s)', s.no, l.item, _pt(l.points), trim(p_reason))
+    from ledger l join students s on s.id = l.student_id where l.id = p_id));
   perform _void(p_id, trim(p_reason), who);
 end $$;
 
@@ -656,6 +747,7 @@ declare who text := _session(p_token, true); r requests; sid uuid; n int := 0;
 begin
   select * into r from requests where id = p_id for update;
   if not found or r.status <> 'pending' then raise exception '이미 처리된 요청이에요'; end if;
+  perform _op(who, 'review_request', format('요청 %s: %s의 %s %s · %s번', case when p_approve then '승인' else '반려' end, r.requested_by, r.item, _pt(r.points), _nums(r.student_ids)));
   if p_approve then
     foreach sid in array r.student_ids loop
       if exists (select 1 from students where id = sid) then
@@ -677,6 +769,8 @@ declare who text := _session(p_token, true); x excuses; e ledger;
 begin
   select * into x from excuses where id = p_id for update;
   if not found or x.status <> 'pending' then raise exception '이미 처리된 신청이에요'; end if;
+  perform _op(who, 'review_excuse', format('공결 %s: %s번 %s', case when p_approve then '승인' else '반려' end,
+    (select no from students where id = x.student_id), coalesce((select to_char(date, 'FMMM/FMDD') || ' ' || item from ledger where id = x.ledger_id), '')));
   if p_approve then
     select * into e from ledger where id = x.ledger_id;
     if e.id is not null and e.voided_at is null then
@@ -701,6 +795,14 @@ create or replace function roster_apply(p_token uuid, p_ops jsonb, p_adjs jsonb,
 language plpgsql security definer set search_path = public as $$
 declare who text := _session(p_token, true); o jsonb; a jsonb; sid uuid; cur numeric; fresh boolean; n int := 0;
 begin
+  perform _op(who, 'roster_apply', (select '명단: ' || coalesce(nullif(concat_ws(' · ',
+      nullif(format('추가 %s', count(*) filter (where x ->> 'op' = 'add')), '추가 0'),
+      nullif(format('번호 변경 %s', count(*) filter (where x ->> 'op' = 'renum')), '번호 변경 0'),
+      nullif(format('복귀 %s', count(*) filter (where x ->> 'op' = 'restore')), '복귀 0'),
+      nullif(format('제외 %s', count(*) filter (where x ->> 'op' = 'remove')), '제외 0'),
+      nullif(format('이름 %s', count(*) filter (where x ->> 'op' = 'rename')), '이름 0'),
+      nullif(format('자봉 조정 %s', jsonb_array_length(coalesce(p_adjs, '[]'))), '자봉 조정 0')), ''), '변경 없음')
+    from jsonb_array_elements(coalesce(p_ops, '[]')) x));
   -- 번호를 바꿀 학생은 잠시 명단에서 빼 두어야 번호를 서로 맞바꿀 수 있다
   update students set active = false
   where id in (select (x ->> 'id')::uuid from jsonb_array_elements(coalesce(p_ops, '[]')) x where x ->> 'op' in ('renum', 'remove'));
@@ -737,6 +839,7 @@ create or replace function my_presets_save(p_token uuid, p_list jsonb) returns v
 language plpgsql security definer set search_path = public as $$
 declare who text := _session(p_token, false); p jsonb; i int := 0;
 begin
+  perform _op(who, 'my_presets_save', format('자주 쓰는 항목 저장 (%s개)', jsonb_array_length(coalesce(p_list, '[]'))));
   delete from presets where owner = who;
   for p in select * from jsonb_array_elements(coalesce(p_list, '[]')) loop
     i := i + 1;
@@ -768,6 +871,133 @@ create or replace function _dump() returns jsonb language sql stable security de
     ))
 $$;
 
+-- ───────────────────────── 되돌리기 ─────────────────────────
+-- 작업 하나를 거꾸로 적용한다: 넣은 행은 지우고, 바꾼 행은 전으로, 지운 행은 다시 넣는다.
+-- 지금 행이 그 작업 직후와 다르면(뒤의 작업이 같은 행을 바꿨으면) 충돌로 멈춘다.
+-- 되돌리다가 이 작업에 없던 행까지 바뀌면(연쇄 삭제 등) 역시 충돌로 멈춘다.
+create or replace function _undo_one(p_op bigint, p_by bigint) returns void
+language plpgsql security definer set search_path = public as $$
+declare c op_changes; cur jsonb; cols text; mark bigint; o ops; bad text; m jsonb;
+begin
+  select * into o from ops where id = p_op;
+  select coalesce(max(id), 0) into mark from op_changes;
+  for c in select * from op_changes where op_id = p_op order by id desc loop
+    execute format('select to_jsonb(t) from %I t where to_jsonb(t) @> $1', c.tbl) into cur using c.row_key;
+    if c.action = 'I' then
+      if cur is null then continue; end if;
+      if cur <> c.after then bad := c.tbl; exit; end if;
+      execute format('delete from %I t where to_jsonb(t) @> $1', c.tbl) using c.row_key;
+    elsif c.action = 'U' then
+      if cur is distinct from c.after then bad := c.tbl; exit; end if;
+      select string_agg(quote_ident(column_name), ',' order by ordinal_position) into cols
+      from information_schema.columns where table_schema = 'public' and table_name = c.tbl;
+      execute format('update %1$I t set (%2$s) = (select %2$s from jsonb_populate_record(null::%1$I, $1)) where to_jsonb(t) @> $2', c.tbl, cols)
+        using c.before, c.row_key;
+    else
+      if cur is not null then
+        if cur = c.before then continue; end if;
+        bad := c.tbl; exit;
+      end if;
+      execute format('insert into %1$I select (jsonb_populate_record(null::%1$I, $1)).*', c.tbl) using c.before;
+    end if;
+  end loop;
+  if bad is null and exists (
+      select 1 from op_changes u where u.id > mark and u.op_id = p_by
+        and not exists (select 1 from op_changes x where x.op_id = p_op and x.tbl = u.tbl and x.row_key = u.row_key)) then
+    bad := 'side';
+  end if;
+  if bad is not null then
+    raise exception '"%" 작업 뒤에 같은 기록을 바꾼 작업이 있어서 이 작업만 되돌릴 수 없어요. 그 뒤 작업부터 되돌리거나 "이 작업 직전으로 되돌리기"를 쓰세요', o.summary
+      using errcode = 'P0002';
+  end if;
+  -- 이 작업이 되돌리기였다면, 그때 바꾼 "되돌림" 표시를 거꾸로 복원한다 (되돌리기를 되돌리면 다시 적용)
+  for m in select value from jsonb_array_elements(o.meta) with ordinality e(value, ord) order by ord desc loop
+    perform _set_undone((m ->> 0)::bigint, (m ->> 1)::bigint, p_by);
+  end loop;
+  perform _set_undone(p_op, p_by, p_by);
+end $$;
+
+-- 작업의 "되돌림" 표시를 바꾸고, 바꾸기 전 값을 되돌리기 작업(p_by)에 남긴다
+create or replace function _set_undone(p_target bigint, p_val bigint, p_by bigint) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  update ops set meta = meta || jsonb_build_array(jsonb_build_array(p_target, (select undone_by from ops where id = p_target))) where id = p_by;
+  update ops set undone_by = p_val where id = p_target;
+end $$;
+
+-- 학생별 번호·이름·재학·자봉 (미리보기 비교용)
+create or replace function _snap() returns jsonb language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_object_agg(s.id, jsonb_build_object('no', s.no, 'name', s.name, 'active', s.active,
+    'bal', coalesce((select sum(points) from ledger l where l.student_id = s.id and l.voided_at is null), 0))), '{}')
+  from students s
+$$;
+
+-- p_mode: 'one' = 이 작업만, 'since' = 이 작업 직전으로 (이 작업과 그 뒤 작업을 최신 것부터).
+-- p_preview면 실제로 되돌려 본 뒤 결과만 돌려주고 모두 취소한다.
+create or replace function undo_ops(p_token uuid, p_op bigint, p_mode text, p_preview boolean) returns json
+language plpgsql security definer set search_path = public as $$
+declare
+  who text := _session(p_token, true); target ops; ids bigint[]; x bigint; me bigint;
+  before jsonb; after jsonb; result json; nledger int;
+begin
+  select * into target from ops where id = p_op;
+  if not found then raise exception '작업을 찾을 수 없어요'; end if;
+  if p_mode = 'one' then
+    if target.undone_by is not null then raise exception '이미 되돌린 작업이에요'; end if;
+    ids := array[p_op];
+  else
+    select array_agg(id order by id desc) into ids from ops where id >= p_op and undone_by is null;
+  end if;
+  if exists (select 1 from ops where id = any (ids) and not undoable) then
+    raise exception '되돌릴 수 없는 작업(보관 후 정리, 백업에서 되살리기)이 들어 있어요';
+  end if;
+  if coalesce(array_length(ids, 1), 0) = 0 then raise exception '되돌릴 작업이 없어요'; end if;
+  before := _snap();
+  select count(*) into nledger from ledger where voided_at is null;
+  begin
+    me := _op(who, case when p_mode = 'one' then 'undo' else 'rewind' end,
+      case when p_mode = 'one' then '되돌리기: ' || target.summary
+      else format('%s 직전으로 되돌리기 (작업 %s개)', _kst(target.at), array_length(ids, 1)) end);
+    update ops set undo_of = ids where id = me;
+    if p_mode = 'one' then
+      perform _undo_one(p_op, me);
+    else
+      -- 최신 작업부터 하나씩 되돌린다. "되돌리기"를 되돌리면 예전 작업이 다시 살아나므로 매번 다시 고른다.
+      loop
+        select id into x from ops where id >= p_op and id <> me and undone_by is null order by id desc limit 1;
+        exit when x is null;
+        if not (select undoable from ops where id = x) then raise exception '되돌릴 수 없는 작업(보관 후 정리, 백업에서 되살리기)이 들어 있어요'; end if;
+        perform _undo_one(x, me);
+      end loop;
+    end if;
+    after := _snap();
+    result := json_build_object(
+      'ops', (select json_agg(json_build_object('id', id, 'at', _kst(at), 'actor', actor, 'summary', summary) order by id desc) from ops where id = any (ids)),
+      'ledger', json_build_object('before', nledger, 'after', (select count(*) from ledger where voided_at is null)),
+      'students', (select coalesce(json_agg(json_build_object(
+          'no', coalesce(a -> 'no', b -> 'no'), 'name', coalesce(a ->> 'name', b ->> 'name'),
+          'beforeNo', b -> 'no', 'afterNo', a -> 'no', 'beforeActive', b -> 'active', 'afterActive', a -> 'active',
+          'before', b -> 'bal', 'after', a -> 'bal') order by coalesce((a ->> 'no')::int, (b ->> 'no')::int)), '[]')
+        from (select k, before -> k as b, after -> k as a from (select jsonb_object_keys(before) k union select jsonb_object_keys(after)) keys) d
+        where b is distinct from a));
+    if p_preview then raise exception using errcode = 'P0003', message = 'preview'; end if;
+  exception when sqlstate 'P0003' then
+    return result;
+  end;
+  return result;
+end $$;
+
+-- 작업 내역 (최신순)
+create or replace function ops_list(p_token uuid, p_limit int) returns json
+language plpgsql security definer set search_path = public as $$
+begin
+  perform _session(p_token, true);
+  return (select coalesce(json_agg(json_build_object('id', o.id, 'at', _kst(o.at), 'actor', o.actor, 'kind', o.kind, 'summary', o.summary,
+      'undoable', o.undoable, 'undoneBy', o.undone_by, 'undoOf', o.undo_of,
+      'undoneBySummary', (select summary from ops u where u.id = o.undone_by)) order by o.id desc), '[]')
+    from (select * from ops order by id desc limit greatest(coalesce(p_limit, 50), 1)) o);
+end $$;
+
 -- 백업 파일 받기. 로그인 없이 누구나 부를 수 있다 (학급이 이름 공개를 괜찮다고 정했다).
 -- jabong-backup 저장소의 GitHub Actions가 매일 부르고, 관리 탭의 "지금 백업 파일 받기"도 이것을 쓴다.
 drop function if exists backup_dump(text);
@@ -783,6 +1013,9 @@ language plpgsql security definer set search_path = public as $$
 declare who text := _session(p_token, true); t jsonb := p_data -> 'tables';
 begin
   if p_data ->> 'format' is distinct from 'jabong-backup' or t is null then raise exception '자봉 장부 백업 파일이 아니에요'; end if;
+  -- 되살리면 그 전 작업 로그는 지금 데이터와 맞지 않으니 비운다. 되살리기 자체는 되돌릴 수 없다.
+  delete from ops where true;
+  perform _op(who, 'restore_backup', format('백업에서 되살리기 (%s 백업)', p_data ->> 'createdAt'), false);
   delete from requests where true;
   delete from periods where true;
   delete from presets where true;
@@ -809,6 +1042,9 @@ create or replace function purge(p_token uuid, p_cut date) returns json
 language plpgsql security definer set search_path = public as $$
 declare who text := _session(p_token, true); old_n int; carry_n int := 0; r record;
 begin
+  -- 정리하면 그 전 작업은 되돌릴 수 없으니 작업 로그를 비운다
+  delete from ops where true;
+  perform _op(who, 'purge', format('보관 후 정리 (%s까지)', to_char(p_cut, 'FMMM/FMDD')), false);
   select count(*) into old_n from ledger where date <= p_cut;
   create temp table _sums on commit drop as
     select student_id, sum(points) as pts from ledger where date <= p_cut and voided_at is null group by student_id;
@@ -849,7 +1085,7 @@ do $$ declare f text; begin
       'change_pw(uuid,text,text)', 'reset_pw(uuid,text,text)', 'new_recovery(uuid,text)', 'ensure_period(uuid,date,text,boolean)',
       'save_attendance(uuid,uuid,jsonb)', 'request_attendance(uuid,uuid,jsonb)', 'review_attendance(uuid,uuid,boolean,text)', 'add_entries(uuid,date,uuid[],text,text,numeric)', 'edit_entry(uuid,uuid,date,text,text,numeric,text)',
       'void_entry(uuid,uuid,text)', 'review_request(uuid,uuid,boolean,text)', 'review_excuse(uuid,uuid,boolean,text)',
-      'roster_apply(uuid,jsonb,jsonb,date)', 'my_presets_save(uuid,jsonb)', 'purge(uuid,date)', 'backup_dump()', 'restore_backup(uuid,jsonb)'
+      'roster_apply(uuid,jsonb,jsonb,date)', 'my_presets_save(uuid,jsonb)', 'purge(uuid,date)', 'backup_dump()', 'restore_backup(uuid,jsonb)', 'undo_ops(uuid,bigint,text,boolean)', 'ops_list(uuid,integer)'
     ] loop
       execute format('grant execute on function %s to anon, authenticated', f);
     end loop;

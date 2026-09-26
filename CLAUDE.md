@@ -27,6 +27,8 @@
 - 한글 입력: 입력칸을 통째로 다시 그리면 조합이 깨진다. 입력 중 갱신이 필요하면 `data-live`(추천·칩 영역만 갱신)나 `data-region`(특정 영역만 갱신)을 쓰고, `data-rerender`는 날짜·숫자·체크박스처럼 한글이 없는 칸에만 쓴다.
 - Supabase는 앱에서 온 요청의 `where` 없는 `delete`/`update`를 거절한다(pg_safeupdate). 로컬 Postgres에서는 통과하니, 전체를 지울 때도 `where true`를 붙인다. `test/schema.test.js`가 검사한다.
 - 백업: `_dump()`가 비밀번호·로그인·사진을 뺀 전체 데이터를 JSON으로 만든다. `backup_dump()`는 로그인 없이 누구나 부를 수 있다(학급이 이름 공개를 괜찮다고 정했다). jabong-backup 저장소의 GitHub Actions가 매일 이것을 받아 암호화 없이 올린다. `restore_backup`은 부총대만 되고, 되살리기 직전에 화면이 현재 상태 파일을 먼저 받게 한다. `src/backupcrypt.js`는 예전에 암호를 걸어 받은 파일을 열 때만 쓴다.
+- 되돌리기(작업 내역): 데이터를 바꾸는 서버 함수는 권한 확인 직후 `_op(누가, 종류, 요약)`을 불러야 한다. 그러면 트리거 `zz_log`(_log_change)가 그 트랜잭션에서 바뀐 행의 전·후를 `op_changes`에 남긴다. `_op`를 빼먹으면 그 작업은 작업 내역에 없고 되돌릴 수도 없다. 새 표를 만들면 `zz_log` 트리거 목록, `_log_change`의 기본키 매핑, `_dump`, `restore_backup`에 넣는다. 정리·되살리기는 `_op(..., false)`로 되돌릴 수 없게 하고 작업 로그를 비운다. `undo_ops`는 되돌린 결과를 계산해 본 뒤 미리보기면 전부 취소한다. 테스트는 `supabase/tests/rewind.sql`, 기능을 빼는 방법은 `supabase/rollback-rewind.sql`.
+- DB 테스트에서 권한 오류를 기대할 때는 `pg_temp.expect(쿼리, 오류코드, 설명)`에 미리 받아 둔 토큰을 넣는다. anon으로 바꾼 뒤 표를 읽는 하위 쿼리를 쓰면 표 읽기 권한 때문에 엉뚱하게 통과한다.
 - 서버 오류 메시지는 한국어로 `raise exception` 한다. 화면은 그 메시지를 그대로 토스트로 보여 준다.
 
 ## 명령

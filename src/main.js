@@ -29,6 +29,7 @@ const UI = {
   recFilter: '', editId: null, voidId: null, openRev: {}, photos: {},
   noticeFrom: null, noticeTo: null, noticeText: null,
   doneLimit: 20,
+  hist: { list: null, limit: 50, preview: null, loading: false },
   bk: { pw: '', file: null, fileName: '', dump: null, typed: '' },
   pickGrid: (() => {
     try {
@@ -44,7 +45,7 @@ const UI = {
 const TABS = {
   student: [['board', '현황판'], ['excuse', '공결 신청']],
   officer: [['request', '요청하기'], ['reqs', '요청 현황'], ['board', '현황판']],
-  admin: [['attend', '출석'], ['record', '기록'], ['inbox', '요청함'], ['notice', '공지'], ['manage', '관리'], ['board', '현황판']],
+  admin: [['attend', '출석'], ['record', '기록'], ['inbox', '요청함'], ['notice', '공지'], ['history', '작업 내역'], ['manage', '관리'], ['board', '현황판']],
 };
 // 출석 권한을 받은 총대단(기본: 실습부장)은 맨 앞에 출석 탭이 생긴다
 const canAttend = () => Boolean(S.accounts.find((a) => a.role === UI.user)?.attend);
@@ -94,6 +95,7 @@ function resetDrafts() {
   UI.attPid = null;
   UI.photos = {};
   UI.myPresetsOpen = false;
+  UI.hist = { list: null, limit: 50, preview: null, loading: false };
   UI.bk = { pw: '', file: null, fileName: '', dump: null, typed: '' };
 }
 
@@ -552,6 +554,53 @@ function vManage() {
   ${vPurge()}`;
 }
 
+// 작업 내역과 되돌리기. 목록은 탭을 열 때 서버에서 받아 온다.
+async function loadHistory() {
+  UI.hist.list = await rpc('ops_list', { p_token: token(), p_limit: UI.hist.limit });
+}
+function vHistory() {
+  const h = UI.hist;
+  if (!h.list) {
+    if (!h.loading) {
+      h.loading = true;
+      loadHistory()
+        .catch((e) => toast(e.message))
+        .finally(() => {
+          h.loading = false;
+          render();
+        });
+    }
+    return '<div><h1>작업 내역</h1></div><p class="boot">불러오는 중…</p>';
+  }
+  const p = h.preview;
+  const previewCard = p
+    ? `<div class="card" style="border-color:var(--warn)"><h2>${p.mode === 'one' ? '이 작업만 되돌리기' : '이 작업 직전으로 되돌리기'}</h2>
+    <div class="note">되돌릴 작업 ${p.data.ops.length}개</div>
+    <div class="mlist" style="max-height:160px">${p.data.ops.map((o) => `<div class="mrow"><span class="note mono">${esc(o.at.slice(5))}</span><span class="grow">${esc(o.summary)}</span><span class="note">${esc(o.actor)}</span></div>`).join('')}</div>
+    <div class="note">무효가 아닌 기록 ${p.data.ledger.before}건 → ${p.data.ledger.after}건</div>
+    ${p.data.students.length ? `<div class="note">달라지는 학생 ${p.data.students.length}명</div><div class="mlist" style="max-height:200px">${p.data.students.map((x) => {
+      const bits = [];
+      if (x.before !== x.after) bits.push(`자봉 ${x.before ?? '없음'} → ${x.after ?? '없음'}`);
+      if (x.beforeNo !== x.afterNo) bits.push(`번호 ${x.beforeNo ?? '없음'} → ${x.afterNo ?? '없음'}`);
+      if (x.beforeActive !== x.afterActive) bits.push(x.afterActive ? '명단에 다시 들어감' : x.afterActive === false ? '명단에서 빠짐' : '명단에서 사라짐');
+      return `<div class="mrow"><span class="mono">${x.no ?? ''}</span><span class="grow">${esc(x.name || '')}</span><span class="note">${bits.join(' · ') || '기록만 바뀜'}</span></div>`;
+    }).join('')}</div>` : '<div class="note">학생별 점수·번호는 그대로예요 (요청·신청 같은 기록만 바뀌어요).</div>'}
+    <p class="hint" style="margin:0">되돌리기도 작업 내역에 남아서, 마음이 바뀌면 그것을 다시 되돌릴 수 있어요.</p>
+    <div class="btns"><button class="btn danger" data-act="undo-run">되돌리기</button><button class="btn ghost" data-act="undo-cancel">그만두기</button></div></div>`
+    : '';
+  const row = (o) => {
+    const undone = o.undoneBy != null;
+    const tag = !o.undoable ? '<span class="pill">되돌릴 수 없음</span>' : undone ? '<span class="pill rejected">되돌림</span>' : o.kind === 'undo' || o.kind === 'rewind' ? '<span class="pill pending">되돌리기</span>' : '';
+    return `<div class="rec-row"><span class="note mono">${esc(o.at.slice(5))}</span><span class="${undone ? 'off' : ''}">${esc(o.summary)}<br><span class="d">${esc(o.actor)}${undone && o.undoneBySummary ? ` · ${esc(o.undoneBySummary)}로 되돌림` : ''}</span></span><span>${tag}</span>
+    ${o.undoable && !undone ? `<div class="acts"><button class="btn ghost small" data-act="undo-pv" data-id="${o.id}" data-mode="one">${o.kind === 'undo' || o.kind === 'rewind' ? '이 되돌리기 취소' : '이 작업만 되돌리기'}</button><button class="btn ghost small" data-act="undo-pv" data-id="${o.id}" data-mode="since">이 작업 직전으로</button></div>` : ''}</div>`;
+  };
+  return `<div><h1>작업 내역</h1><p class="sub">누가 언제 무엇을 바꿨는지 최신순으로 보여요. 실수한 작업은 되돌릴 수 있어요. 되돌리기 전에 무엇이 바뀌는지 먼저 보여줘요.</p></div>
+  ${previewCard}
+  <div class="card" style="gap:0">${h.list.map(row).join('') || '<p class="empty">아직 작업이 없어요.</p>'}
+  ${h.list.length >= h.limit ? '<button class="btn ghost" data-act="hist-more" style="margin-top:10px">더 보기</button>' : ''}</div>
+  <p class="hint">"이 작업만 되돌리기"는 그 작업 하나만 되돌려요. 뒤의 작업이 같은 기록을 바꿨으면 되돌릴 수 없다고 알려줘요. "이 작업 직전으로"는 그 작업과 그 뒤의 작업을 최신 것부터 모두 되돌려요. 보관 후 정리나 백업에서 되살리기는 되돌릴 수 없고, 그 전의 작업 내역은 지워져요.</p>`;
+}
+
 // 백업: 지금 받기, 백업에서 되살리기, 자동 백업 키
 function vBackup() {
   const b = UI.bk;
@@ -647,7 +696,7 @@ function render() {
       : locked
         ? '<div class="mocknote">총대단과 부총대는 자기 직책의 비밀번호로 로그인해요.</div>'
         : `<div class="who"><b style="color:var(--ink)">${esc(UI.user)}</b>로 로그인됨 <button class="btn ghost small" data-act="logout">로그아웃</button></div>`;
-  const V = { board: vBoard, excuse: vExcuse, request: vRequest, reqs: vReqs, attend: vAttend, record: vRecord, inbox: vInbox, notice: vNotice, manage: vManage };
+  const V = { board: vBoard, excuse: vExcuse, request: vRequest, reqs: vReqs, attend: vAttend, record: vRecord, inbox: vInbox, notice: vNotice, history: vHistory, manage: vManage };
   const codeCard =
     !locked && UI.role === 'admin' && UI.newCode
       ? `<div class="card" style="border-color:var(--warn)"><h2>새 복구 코드</h2><div class="mono" style="font-size:22px;letter-spacing:.06em">${esc(UI.newCode)}</div>
@@ -923,6 +972,7 @@ const A = {
     return toast(`${who} 비밀번호를 재설정했어요. 본인에게 알려주세요`);
   },
   tab: (d) => {
+    if (d.tab === 'history') UI.hist = { ...UI.hist, list: null, preview: null };
     UI.tab = d.tab;
     UI.sid = null;
     window.scrollTo(0, 0);
@@ -1237,6 +1287,28 @@ const A = {
     await refresh();
     render();
     return toast(`${r.createdAt} 백업으로 되살렸어요 · 직전 상태 파일도 받아 뒀어요`);
+  },
+  'undo-pv': async (d) => {
+    const data = await rpc('undo_ops', { p_token: token(), p_op: Number(d.id), p_mode: d.mode, p_preview: true });
+    UI.hist.preview = { id: Number(d.id), mode: d.mode, data };
+    window.scrollTo(0, 0);
+  },
+  'undo-cancel': () => {
+    UI.hist.preview = null;
+  },
+  'undo-run': async () => {
+    const p = UI.hist.preview;
+    await rpc('undo_ops', { p_token: token(), p_op: p.id, p_mode: p.mode, p_preview: false });
+    UI.hist.preview = null;
+    UI.draft = {};
+    UI.noticeText = null;
+    await Promise.all([refresh(), loadHistory()]);
+    render();
+    return toast(`작업 ${p.data.ops.length}개를 되돌렸어요`);
+  },
+  'hist-more': async () => {
+    UI.hist.limit += 50;
+    await loadHistory();
   },
   'mypresets-toggle': () => {
     UI.myPresetsOpen = !UI.myPresetsOpen;
