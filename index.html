@@ -164,8 +164,9 @@ details.card summary{cursor:pointer}
 .edit{grid-column:1/-1;background:var(--sunk);border-radius:10px;padding:10px;display:flex;flex-direction:column;gap:8px}
 .mrow{display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--line)}
 .mrow:first-child{border-top:0}
-.mrow input{width:76px}
-.mrow .grow{flex:1}
+.mrow input{width:76px;min-width:0}
+.mrow .grow{flex:1;min-width:0}
+.mrow .btn,.mrow .pill,.mrow .note{flex-shrink:0;white-space:nowrap}
 .mlist{max-height:320px;overflow:auto}
 .off{color:var(--muted)}
 

@@ -390,7 +390,7 @@ function vManage() {
   <button class="btn ghost" data-act="pw-reset">재설정</button>
   <h2 style="font-size:14px">복구 코드</h2>
   <p class="hint" style="margin:0">부총대와 총대가 둘 다 비밀번호를 잊었을 때 쓰는 비상 코드예요. 잃어버렸거나 다른 사람이 봤을 것 같으면 새로 만드세요. 이전 코드는 바로 못 쓰게 돼요.</p>
-  <div class="row2"><input type="password" id="rc-pw" class="grow" placeholder="내 비밀번호 확인" autocomplete="current-password"><button class="btn ghost" data-act="rc-new">새 복구 코드 만들기</button></div></div>
+  <input type="password" id="rc-pw" placeholder="내 비밀번호 확인" autocomplete="current-password"><button class="btn ghost" data-act="rc-new">새 복구 코드 만들기</button></div>
 
   ${vPurge()}`;
 }
