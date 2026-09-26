@@ -202,7 +202,8 @@ function updateLive(fk) {
 
 // 점수 칸: 가운데는 숫자를 직접 적고, 오른쪽 ▾를 누르면 바로 아래에 작은 숫자판이 뜬다.
 // 숫자를 누르면 곧바로 들어가고 숫자판은 닫힌다 (폰 기본 선택창처럼 "완료"를 누를 필요가 없다).
-const POINT_CHOICES = [5, 4, 3, 2, 1, -1, -2, -3, -4, -5];
+// 윗줄 자봉 +5 → +1, 아랫줄 상점 -5 → -1 (둘 다 왼쪽부터 큰 수)
+const POINT_CHOICES = [5, 4, 3, 2, 1, -5, -4, -3, -2, -1];
 function pointsField(fk) {
   const f = UI[fk];
   return `<div class="ptsbox"><input type="number" step="0.5" inputmode="decimal" id="${fk}-points" value="${esc(f.points)}" data-bind="${fk}.points" aria-label="점수 직접 입력">
