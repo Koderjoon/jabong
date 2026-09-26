@@ -95,6 +95,7 @@ function resetDrafts() {
   UI.attPid = null;
   UI.photos = {};
   UI.myPresetsOpen = false;
+  UI.pwOpen = false;
   UI.hist = { list: null, limit: 50, preview: null, loading: false };
   UI.bk = { pw: '', file: null, fileName: '', dump: null, typed: '' };
 }
@@ -684,7 +685,7 @@ function vLogin() {
   <div class="card"><label class="fld"><span>직책</span><select id="login-who">${list.map((o) => `<option>${esc(o)}</option>`).join('')}</select></label>
   <label class="fld"><span>비밀번호</span><input type="password" id="login-pw" autocomplete="current-password"></label>
   <button class="btn" data-act="login">로그인</button>
-  <p class="hint" style="margin:0">${UI.role === 'admin' ? '비밀번호를 잊었으면 아래 복구 코드로 새로 정하세요.' : '비밀번호를 잊었으면 부총대에게 재설정을 부탁하세요.'}</p>
+  <p class="hint" style="margin:0">${UI.role === 'admin' ? '비밀번호를 잊었으면 아래 복구 코드로 새로 정하세요.' : '비밀번호를 잊었으면 부총대에게 재설정을 부탁하세요. 로그인한 뒤 위의 "비밀번호 바꾸기"로 직접 바꿀 수 있어요.'}</p>
   ${UI.role === 'admin' ? '<button class="btn ghost small" data-act="recover-open" style="align-self:flex-start">복구 코드로 들어가기</button>' : ''}</div>
   ${UI.role === 'admin' && UI.recover ? `<div class="card"><h2>복구 코드로 들어가기</h2>
   <label class="fld"><span>복구 코드</span><input id="rc-code" class="mono" placeholder="XXXX-XXXX-XXXX" autocomplete="off"></label>
@@ -719,7 +720,7 @@ function render() {
       ? UI.user ? `<div class="who"><b style="color:var(--ink)">${esc(UI.user)}</b>로 로그인됨 · 학생 화면 보는 중</div>` : ''
       : locked
         ? '<div class="mocknote">총대단과 부총대는 자기 직책의 비밀번호로 로그인해요.</div>'
-        : `<div class="who"><b style="color:var(--ink)">${esc(UI.user)}</b>로 로그인됨 <button class="btn ghost small" data-act="logout">로그아웃</button></div>`;
+        : `<div class="who"><b style="color:var(--ink)">${esc(UI.user)}</b>로 로그인됨 ${UI.role === 'officer' ? '<button class="btn ghost small" data-act="pw-open">비밀번호 바꾸기</button> ' : ''}<button class="btn ghost small" data-act="logout">로그아웃</button></div>`;
   const V = { board: vBoard, excuse: vExcuse, request: vRequest, reqs: vReqs, attend: vAttend, record: vRecord, inbox: vInbox, notice: vNotice, history: vHistory, manage: vManage };
   const codeCard =
     !locked && UI.role === 'admin' && UI.newCode
@@ -727,7 +728,14 @@ function render() {
     <p class="hint" style="margin:0">지금 캡처하거나 메모해서 따로 보관하세요. 이 화면을 닫으면 다시 보여주지 않아요. 인수인계할 때 비밀번호와 함께 넘겨주세요.</p>
     <div class="btns"><button class="btn ghost small" data-act="code-copy">복사</button><button class="btn small" data-act="code-ok">보관했어요</button></div></div>`
       : '';
-  view.innerHTML = locked ? vLogin() : codeCard + (UI.sid ? vDetail() : (V[UI.tab] || vBoard)());
+  const pwCard =
+    !locked && UI.role === 'officer' && UI.pwOpen
+      ? `<div class="card"><h2>내 비밀번호 바꾸기 (${esc(UI.user)})</h2>
+    <input type="password" id="pw-cur" placeholder="현재 비밀번호" autocomplete="current-password"><input type="password" id="pw-new" placeholder="새 비밀번호 (4자 이상)" autocomplete="new-password"><input type="password" id="pw-new2" placeholder="새 비밀번호 확인" autocomplete="new-password">
+    <p class="hint" style="margin:0">현재 비밀번호를 잊었으면 부총대에게 재설정을 부탁하세요.</p>
+    <div class="btns"><button class="btn" data-act="pw-change">바꾸기</button><button class="btn ghost" data-act="pw-open">닫기</button></div></div>`
+      : '';
+  view.innerHTML = locked ? vLogin() : codeCard + pwCard + (UI.sid ? vDetail() : (V[UI.tab] || vBoard)());
   const pc = pendingCount();
   tabs.innerHTML = locked
     ? ''
@@ -983,9 +991,14 @@ const A = {
     window.scrollTo(0, 0);
     return toast('새 복구 코드를 만들었어요 · 이전 코드는 더 이상 안 돼요');
   },
+  'pw-open': () => {
+    UI.pwOpen = !UI.pwOpen;
+    window.scrollTo(0, 0);
+  },
   'pw-change': async () => {
     if (val('pw-new') !== val('pw-new2')) return toast('새 비밀번호 두 칸이 달라요');
     await rpc('change_pw', { p_token: token(), p_cur: val('pw-cur'), p_new: val('pw-new') });
+    UI.pwOpen = false;
     render();
     return toast('내 비밀번호를 바꿨어요');
   },
@@ -1032,6 +1045,9 @@ const A = {
     const inp = document.getElementById(d.fk + '-find');
     UI[d.fk].find = '';
     if (inp) {
+      // 한글 조합 중이면 blur로 조합을 먼저 끝낸다. 안 그러면 조합이 끝날 때 친 글자가 칸에 되살아난다.
+      inp.blur();
+      UI[d.fk].find = '';
       inp.value = '';
       inp.focus();
     }
@@ -1390,6 +1406,30 @@ document.addEventListener('click', async (ev) => {
     busy = false;
     document.body.style.cursor = '';
   }
+});
+
+// 학생 추천·칩·명단 버튼은 손가락을 떼는 순간 바로 누른다.
+// 보통의 click은 입력칸이 포커스를 잃은 뒤에 오는데, 그때 한글 조합이 끝나면서 추천 목록이 다시 그려져
+// 누른 버튼이 사라지므로 두 번 눌러야 했다. 컴퓨터에서는 mousedown에서 포커스를 뺏지 않게 막는다.
+const TAP_NOW = '[data-act="pick"], [data-act="unpick"], [data-act="gtoggle"]';
+let tapStart = null;
+document.addEventListener('touchstart', (ev) => {
+  const t = ev.touches[0];
+  tapStart = ev.touches.length === 1 && ev.target.closest(TAP_NOW) ? { el: ev.target.closest(TAP_NOW), x: t.clientX, y: t.clientY } : null;
+}, { passive: true });
+document.addEventListener('touchend', (ev) => {
+  const st = tapStart;
+  tapStart = null;
+  if (!st) return;
+  const t = ev.changedTouches[0];
+  // 목록을 스크롤한 것이면 누른 것으로 보지 않는다
+  if (Math.abs(t.clientX - st.x) > 10 || Math.abs(t.clientY - st.y) > 10) return;
+  if (ev.target.closest(TAP_NOW) !== st.el) return;
+  ev.preventDefault(); // 뒤따르는 click(이미 다시 그려진 자리에 떨어진다)을 막는다
+  st.el.click();
+}, { passive: false });
+document.addEventListener('mousedown', (ev) => {
+  if (ev.target.closest(TAP_NOW)) ev.preventDefault();
 });
 
 // 로그인 칸에서 Enter, 학생 칸에서 Enter
