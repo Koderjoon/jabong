@@ -26,6 +26,7 @@
 - 학생 고르기는 입력칸 하나(`data-picker`)다. 띄어쓰기·Enter로 번호나 정확한 이름을 선택(`f.nums`)으로 옮기고, 이름 일부면 추천 목록에서 고른다. 저장할 때 칸에 남은 글자도 먼저 옮긴다.
 - 한글 입력: 입력칸을 통째로 다시 그리면 조합이 깨진다. 입력 중 갱신이 필요하면 `data-live`(추천·칩 영역만 갱신)나 `data-region`(특정 영역만 갱신)을 쓰고, `data-rerender`는 날짜·숫자·체크박스처럼 한글이 없는 칸에만 쓴다.
 - Supabase는 앱에서 온 요청의 `where` 없는 `delete`/`update`를 거절한다(pg_safeupdate). 로컬 Postgres에서는 통과하니, 전체를 지울 때도 `where true`를 붙인다. `test/schema.test.js`가 검사한다.
+- 백업: `_dump()`가 비밀번호·로그인·사진을 뺀 전체 데이터를 JSON으로 만든다. `backup_dump(키)`는 GitHub Actions(jabong-backup 저장소)가, `admin_dump(토큰)`은 관리 탭이 부른다. 파일은 `src/backupcrypt.js`로 암호화하며, jabong-backup의 `backupcrypt.mjs`는 같은 파일의 복사본이라 형식을 바꾸면 둘 다 고친다. `restore_backup`은 되살리기 직전에 화면이 먼저 현재 상태 파일을 받게 한다.
 - 서버 오류 메시지는 한국어로 `raise exception` 한다. 화면은 그 메시지를 그대로 토스트로 보여 준다.
 
 ## 명령

@@ -219,3 +219,28 @@ select my_presets_save(:'ct', '[]');
 set role postgres;
 select pg_temp.ok(not exists (select 1 from presets where owner = '총대'), '내 항목 비우기');
 \echo 내 항목 테스트 통과
+
+-- 백업 → 데이터 망가뜨리기 → 되살리기 하면 원래대로 돌아온다
+set role anon;
+select new_backup_key(:'t2') as bk \gset
+do $$ begin
+  perform backup_dump('틀린키');
+  raise exception 'FAIL: 틀린 백업 키로 백업됨';
+exception when invalid_authorization_specification then null;
+end $$;
+select backup_dump(:'bk')::text as dump \gset
+select pg_temp.ok(admin_dump(:'t2') -> 'tables' = (:'dump'::jsonb) -> 'tables', '부총대 백업 = 자동 백업');
+set role postgres;
+select md5(string_agg(s.no || ':' || s.name || ':' || coalesce((select sum(points) from ledger l where l.student_id = s.id and voided_at is null), 0), ',' order by s.no)) as before_sig,
+  (select count(*) from ledger) as before_n, (select count(*) from ledger_revisions) as before_r from students s \gset
+set role anon;
+select roster_apply(:'t2', '[{"op":"add","name":"망가짐","no":99}]', '[{"name":"가나다","to":50}]', '2026-09-30');
+select restore_backup(:'t2', :'dump'::jsonb)::text as rs \gset
+set role postgres;
+select md5(string_agg(s.no || ':' || s.name || ':' || coalesce((select sum(points) from ledger l where l.student_id = s.id and voided_at is null), 0), ',' order by s.no)) as after_sig,
+  (select count(*) from ledger) as after_n, (select count(*) from ledger_revisions) as after_r from students s \gset
+select pg_temp.ok(:'before_sig' = :'after_sig' and :before_n = :after_n and :before_r = :after_r, '되살리기 후 명단·점수·기록 수가 백업과 같음');
+select pg_temp.ok(not exists (select 1 from students where name = '망가짐'), '백업 뒤에 생긴 학생은 사라짐');
+select pg_temp.ok((login('부총대', '1234')::json ->> 'token') is not null, '되살려도 비밀번호는 그대로');
+select pg_temp.ok(exists (select 1 from excuses where photo_id is not null), '서버에 남은 공결 사진은 다시 연결됨');
+\echo 백업·되살리기 테스트 통과

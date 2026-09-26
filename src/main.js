@@ -4,6 +4,7 @@ import * as L from './logic.js';
 import { esc, sgn, md, mdw, live } from './logic.js';
 import { configured, rpc, onChange, getSession, setSession } from './api.js';
 import { downloadExport } from './excel.js';
+import { encryptBackup, decryptBackup } from './backupcrypt.js';
 
 let S = { students: [], presets: [], periods: [], att: {}, ledger: [], excuses: [], requests: [], attRequests: [], accounts: [], updatedAt: '' };
 let loaded = false;
@@ -28,6 +29,8 @@ const UI = {
   recFilter: '', editId: null, voidId: null, openRev: {}, photos: {},
   noticeFrom: null, noticeTo: null, noticeText: null,
   doneLimit: 20,
+  bk: { pw: '', file: null, fileName: '', dump: null, typed: '' },
+  backupKey: null,
   pickGrid: (() => {
     try {
       return localStorage.getItem('jabong-pickgrid') === '1';
@@ -92,6 +95,8 @@ function resetDrafts() {
   UI.attPid = null;
   UI.photos = {};
   UI.myPresetsOpen = false;
+  UI.bk = { pw: '', file: null, fileName: '', dump: null, typed: '' };
+  UI.backupKey = null;
 }
 
 async function signOut(msg) {
@@ -544,7 +549,68 @@ function vManage() {
   <p class="hint" style="margin:0">부총대가 비밀번호를 잊었을 때 쓰는 비상 코드예요. 잃어버렸거나 다른 사람이 봤을 것 같으면 새로 만드세요. 이전 코드는 바로 못 쓰게 돼요.</p>
   <input type="password" id="rc-pw" placeholder="내 비밀번호 확인" autocomplete="current-password"><button class="btn ghost" data-act="rc-new">새 복구 코드 만들기</button></div>
 
+  ${vBackup()}
+
   ${vPurge()}`;
+}
+
+// 백업: 지금 받기, 백업에서 되살리기, 자동 백업 키
+function vBackup() {
+  const b = UI.bk;
+  let preview = '';
+  if (b.dump) {
+    const t = b.dump.tables;
+    const bal = new Map();
+    t.ledger.filter((e) => !e.voided_at).forEach((e) => bal.set(e.student_id, (bal.get(e.student_id) || 0) + Number(e.points)));
+    const bs = t.students.filter((x) => x.active).sort((x, y) => x.no - y.no);
+    const now = new Map(active().map((x) => [x.id, x]));
+    const diffs = bs
+      .map((x) => ({ x, then: bal.get(x.id) || 0, cur: now.has(x.id) ? L.bal(S, x.id) : null }))
+      .filter((d) => d.cur !== d.then);
+    const gone = active().filter((x) => !bs.some((y) => y.id === x.id));
+    preview = `<div class="card" style="background:var(--sunk);border-color:transparent">
+    <b>${esc(b.dump.createdAt)} 백업</b>
+    <div class="note">백업: 학생 ${bs.length}명 · 기록 ${t.ledger.length}건 &nbsp;/&nbsp; 지금: 학생 ${active().length}명 · 기록 ${S.ledger.length}건</div>
+    ${diffs.length ? `<div class="note">점수가 달라지는 학생 ${diffs.length}명</div><div class="mlist" style="max-height:180px">${diffs.map((d) => `<div class="mrow"><span class="mono">${d.x.no}</span><span class="grow">${esc(d.x.name)}</span><span class="mono note">지금 ${d.cur ?? '없음'} → ${d.then}</span></div>`).join('')}</div>` : '<div class="note">학생별 자봉 점수는 지금과 같아요.</div>'}
+    ${gone.length ? `<div class="warn">백업 뒤에 추가된 학생 ${gone.length}명(${gone.map((x) => x.no).join(', ')}번)은 사라져요.</div>` : ''}
+    <div class="warn">되살리면 이 백업 뒤에 생긴 기록·요청·출석이 모두 사라져요. 되살리기 직전 상태는 같은 암호로 파일을 먼저 받아 둬요.</div>
+    <input id="bk-typed" placeholder="확인하려면 '되살리기'라고 입력" value="${esc(b.typed)}" data-bind="bk.typed" data-region="bk-go">
+    <div id="bk-go"><button class="btn danger" data-act="bk-restore" ${b.typed.trim() === '되살리기' ? '' : 'disabled'}>이 백업으로 되살리기</button></div></div>`;
+  }
+  return `<div class="card"><h2>백업</h2>
+  <p class="hint" style="margin:0">매일 새벽 자동 백업이 jabong-backup 저장소에 암호화돼서 올라가요. 백업에는 명단(이름 포함)·기록·이력·요청·출석이 들어가고, 비밀번호와 사진은 빠져요.</p>
+  <label class="fld"><span>백업 암호</span><input type="password" id="bk-pw" placeholder="자동 백업과 같은 암호" autocomplete="off" value="${esc(b.pw)}" data-bind="bk.pw"></label>
+  <button class="btn ghost" data-act="bk-download">지금 백업 파일 받기</button>
+  <h2 style="font-size:14px">백업에서 되살리기</h2>
+  <label class="fld"><span>백업 파일 (.json)</span><input type="file" accept=".json,application/json" data-bkfile="1"></label>
+  ${b.file ? `<div class="note">${esc(b.fileName)} · ${esc(b.file.createdAt || '')}</div><button class="btn ghost" data-act="bk-open">위 백업 암호로 열어 보기</button>` : ''}
+  ${preview}
+  <h2 style="font-size:14px">자동 백업 키</h2>
+  <p class="hint" style="margin:0">jabong-backup 저장소의 자동 백업이 서버에서 데이터를 받을 때 쓰는 키예요. 새로 만들면 이전 키는 바로 못 쓰게 돼요.</p>
+  ${UI.backupKey ? `<div class="warn">새 백업 키 (한 번만 보여요): <b class="mono" style="word-break:break-all">${esc(UI.backupKey)}</b><br>jabong-backup 저장소 → Settings → Secrets and variables → Actions에서 <b>BACKUP_KEY</b>로 넣으세요.</div>` : ''}
+  <button class="btn ghost" data-act="bk-key">자동 백업 키 새로 만들기</button></div>`;
+}
+
+function downloadJSON(obj, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(obj)], { type: 'application/json' }));
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+}
+const stamp = () => {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${TODAY}-${p(d.getHours())}${p(d.getMinutes())}`;
+};
+
+async function downloadBackup(prefix) {
+  const pw = UI.bk.pw;
+  if (pw.length < 4) throw new Error('백업 암호를 4자 이상 적어 주세요');
+  const dump = await rpc('admin_dump', { p_token: token() });
+  downloadJSON(await encryptBackup(dump, pw), `${prefix}${stamp()}.json`);
 }
 
 function vLogin() {
@@ -688,6 +754,20 @@ document.addEventListener('compositionend', (ev) => {
 // 사진은 긴 변 720px JPEG로 줄여서 보낸다 (약 50~100KB)
 document.addEventListener('change', (ev) => {
   const el = ev.target;
+  if (el.dataset?.bkfile && el.files?.[0]) {
+    const f = el.files[0];
+    f.text().then((txt) => {
+      try {
+        UI.bk = { ...UI.bk, file: JSON.parse(txt), fileName: f.name, dump: null, typed: '' };
+        if (UI.bk.file.format !== 'jabong-backup-encrypted') throw new Error();
+      } catch {
+        UI.bk = { ...UI.bk, file: null, fileName: '', dump: null, typed: '' };
+        toast('자봉 장부 백업 파일이 아니에요');
+      }
+      render();
+    });
+    return;
+  }
   const key = el.dataset?.photo;
   if (!key || !el.files?.[0]) return;
   const r = new FileReader();
@@ -1144,6 +1224,28 @@ const A = {
     if (box) box.value = d.v;
     closePtsPops();
     return true;
+  },
+  'bk-download': async () => {
+    await downloadBackup('jabong-backup-');
+    return toast('백업 파일을 받았어요');
+  },
+  'bk-open': async () => {
+    UI.bk.dump = await decryptBackup(UI.bk.file, UI.bk.pw);
+    UI.bk.typed = '';
+  },
+  'bk-restore': async () => {
+    if (UI.bk.typed.trim() !== '되살리기') return toast("확인 칸에 '되살리기'라고 적어 주세요");
+    await downloadBackup('jabong-되살리기전-');
+    const r = await rpc('restore_backup', { p_token: token(), p_data: UI.bk.dump });
+    UI.bk = { pw: '', file: null, fileName: '', dump: null, typed: '' };
+    UI.draft = {};
+    UI.noticeText = null;
+    await refresh();
+    render();
+    return toast(`${r.createdAt} 백업으로 되살렸어요 · 직전 상태 파일도 받아 뒀어요`);
+  },
+  'bk-key': async () => {
+    UI.backupKey = await rpc('new_backup_key', { p_token: token() });
   },
   'mypresets-toggle': () => {
     UI.myPresetsOpen = !UI.myPresetsOpen;

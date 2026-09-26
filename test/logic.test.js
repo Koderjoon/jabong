@@ -146,3 +146,12 @@ test('공결 신청 대상: 출석 체크든 직접 기록이든 무효가 아�
   S.add('2026-09-01', '결석', '', 2, [1], { src: 'import' });
   assert.deepEqual(S.ledger.filter(excusable).map((e) => e.id), ['e1', 'e2', 'e3']);
 });
+
+test('백업 암호화: 같은 암호로만 풀린다', async () => {
+  const { encryptBackup, decryptBackup } = await import('../src/backupcrypt.js');
+  const dump = { format: 'jabong-backup', version: 1, createdAt: '2026-09-27 03:00', tables: { students: [{ no: 1, name: '김민서' }] } };
+  const file = await encryptBackup(dump, '백업암호1234');
+  assert.ok(!JSON.stringify(file).includes('김민서'));
+  assert.deepEqual(await decryptBackup(JSON.parse(JSON.stringify(file)), '백업암호1234'), dump);
+  await assert.rejects(decryptBackup(file, '틀린암호'), /암호가 맞지 않아요/);
+});

@@ -175,6 +175,8 @@ create table if not exists settings (
   recovery_locked_until timestamptz
 );
 insert into settings (id) values (1) on conflict do nothing;
+-- 자동 백업(GitHub Actions)이 쓰는 백업 키의 해시
+alter table settings add column if not exists backup_hash text;
 
 -- 변경 알림 전용. 브라우저가 Realtime으로 구독하는 유일한 테이블이라 비밀 정보를 두지 않는다.
 create table if not exists app_version (
@@ -749,6 +751,82 @@ begin
 end $$;
 
 -- 기준 날짜까지의 기록을 학생별 "이월" 한 줄로 합친다. 점수는 그대로 유지된다.
+-- ───────────────────────── 백업과 되살리기 ─────────────────────────
+-- 백업에는 학생·기록·이력·요청·출석·항목이 모두 들어간다. 비밀번호, 로그인, 사진은 넣지 않는다.
+create or replace function _dump() returns jsonb language sql stable security definer set search_path = public as $$
+  select jsonb_build_object(
+    'format', 'jabong-backup', 'version', 1, 'createdAt', _kst(now()),
+    'tables', jsonb_build_object(
+      'students', (select coalesce(jsonb_agg(to_jsonb(x)), '[]') from students x),
+      'presets', (select coalesce(jsonb_agg(to_jsonb(x)), '[]') from presets x),
+      'periods', (select coalesce(jsonb_agg(to_jsonb(x)), '[]') from periods x),
+      'attendance', (select coalesce(jsonb_agg(to_jsonb(x)), '[]') from attendance x),
+      'ledger', (select coalesce(jsonb_agg(to_jsonb(x)), '[]') from ledger x),
+      'ledger_private', (select coalesce(jsonb_agg(to_jsonb(x)), '[]') from ledger_private x),
+      'ledger_revisions', (select coalesce(jsonb_agg(to_jsonb(x)), '[]') from ledger_revisions x),
+      'requests', (select coalesce(jsonb_agg(to_jsonb(x)), '[]') from requests x),
+      'excuses', (select coalesce(jsonb_agg(to_jsonb(x)), '[]') from excuses x),
+      'attendance_requests', (select coalesce(jsonb_agg(to_jsonb(x)), '[]') from attendance_requests x)
+    ))
+$$;
+
+-- 자동 백업용. GitHub Actions가 백업 키로 부른다.
+create or replace function backup_dump(p_key text) returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare h text;
+begin
+  select backup_hash into h from settings where id = 1;
+  if h is null or coalesce(p_key, '') = '' or h <> crypt(p_key, h) then raise exception '백업 키가 맞지 않아요' using errcode = '28000'; end if;
+  return _dump();
+end $$;
+
+-- 부총대가 앱에서 "지금 백업 파일 받기"를 누를 때
+create or replace function admin_dump(p_token uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+begin
+  perform _session(p_token, true);
+  return _dump();
+end $$;
+
+-- 자동 백업 키를 새로 만든다. 한 번만 보여 주고 해시만 저장한다.
+create or replace function new_backup_key(p_token uuid) returns text
+language plpgsql security definer set search_path = public, extensions as $$
+declare k text;
+begin
+  perform _session(p_token, true);
+  k := replace(_new_code() || _new_code(), '-', '');
+  update settings set backup_hash = crypt(k, gen_salt('bf')) where id = 1;
+  return k;
+end $$;
+
+-- 백업 파일의 내용으로 데이터를 통째로 바꾼다. 비밀번호·로그인·사진은 그대로 둔다.
+create or replace function restore_backup(p_token uuid, p_data jsonb) returns json
+language plpgsql security definer set search_path = public as $$
+declare who text := _session(p_token, true); t jsonb := p_data -> 'tables';
+begin
+  if p_data ->> 'format' is distinct from 'jabong-backup' or t is null then raise exception '자봉 장부 백업 파일이 아니에요'; end if;
+  delete from requests where true;
+  delete from periods where true;
+  delete from presets where true;
+  delete from students where true;
+  insert into students select * from jsonb_populate_recordset(null::students, t -> 'students');
+  insert into presets select * from jsonb_populate_recordset(null::presets, t -> 'presets');
+  insert into periods select * from jsonb_populate_recordset(null::periods, t -> 'periods');
+  insert into attendance select * from jsonb_populate_recordset(null::attendance, t -> 'attendance');
+  insert into ledger select * from jsonb_populate_recordset(null::ledger, t -> 'ledger');
+  insert into ledger_private select * from jsonb_populate_recordset(null::ledger_private, t -> 'ledger_private');
+  insert into ledger_revisions select * from jsonb_populate_recordset(null::ledger_revisions, t -> 'ledger_revisions');
+  -- 사진은 백업에 없으니, 서버에 남아 있는 사진만 다시 연결한다
+  insert into requests select (jsonb_populate_record(null::requests, e - 'photo_id'
+    || jsonb_build_object('photo_id', case when exists (select 1 from photos where id::text = e ->> 'photo_id') then e -> 'photo_id' end))).*
+    from jsonb_array_elements(coalesce(t -> 'requests', '[]')) e;
+  insert into excuses select (jsonb_populate_record(null::excuses, e - 'photo_id'
+    || jsonb_build_object('photo_id', case when exists (select 1 from photos where id::text = e ->> 'photo_id') then e -> 'photo_id' end))).*
+    from jsonb_array_elements(coalesce(t -> 'excuses', '[]')) e;
+  insert into attendance_requests select * from jsonb_populate_recordset(null::attendance_requests, t -> 'attendance_requests');
+  return json_build_object('students', (select count(*) from students), 'ledger', (select count(*) from ledger), 'createdAt', p_data ->> 'createdAt');
+end $$;
+
 create or replace function purge(p_token uuid, p_cut date) returns json
 language plpgsql security definer set search_path = public as $$
 declare who text := _session(p_token, true); old_n int; carry_n int := 0; r record;
@@ -793,7 +871,7 @@ do $$ declare f text; begin
       'change_pw(uuid,text,text)', 'reset_pw(uuid,text,text)', 'new_recovery(uuid,text)', 'ensure_period(uuid,date,text,boolean)',
       'save_attendance(uuid,uuid,jsonb)', 'request_attendance(uuid,uuid,jsonb)', 'review_attendance(uuid,uuid,boolean,text)', 'add_entries(uuid,date,uuid[],text,text,numeric)', 'edit_entry(uuid,uuid,date,text,text,numeric,text)',
       'void_entry(uuid,uuid,text)', 'review_request(uuid,uuid,boolean,text)', 'review_excuse(uuid,uuid,boolean,text)',
-      'roster_apply(uuid,jsonb,jsonb,date)', 'my_presets_save(uuid,jsonb)', 'purge(uuid,date)'
+      'roster_apply(uuid,jsonb,jsonb,date)', 'my_presets_save(uuid,jsonb)', 'purge(uuid,date)', 'backup_dump(text)', 'admin_dump(uuid)', 'new_backup_key(uuid)', 'restore_backup(uuid,jsonb)'
     ] loop
       execute format('grant execute on function %s to anon, authenticated', f);
     end loop;
