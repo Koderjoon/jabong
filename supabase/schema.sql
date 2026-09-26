@@ -152,8 +152,10 @@ create table if not exists attendance_requests (
   reviewed_at timestamptz
 );
 
--- 작업 로그 (되돌리기용). 서버 함수 하나를 부를 때마다 ops 한 줄이 생기고,
+-- 작업 로그 (뒤로가기·앞으로 가기용). 서버 함수 하나를 부를 때마다 ops 한 줄이 생기고,
 -- 그 작업이 바꾼 행의 전·후가 op_changes에 남는다 (트리거 _log_change).
+-- 작업들은 한 줄로 이어진 시간선이다. 뒤로 가면 최근 작업부터 undone이 되고, 앞으로 가면 다시 적용된다.
+-- 뒤로 간 상태에서 새 작업을 하면 undone 작업들(앞으로 갈 수 있던 것)은 지워진다.
 create table if not exists ops (
   id bigserial primary key,
   at timestamptz not null default now(),
@@ -161,12 +163,16 @@ create table if not exists ops (
   kind text not null,
   summary text not null,
   undoable boolean not null default true,
-  undo_of bigint[],
-  undone_by bigint
+  undone boolean not null default false
 );
--- 이 작업(되돌리기)이 다른 작업의 "되돌림" 표시를 바꾼 순서: [[작업 id, 바꾸기 전 값], ...]
--- 이 되돌리기를 다시 되돌릴 때 거꾸로 복원해서, 누가 무엇을 되돌렸는지가 정확히 돌아오게 한다.
-alter table ops add column if not exists meta jsonb not null default '[]';
+-- 예전(되돌리기 작업을 따로 남기던) 방식의 로그는 새 방식과 맞지 않으니 비우고 칸을 정리한다
+do $$ begin
+  if exists (select 1 from information_schema.columns where table_name = 'ops' and column_name = 'undone_by') then
+    delete from ops where true;
+    alter table ops drop column undone_by, drop column if exists undo_of, drop column if exists meta;
+  end if;
+end $$;
+alter table ops add column if not exists undone boolean not null default false;
 create table if not exists op_changes (
   id bigserial primary key,
   op_id bigint not null references ops on delete cascade,
@@ -404,6 +410,8 @@ create or replace function _op(p_actor text, p_kind text, p_summary text, p_undo
 language plpgsql security definer set search_path = public as $$
 declare nid bigint;
 begin
+  -- 뒤로 간 상태에서 새 작업을 하면, 앞으로 갈 수 있던 작업들은 버린다
+  delete from ops where undone;
   insert into ops (actor, kind, summary, undoable) values (p_actor, p_kind, p_summary, p_undoable) returning id into nid;
   perform set_config('jabong.op', case when p_undoable then nid::text else '' end, true);
   return nid;
@@ -871,58 +879,51 @@ create or replace function _dump() returns jsonb language sql stable security de
     ))
 $$;
 
--- ───────────────────────── 되돌리기 ─────────────────────────
--- 작업 하나를 거꾸로 적용한다: 넣은 행은 지우고, 바꾼 행은 전으로, 지운 행은 다시 넣는다.
--- 지금 행이 그 작업 직후와 다르면(뒤의 작업이 같은 행을 바꿨으면) 충돌로 멈춘다.
--- 되돌리다가 이 작업에 없던 행까지 바뀌면(연쇄 삭제 등) 역시 충돌로 멈춘다.
-create or replace function _undo_one(p_op bigint, p_by bigint) returns void
+-- ───────────────────────── 뒤로가기·앞으로 가기 ─────────────────────────
+-- 이동은 아무 기록도 남기지 않는다 (작업 목록에 줄이 생기지 않고, 학생 기록에도 흔적이 없다).
+-- 한 작업을 거꾸로(p_back) 또는 다시(not p_back) 적용한다. 행이 예상과 다르면(작업 밖에서 바뀐 경우) 멈춘다.
+-- 이동 중에 바뀐 행은 잠깐 임시 작업(scratch)에 기록해서, 그 작업에 없던 행이 바뀌었는지 확인한 뒤 지운다.
+drop function if exists undo_ops(uuid, bigint, text, boolean);
+drop function if exists _undo_one(bigint, bigint);
+drop function if exists _set_undone(bigint, bigint, bigint);
+create or replace function _apply_op(p_op bigint, p_back boolean, p_scratch bigint) returns void
 language plpgsql security definer set search_path = public as $$
-declare c op_changes; cur jsonb; cols text; mark bigint; o ops; bad text; m jsonb;
+declare c op_changes; cur jsonb; want jsonb; cols text; mark bigint; bad boolean := false; o ops; act char(1);
 begin
   select * into o from ops where id = p_op;
   select coalesce(max(id), 0) into mark from op_changes;
-  for c in select * from op_changes where op_id = p_op order by id desc loop
+  for c in select * from op_changes where op_id = p_op order by case when p_back then -id else id end loop
     execute format('select to_jsonb(t) from %I t where to_jsonb(t) @> $1', c.tbl) into cur using c.row_key;
-    if c.action = 'I' then
+    -- 뒤로 갈 때: 넣은 것은 지우고(I→D), 지운 것은 넣고(D→I), 바꾼 것은 전으로. 앞으로 갈 때는 그대로.
+    act := case when not p_back then c.action when c.action = 'I' then 'D' when c.action = 'D' then 'I' else 'U' end;
+    if act = 'I' then
+      want := case when p_back then c.before else c.after end;
+      if cur is not null then
+        if cur = want then continue; end if;
+        bad := true; exit;
+      end if;
+      execute format('insert into %1$I select (jsonb_populate_record(null::%1$I, $1)).*', c.tbl) using want;
+    elsif act = 'D' then
       if cur is null then continue; end if;
-      if cur <> c.after then bad := c.tbl; exit; end if;
+      if cur <> (case when p_back then c.after else c.before end) then bad := true; exit; end if;
       execute format('delete from %I t where to_jsonb(t) @> $1', c.tbl) using c.row_key;
-    elsif c.action = 'U' then
-      if cur is distinct from c.after then bad := c.tbl; exit; end if;
+    else
+      if cur is distinct from (case when p_back then c.after else c.before end) then bad := true; exit; end if;
       select string_agg(quote_ident(column_name), ',' order by ordinal_position) into cols
       from information_schema.columns where table_schema = 'public' and table_name = c.tbl;
       execute format('update %1$I t set (%2$s) = (select %2$s from jsonb_populate_record(null::%1$I, $1)) where to_jsonb(t) @> $2', c.tbl, cols)
-        using c.before, c.row_key;
-    else
-      if cur is not null then
-        if cur = c.before then continue; end if;
-        bad := c.tbl; exit;
-      end if;
-      execute format('insert into %1$I select (jsonb_populate_record(null::%1$I, $1)).*', c.tbl) using c.before;
+        using case when p_back then c.before else c.after end, c.row_key;
     end if;
   end loop;
-  if bad is null and exists (
-      select 1 from op_changes u where u.id > mark and u.op_id = p_by
+  if not bad and exists (
+      select 1 from op_changes u where u.id > mark and u.op_id = p_scratch
         and not exists (select 1 from op_changes x where x.op_id = p_op and x.tbl = u.tbl and x.row_key = u.row_key)) then
-    bad := 'side';
+    bad := true;
   end if;
-  if bad is not null then
-    raise exception '"%" 작업 뒤에 같은 기록을 바꾼 작업이 있어서 이 작업만 되돌릴 수 없어요. 그 뒤 작업부터 되돌리거나 "이 작업 직전으로 되돌리기"를 쓰세요', o.summary
-      using errcode = 'P0002';
+  if bad then
+    raise exception '"%" 작업의 기록이 작업 내역 밖에서 바뀌어서 이동할 수 없어요', o.summary using errcode = 'P0002';
   end if;
-  -- 이 작업이 되돌리기였다면, 그때 바꾼 "되돌림" 표시를 거꾸로 복원한다 (되돌리기를 되돌리면 다시 적용)
-  for m in select value from jsonb_array_elements(o.meta) with ordinality e(value, ord) order by ord desc loop
-    perform _set_undone((m ->> 0)::bigint, (m ->> 1)::bigint, p_by);
-  end loop;
-  perform _set_undone(p_op, p_by, p_by);
-end $$;
-
--- 작업의 "되돌림" 표시를 바꾸고, 바꾸기 전 값을 되돌리기 작업(p_by)에 남긴다
-create or replace function _set_undone(p_target bigint, p_val bigint, p_by bigint) returns void
-language plpgsql security definer set search_path = public as $$
-begin
-  update ops set meta = meta || jsonb_build_array(jsonb_build_array(p_target, (select undone_by from ops where id = p_target))) where id = p_by;
-  update ops set undone_by = p_val where id = p_target;
+  update ops set undone = p_back where id = p_op;
 end $$;
 
 -- 학생별 번호·이름·재학·자봉 (미리보기 비교용)
@@ -932,47 +933,35 @@ create or replace function _snap() returns jsonb language sql stable security de
   from students s
 $$;
 
--- p_mode: 'one' = 이 작업만, 'since' = 이 작업 직전으로 (이 작업과 그 뒤 작업을 최신 것부터).
--- p_preview면 실제로 되돌려 본 뒤 결과만 돌려주고 모두 취소한다.
-create or replace function undo_ops(p_token uuid, p_op bigint, p_mode text, p_preview boolean) returns json
+-- p_target 작업 바로 뒤의 상태로 이동한다 (0이면 작업 내역의 맨 처음).
+-- 그 뒤의 적용된 작업은 최신부터 거꾸로, 그 앞의 되돌린 작업은 오래된 것부터 다시 적용한다.
+-- p_preview면 이동해 본 결과만 돌려주고 모두 취소한다.
+create or replace function history_move(p_token uuid, p_target bigint, p_preview boolean) returns json
 language plpgsql security definer set search_path = public as $$
 declare
-  who text := _session(p_token, true); target ops; ids bigint[]; x bigint; me bigint;
+  who text := _session(p_token, true); x bigint; scratch bigint; back_ids bigint[]; fwd_ids bigint[];
   before jsonb; after jsonb; result json; nledger int;
 begin
-  select * into target from ops where id = p_op;
-  if not found then raise exception '작업을 찾을 수 없어요'; end if;
-  if p_mode = 'one' then
-    if target.undone_by is not null then raise exception '이미 되돌린 작업이에요'; end if;
-    ids := array[p_op];
-  else
-    select array_agg(id order by id desc) into ids from ops where id >= p_op and undone_by is null;
+  select coalesce(array_agg(id order by id desc), '{}') into back_ids from ops where id > p_target and not undone;
+  select coalesce(array_agg(id order by id), '{}') into fwd_ids from ops where id <= p_target and undone;
+  if cardinality(back_ids) + cardinality(fwd_ids) = 0 then raise exception '이미 그 시점이에요'; end if;
+  if exists (select 1 from ops where (id = any (back_ids) or id = any (fwd_ids)) and not undoable) then
+    raise exception '보관 후 정리나 백업에서 되살리기 너머로는 이동할 수 없어요';
   end if;
-  if exists (select 1 from ops where id = any (ids) and not undoable) then
-    raise exception '되돌릴 수 없는 작업(보관 후 정리, 백업에서 되살리기)이 들어 있어요';
-  end if;
-  if coalesce(array_length(ids, 1), 0) = 0 then raise exception '되돌릴 작업이 없어요'; end if;
   before := _snap();
   select count(*) into nledger from ledger where voided_at is null;
   begin
-    me := _op(who, case when p_mode = 'one' then 'undo' else 'rewind' end,
-      case when p_mode = 'one' then '되돌리기: ' || target.summary
-      else format('%s 직전으로 되돌리기 (작업 %s개)', _kst(target.at), array_length(ids, 1)) end);
-    update ops set undo_of = ids where id = me;
-    if p_mode = 'one' then
-      perform _undo_one(p_op, me);
-    else
-      -- 최신 작업부터 하나씩 되돌린다. "되돌리기"를 되돌리면 예전 작업이 다시 살아나므로 매번 다시 고른다.
-      loop
-        select id into x from ops where id >= p_op and id <> me and undone_by is null order by id desc limit 1;
-        exit when x is null;
-        if not (select undoable from ops where id = x) then raise exception '되돌릴 수 없는 작업(보관 후 정리, 백업에서 되살리기)이 들어 있어요'; end if;
-        perform _undo_one(x, me);
-      end loop;
-    end if;
+    -- 이동 중 바뀐 행을 잠깐 받아 둘 임시 작업. 끝나면 지운다.
+    insert into ops (actor, kind, summary, undoable, undone) values (who, 'scratch', '', false, true) returning id into scratch;
+    perform set_config('jabong.op', scratch::text, true);
+    foreach x in array back_ids loop perform _apply_op(x, true, scratch); end loop;
+    foreach x in array fwd_ids loop perform _apply_op(x, false, scratch); end loop;
+    delete from ops where id = scratch;
+    perform set_config('jabong.op', '', true);
     after := _snap();
     result := json_build_object(
-      'ops', (select json_agg(json_build_object('id', id, 'at', _kst(at), 'actor', actor, 'summary', summary) order by id desc) from ops where id = any (ids)),
+      'back', (select coalesce(json_agg(json_build_object('id', id, 'at', _kst(at), 'actor', actor, 'summary', summary) order by id desc), '[]') from ops where id = any (back_ids)),
+      'forward', (select coalesce(json_agg(json_build_object('id', id, 'at', _kst(at), 'actor', actor, 'summary', summary) order by id), '[]') from ops where id = any (fwd_ids)),
       'ledger', json_build_object('before', nledger, 'after', (select count(*) from ledger where voided_at is null)),
       'students', (select coalesce(json_agg(json_build_object(
           'no', coalesce(a -> 'no', b -> 'no'), 'name', coalesce(a ->> 'name', b ->> 'name'),
@@ -987,15 +976,56 @@ begin
   return result;
 end $$;
 
--- 작업 내역 (최신순)
+-- 이 작업만 되돌리기: 작업 하나를 되돌리고 작업 내역에서 아예 지운다 (되돌린 흔적도 남기지 않는다).
+-- 뒤의 작업이 같은 행을 바꿨으면 _apply_op가 알아채고 멈춘다. 새 작업처럼 앞으로 갈 수 있던 작업(undone)도 지운다.
+create or replace function history_drop(p_token uuid, p_op bigint, p_preview boolean) returns json
+language plpgsql security definer set search_path = public as $$
+declare
+  who text := _session(p_token, true); o ops; scratch bigint; before jsonb; after jsonb; result json; nledger int;
+begin
+  select * into o from ops where id = p_op and kind <> 'scratch';
+  if not found then raise exception '작업을 찾을 수 없어요'; end if;
+  if o.undone then raise exception '이미 되돌린 작업이에요. 앞으로 가기로 다시 적용하거나 새 작업을 하면 사라져요'; end if;
+  if not o.undoable then raise exception '보관 후 정리나 백업에서 되살리기는 되돌릴 수 없어요'; end if;
+  before := _snap();
+  select count(*) into nledger from ledger where voided_at is null;
+  begin
+    insert into ops (actor, kind, summary, undoable, undone) values (who, 'scratch', '', false, true) returning id into scratch;
+    perform set_config('jabong.op', scratch::text, true);
+    perform _apply_op(p_op, true, scratch);
+    perform set_config('jabong.op', '', true);
+    after := _snap();
+    result := json_build_object(
+      'back', json_build_array(json_build_object('id', o.id, 'at', _kst(o.at), 'actor', o.actor, 'summary', o.summary)),
+      'forward', '[]'::json,
+      'discard', (select coalesce(json_agg(json_build_object('id', id, 'at', _kst(at), 'actor', actor, 'summary', summary) order by id desc), '[]')
+        from ops where undone and id <> p_op and kind <> 'scratch'),
+      'ledger', json_build_object('before', nledger, 'after', (select count(*) from ledger where voided_at is null)),
+      'students', (select coalesce(json_agg(json_build_object(
+          'no', coalesce(a -> 'no', b -> 'no'), 'name', coalesce(a ->> 'name', b ->> 'name'),
+          'beforeNo', b -> 'no', 'afterNo', a -> 'no', 'beforeActive', b -> 'active', 'afterActive', a -> 'active',
+          'before', b -> 'bal', 'after', a -> 'bal') order by coalesce((a ->> 'no')::int, (b ->> 'no')::int)), '[]')
+        from (select k, before -> k as b, after -> k as a from (select jsonb_object_keys(before) k union select jsonb_object_keys(after)) keys) d
+        where b is distinct from a));
+    -- 되돌린 작업, 임시 작업, 앞으로 갈 수 있던 작업을 모두 지운다 (op_changes도 함께 지워진다)
+    delete from ops where undone;
+    if p_preview then raise exception using errcode = 'P0003', message = 'preview'; end if;
+  exception
+    when sqlstate 'P0003' then return result;
+    when sqlstate 'P0002' then
+      raise exception '"%" 작업 뒤에 같은 기록을 바꾼 작업이 있거나 작업 내역 밖에서 바뀌어서, 이 작업만 되돌릴 수 없어요. "이 시점으로"를 써 보세요', o.summary using errcode = 'P0002';
+  end;
+  return result;
+end $$;
+
+-- 작업 내역 (최신순). undone인 작업은 "앞으로 가기"로 다시 적용할 수 있다.
 create or replace function ops_list(p_token uuid, p_limit int) returns json
 language plpgsql security definer set search_path = public as $$
 begin
   perform _session(p_token, true);
   return (select coalesce(json_agg(json_build_object('id', o.id, 'at', _kst(o.at), 'actor', o.actor, 'kind', o.kind, 'summary', o.summary,
-      'undoable', o.undoable, 'undoneBy', o.undone_by, 'undoOf', o.undo_of,
-      'undoneBySummary', (select summary from ops u where u.id = o.undone_by)) order by o.id desc), '[]')
-    from (select * from ops order by id desc limit greatest(coalesce(p_limit, 50), 1)) o);
+      'undoable', o.undoable, 'undone', o.undone) order by o.id desc), '[]')
+    from (select * from ops where kind <> 'scratch' order by id desc limit greatest(coalesce(p_limit, 50), 1)) o);
 end $$;
 
 -- 백업 파일 받기. 로그인 없이 누구나 부를 수 있다 (학급이 이름 공개를 괜찮다고 정했다).
@@ -1085,7 +1115,7 @@ do $$ declare f text; begin
       'change_pw(uuid,text,text)', 'reset_pw(uuid,text,text)', 'new_recovery(uuid,text)', 'ensure_period(uuid,date,text,boolean)',
       'save_attendance(uuid,uuid,jsonb)', 'request_attendance(uuid,uuid,jsonb)', 'review_attendance(uuid,uuid,boolean,text)', 'add_entries(uuid,date,uuid[],text,text,numeric)', 'edit_entry(uuid,uuid,date,text,text,numeric,text)',
       'void_entry(uuid,uuid,text)', 'review_request(uuid,uuid,boolean,text)', 'review_excuse(uuid,uuid,boolean,text)',
-      'roster_apply(uuid,jsonb,jsonb,date)', 'my_presets_save(uuid,jsonb)', 'purge(uuid,date)', 'backup_dump()', 'restore_backup(uuid,jsonb)', 'undo_ops(uuid,bigint,text,boolean)', 'ops_list(uuid,integer)'
+      'roster_apply(uuid,jsonb,jsonb,date)', 'my_presets_save(uuid,jsonb)', 'purge(uuid,date)', 'backup_dump()', 'restore_backup(uuid,jsonb)', 'history_move(uuid,bigint,boolean)', 'history_drop(uuid,bigint,boolean)', 'ops_list(uuid,integer)'
     ] loop
       execute format('grant execute on function %s to anon, authenticated', f);
     end loop;

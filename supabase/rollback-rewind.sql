@@ -1,4 +1,4 @@
--- 되돌리기(작업 내역) 기능을 빼고 예전으로 돌아가고 싶을 때 쓴다.
+-- 뒤로가기·앞으로 가기(작업 내역) 기능을 빼고 예전으로 돌아가고 싶을 때 쓴다.
 --
 -- 1. 이 파일 전체를 Supabase SQL Editor에서 실행한다. (작업 로그 표·트리거·함수를 지운다)
 -- 2. 곧바로 되돌리기 기능이 들어가기 전의 schema.sql을 다시 실행한다.
@@ -11,8 +11,11 @@ do $$ declare t text; begin
     execute format('drop trigger if exists zz_log on %I', t);
   end loop;
 end $$;
-drop function if exists undo_ops(uuid, bigint, text, boolean);
+drop function if exists history_move(uuid, bigint, boolean);
+drop function if exists history_drop(uuid, bigint, boolean);
 drop function if exists ops_list(uuid, integer);
+drop function if exists _apply_op(bigint, boolean, bigint);
+drop function if exists undo_ops(uuid, bigint, text, boolean);
 drop function if exists _undo_one(bigint, bigint);
 drop function if exists _set_undone(bigint, bigint, bigint);
 drop function if exists _snap();
