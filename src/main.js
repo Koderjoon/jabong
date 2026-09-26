@@ -28,6 +28,13 @@ const UI = {
   recFilter: '', editId: null, voidId: null, openRev: {}, photos: {},
   noticeFrom: null, noticeTo: null, noticeText: null,
   doneLimit: 20,
+  pickGrid: (() => {
+    try {
+      return localStorage.getItem('jabong-pickgrid') === '1';
+    } catch {
+      return false;
+    }
+  })(),
   exp: { range: 'month', from: '', to: '' }, fullBackup: false, purgeCut: '', purgeTyped: '',
   rosterText: '', rosterReplace: false, recover: false, newCode: null,
 };
@@ -144,6 +151,10 @@ function liveParts(fk) {
       : fq ? '<p class="note">일치하는 학생이 없어요.</p>' : '',
     chips: `${sids.map((id) => `<button class="chip" data-act="unpick" data-fk="${fk}" data-sid="${id}" aria-label="${noOf(id)}번 빼기">${noOf(id)} ${esc(stu(id).name)} ×</button>`).join('')}${bad.map((x) => `<span class="chip bad">${esc(x)} 없음</span>`).join('')}`,
     dup: dup.length ? `<div class="warn">같은 날짜·항목으로 이미 요청됐거나 기록된 번호: ${dup.join(', ')}</div>` : '',
+    grid: UI.pickGrid
+      ? `<div class="pickgrid">${active().map((s) => `<button class="${sids.includes(s.id) ? 'on' : ''}" data-act="gtoggle" data-fk="${fk}" data-sid="${s.id}" aria-pressed="${sids.includes(s.id)}"><b>${s.no}</b><span>${esc(s.name)}</span></button>`).join('')}</div>`
+      : '',
+    count: sids.length ? `${sids.length}명 선택` : '',
   };
 }
 function addStudents(fk, ids) {
@@ -171,7 +182,7 @@ function commitPicker(el, lastToo) {
 
 function updateLive(fk) {
   const l = liveParts(fk);
-  ['sugg', 'chips', 'dup'].forEach((k) => {
+  ['sugg', 'chips', 'dup', 'grid', 'count'].forEach((k) => {
     const el = document.getElementById(`${fk}-${k}`);
     if (el) el.innerHTML = l[k];
   });
@@ -189,6 +200,8 @@ function entryFields(fk) {
   <label class="fld"><span>학생</span><input id="${fk}-find" type="search" value="${esc(f.find)}" placeholder="이름이나 번호 (예: 김민, 56 59)" autocomplete="off" enterkeyhint="done" data-bind="${fk}.find" data-picker="${fk}"></label>
   <p class="hint">이름 일부를 치고 목록에서 고르거나, 번호를 띄어 쓰며 연달아 적으세요.</p>
   <div id="${fk}-sugg">${P.sugg}</div>
+  <div class="req-top"><button class="btn ghost small" data-act="pickgrid">${UI.pickGrid ? '전체 명단 닫기 ▴' : '전체 명단에서 누르기 ▾'}</button><span class="note" id="${fk}-count">${P.count}</span></div>
+  <div id="${fk}-grid">${P.grid}</div>
   <div class="chips" id="${fk}-chips">${P.chips}</div>
   <div id="${fk}-dup">${P.dup}</div>`;
 }
@@ -789,6 +802,22 @@ const A = {
     }
     updateLive(d.fk);
     return true;
+  },
+  // 전체 명단에서 누를 때마다 선택·해제
+  gtoggle: (d) => {
+    const f = UI[d.fk];
+    const { sids } = parseNums(f.nums);
+    f.nums = (sids.includes(d.sid) ? sids.filter((x) => x !== d.sid) : [...sids, d.sid]).map(noOf).join(' ');
+    updateLive(d.fk);
+    return true;
+  },
+  pickgrid: () => {
+    UI.pickGrid = !UI.pickGrid;
+    try {
+      localStorage.setItem('jabong-pickgrid', UI.pickGrid ? '1' : '');
+    } catch {
+      // 저장소를 못 쓰면 이번에만 적용된다
+    }
   },
   unpick: (d) => {
     const f = UI[d.fk];
