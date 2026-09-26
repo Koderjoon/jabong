@@ -86,7 +86,10 @@ textarea{resize:vertical;min-height:70px}
 .chip{font-family:var(--mono);font-size:13px;padding:2px 9px;border-radius:999px;background:var(--accent-soft);color:var(--accent)}
 .chip{border:0}
 .linkbtn{border:0;background:none;color:var(--accent);font-size:12px;padding:2px 0;text-align:left}
-.pts-fld select{padding-inline:8px}
+.ptsbox{position:relative}
+.ptsbox input{padding-right:40px}
+.ptsbox .ptsdrop{position:absolute;top:1px;right:1px;bottom:1px;width:36px;display:flex;align-items:center;justify-content:center;border-left:1px solid var(--line);border-radius:0 9px 9px 0;background:var(--sunk);color:var(--accent);font-size:13px;pointer-events:none}
+.ptsbox select{position:absolute;top:0;right:0;bottom:0;width:38px;opacity:0;cursor:pointer;padding:0}
 .pickgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(64px,1fr));gap:5px}
 .pickgrid button{border:1px solid var(--line);background:var(--surface);border-radius:9px;padding:6px 2px;display:flex;flex-direction:column;align-items:center;min-width:0}
 .pickgrid b{font-family:var(--mono);font-size:15px}

@@ -25,7 +25,7 @@ create table if not exists students (
 -- 재학 중인 학생끼리만 번호가 겹치면 안 된다 (제외된 학생의 옛 번호는 재사용 가능)
 create unique index if not exists students_no_active on students (no) where active;
 
--- 자주 쓰는 항목. owner가 비어 있으면 공용(부총대가 관리), 있으면 그 직책의 "내 항목"
+-- 자주 쓰는 항목. 직책(owner)마다 따로 두는 "내 항목"이다. 공용 항목은 없다.
 create table if not exists presets (
   id uuid primary key default gen_random_uuid(),
   name text not null,
@@ -196,9 +196,11 @@ update accounts set is_admin = false where role = '총대' and is_admin;
 alter table accounts add column if not exists can_attend boolean not null default false;
 update accounts set can_attend = (role in ('실습부장 1', '실습부장 2', '총대')) where true;
 
-insert into presets (name, points, sort)
-select * from (values ('지각', 1, 1), ('결석', 2, 2), ('실습실 뒷정리 미흡', 1, 3), ('실습', 1, 4), ('소치 실습', 1, 5), ('매점', -1, 6)) v
-where not exists (select 1 from presets where owner is null);
+-- 처음 만들 때는 부총대의 항목으로 기본 목록을 넣는다. 예전의 공용 항목도 부총대 항목이 된다.
+insert into presets (name, points, sort, owner)
+select v.*, '부총대' from (values ('지각', 1, 1), ('결석', 2, 2), ('실습실 뒷정리 미흡', 1, 3), ('실습', 1, 4), ('소치 실습', 1, 5), ('매점', -1, 6)) v
+where not exists (select 1 from presets);
+update presets set owner = '부총대' where owner is null;
 
 -- ───────────────────────── 권한 ─────────────────────────
 -- 테이블은 모두 잠그고, app_version만 Realtime 알림용으로 읽기를 연다.
@@ -561,8 +563,9 @@ begin
       perform _void(cur.id, case when want = 'excused' then '공결 처리' else '출석 정정' end, who);
     end if;
     if want_item is not null and (cur.id is null or cur.item <> want_item) then
-      select points into pts from presets where name = want_item and owner is null order by sort limit 1;
-      nid := _entry(per.date, st.id, want_item, per.label, coalesce(pts, case want_item when '지각' then 1 else 2 end), 'att', p_period, null, who,
+      -- 출석 점수는 지각 +1, 결석 +2로 고정한다
+      pts := case want_item when '지각' then 1 else 2 end;
+      nid := _entry(per.date, st.id, want_item, per.label, pts, 'att', p_period, null, who,
         p_requested_by, case when p_requested_by is not null then who end);
       n := n + 1;
     end if;
@@ -727,23 +730,9 @@ exception when unique_violation then
   raise exception '번호가 겹치는 학생이 있어요. 번호를 확인해 주세요';
 end $$;
 
-create or replace function presets_save(p_token uuid, p_list jsonb) returns void
-language plpgsql security definer set search_path = public as $$
-declare who text := _session(p_token, true); p jsonb; i int := 0;
-begin
-  -- Supabase는 앱에서 온 요청이 where 없는 delete/update를 하면 막는다 (pg_safeupdate)
-  delete from presets where owner is null;
-  for p in select * from jsonb_array_elements(coalesce(p_list, '[]')) loop
-    i := i + 1;
-    if coalesce(trim(p ->> 'name'), '') <> '' then
-      insert into presets (name, points, sort) values (trim(p ->> 'name'), (p ->> 'points')::int, i);
-    end if;
-  end loop;
-  if not exists (select 1 from presets where name = '지각' and owner is null) then insert into presets (name, points, sort) values ('지각', 1, 0); end if;
-  if not exists (select 1 from presets where name = '결석' and owner is null) then insert into presets (name, points, sort) values ('결석', 2, 0); end if;
-end $$;
+drop function if exists presets_save(uuid, jsonb);
 
--- 총대단 각자의 "내 항목"을 통째로 바꾼다
+-- 각자(부총대 포함)의 "내 항목"을 통째로 바꾼다
 create or replace function my_presets_save(p_token uuid, p_list jsonb) returns void
 language plpgsql security definer set search_path = public as $$
 declare who text := _session(p_token, false); p jsonb; i int := 0;
@@ -804,7 +793,7 @@ do $$ declare f text; begin
       'change_pw(uuid,text,text)', 'reset_pw(uuid,text,text)', 'new_recovery(uuid,text)', 'ensure_period(uuid,date,text,boolean)',
       'save_attendance(uuid,uuid,jsonb)', 'request_attendance(uuid,uuid,jsonb)', 'review_attendance(uuid,uuid,boolean,text)', 'add_entries(uuid,date,uuid[],text,text,numeric)', 'edit_entry(uuid,uuid,date,text,text,numeric,text)',
       'void_entry(uuid,uuid,text)', 'review_request(uuid,uuid,boolean,text)', 'review_excuse(uuid,uuid,boolean,text)',
-      'roster_apply(uuid,jsonb,jsonb,date)', 'presets_save(uuid,jsonb)', 'my_presets_save(uuid,jsonb)', 'purge(uuid,date)'
+      'roster_apply(uuid,jsonb,jsonb,date)', 'my_presets_save(uuid,jsonb)', 'purge(uuid,date)'
     ] loop
       execute format('grant execute on function %s to anon, authenticated', f);
     end loop;

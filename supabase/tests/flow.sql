@@ -149,11 +149,13 @@ exception when insufficient_privilege then null;
 end $$;
 \echo 공결 사진 권한 테스트 통과
 
--- 자주 쓰는 항목 저장 (지우고 다시 넣는다. 지각·결석은 빠지면 되살린다)
-set role anon;
-select presets_save(:'t2', '[{"name":"매점","points":-1},{"name":"청소 불참","points":2}]');
+-- 부총대의 자주 쓰는 항목 저장 (지우고 다시 넣는다)
 set role postgres;
-select pg_temp.ok((select string_agg(name, ',' order by name) from presets) = '결석,매점,지각,청소 불참', '항목 저장');
+select pg_temp.ok(not exists (select 1 from presets where owner is null), '공용 항목 없음');
+set role anon;
+select my_presets_save(:'t2', '[{"name":"매점","points":-1},{"name":"청소 불참","points":2}]');
+set role postgres;
+select pg_temp.ok((select string_agg(name, ',' order by name) from presets where owner = '부총대') = '매점,청소 불참', '항목 저장');
 \echo 항목 저장 테스트 통과
 
 -- 직접 기록한 결석도 공결 신청·승인할 수 있다
@@ -207,11 +209,11 @@ select pg_temp.ok((select string_agg(role, ',') from accounts where is_admin) = 
 set role anon;
 select my_presets_save(:'ct', '[{"name":"실습 준비 미흡","points":1},{"name":"실습 도우미","points":-1}]');
 select my_presets_save(:'pt', '[{"name":"기구 미반납","points":2}]');
-select presets_save(:'t2', '[{"name":"매점","points":-1}]');
+select my_presets_save(:'t2', '[{"name":"매점","points":-1}]');
 set role postgres;
 select pg_temp.ok((select string_agg(name, ',' order by name) from presets where owner = '총대') = '실습 도우미,실습 준비 미흡', '총대 내 항목');
 select pg_temp.ok((select count(*) from presets where owner = '실습부장 1') = 1, '실습부장 내 항목');
-select pg_temp.ok((select string_agg(name, ',' order by name) from presets where owner is null) = '결석,매점,지각', '공용 항목');
+select pg_temp.ok((select string_agg(name, ',' order by name) from presets where owner = '부총대') = '매점', '부총대 항목은 따로');
 set role anon;
 select my_presets_save(:'ct', '[]');
 set role postgres;
