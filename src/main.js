@@ -27,6 +27,7 @@ const UI = {
   recForm: blankForm(), reqForm: blankForm(), excForm: { no: '', eid: '', reason: '', photo: '' },
   recFilter: '', editId: null, voidId: null, openRev: {}, photos: {},
   noticeFrom: null, noticeTo: null, noticeText: null,
+  doneLimit: 20,
   exp: { range: 'month', from: '', to: '' }, fullBackup: false, purgeCut: '', purgeTyped: '',
   rosterText: '', rosterReplace: false, recover: false, newCode: null,
 };
@@ -300,7 +301,36 @@ function vInbox() {
     return `<div class="card"><div class="req-top"><span class="pill pending">대기</span><span class="note">${esc(x.at)}</span></div>
     <div class="req-body"><b>${noOf(x.sid)}번 ${esc(stu(x.sid)?.name || '')}</b> · ${e ? `${mdw(e.date)} ${esc(periodLabel(e))} ${e.item} ${sgn(e.points)}` : ''}</div>${x.reason ? `<div class="note">사유: ${esc(x.reason)}</div>` : '<div class="note">사유 없음</div>'}${x.photo ? photoView(x.photo) : '<div class="note">증빙 사진 없음</div>'}
     <input id="note-${x.id}" placeholder="반려 사유 (반려할 때 필수)"><div class="btns"><button class="btn ok small" data-act="exc-ok" data-id="${x.id}">승인 (자봉 무효 처리)</button><button class="btn danger small" data-act="exc-no" data-id="${x.id}">반려</button></div></div>`;
-  }).join('') || '<p class="empty">대기 중인 공결 신청이 없어요.</p>'}`;
+  }).join('') || '<p class="empty">대기 중인 공결 신청이 없어요.</p>'}
+  ${vDone()}`;
+}
+
+// 승인·반려한 요청과 공결 신청. 증빙 사진은 처리 후 180일 동안 여기서 다시 볼 수 있다.
+function vDone() {
+  const items = [
+    ...S.requests.filter((r) => r.status !== 'pending').map((r) => ({ kind: 'req', at: r.reviewedAt || r.at, r })),
+    ...S.excuses.filter((x) => x.status !== 'pending').map((x) => ({ kind: 'exc', at: x.reviewedAt || x.at, x })),
+  ].sort((a, b) => b.at.localeCompare(a.at));
+  const shown = items.slice(0, UI.doneLimit);
+  const card = (it) => {
+    if (it.kind === 'req') {
+      const r = it.r;
+      return `<div class="card"><div class="req-top"><span class="pill ${r.status}">총대단 요청 ${STATUS[r.status]}</span><span class="note">${esc(r.reviewer || '')} · ${esc(it.at)}</span></div>
+      <div class="req-body"><b>${esc(r.item)}</b>${r.detail ? ` · ${esc(r.detail)}` : ''} <span class="pts ${r.points > 0 ? 'p' : 'm'}">${sgn(r.points)}</span> · ${md(r.date)}</div>
+      <div class="chips">${r.sids.map((id) => `<span class="chip">${noOf(id)} ${esc(stu(id)?.name || '')}</span>`).join('')}</div>
+      <div class="note">요청: ${esc(r.by)} · ${esc(r.at)}${r.reason ? ` · 사유: ${esc(r.reason)}` : ''}</div>
+      ${r.note ? `<div class="note">반려 사유: ${esc(r.note)}</div>` : ''}${photoView(r.photo)}</div>`;
+    }
+    const x = it.x;
+    const e = S.ledger.find((l) => l.id === x.eid);
+    return `<div class="card"><div class="req-top"><span class="pill ${x.status}">공결 ${STATUS[x.status]}</span><span class="note">${esc(x.reviewer || '')} · ${esc(it.at)}</span></div>
+    <div class="req-body"><b>${noOf(x.sid)}번 ${esc(stu(x.sid)?.name || '')}</b>${e ? ` · ${mdw(e.date)} ${esc(periodLabel(e))} ${e.item} ${sgn(e.points)}` : ''}</div>
+    <div class="note">신청: ${esc(x.at)}${x.reason ? ` · 사유: ${esc(x.reason)}` : ''}</div>
+    ${x.note ? `<div class="note">반려 사유: ${esc(x.note)}</div>` : ''}${photoView(x.photo)}</div>`;
+  };
+  return `<h2>처리한 내역</h2><p class="sub" style="margin-top:-12px">승인·반려한 건이에요. 증빙 사진은 처리 후 180일 동안 볼 수 있어요.</p>
+  ${shown.map(card).join('') || '<p class="empty">아직 처리한 건이 없어요.</p>'}
+  ${items.length > shown.length ? `<button class="btn ghost" data-act="done-more">더 보기 (${items.length - shown.length}건 남음)</button>` : ''}`;
 }
 
 const lastDate = () => [...new Set(S.ledger.filter((e) => !['import', 'carry'].includes(e.src)).map((e) => e.date))].sort().pop() || TODAY;
@@ -836,6 +866,9 @@ const A = {
     await refresh();
     render();
     return toast('신청했어요 · 부총대·총대 확인을 기다려요');
+  },
+  'done-more': () => {
+    UI.doneLimit += 20;
   },
   'notice-gen': () => {
     UI.noticeText = null;

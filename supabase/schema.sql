@@ -340,12 +340,13 @@ language sql stable security definer set search_path = public as $$
         'id', x.id, 'sid', x.student_id, 'eid', x.ledger_id, 'reason', x.reason, 'status', x.status,
         'note', x.review_note, 'at', _kst(x.created_at),
         'reviewer', case when p_private then x.reviewed_by end,
+        'reviewedAt', case when p_private then _kst(x.reviewed_at) end,
         'photo', case when p_private and x.photo_id is not null then x.photo_id end
       ) order by x.created_at), '[]') from excuses x),
     'requests', case when p_private then (select coalesce(json_agg(json_build_object(
         'id', r.id, 'by', r.requested_by, 'date', r.date, 'sids', r.student_ids, 'item', r.item, 'detail', r.detail,
         'points', r.points, 'reason', r.reason, 'photo', r.photo_id, 'status', r.status, 'note', r.review_note,
-        'reviewer', r.reviewed_by, 'at', _kst(r.created_at)
+        'reviewer', r.reviewed_by, 'reviewedAt', _kst(r.reviewed_at), 'at', _kst(r.created_at)
       ) order by r.created_at), '[]') from requests r) else '[]'::json end,
     'accounts', (select json_agg(json_build_object('role', role, 'admin', is_admin) order by sort) from accounts),
     'updatedAt', (select _kst(updated_at) from app_version where id = 1)
@@ -431,6 +432,8 @@ $$;
 create or replace function get_photo(p_token uuid, p_id uuid) returns text language plpgsql security definer set search_path = public as $$
 begin
   perform _session(p_token, false);
+  -- 공결 증빙(진료확인서 등)은 부총대·총대만 본다
+  if exists (select 1 from excuses where photo_id = p_id) then perform _session(p_token, true); end if;
   return (select data from photos where id = p_id);
 end $$;
 

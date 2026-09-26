@@ -128,3 +128,21 @@ set role postgres;
 select pg_temp.ok((select sum(points) from ledger where student_id = :'s3' and voided_at is null) = 2.5, '명단 붙여넣기 자봉 2.5');
 select pg_temp.ok((select json_agg(e) from json_array_elements(public_state() -> 'ledger') e where (e ->> 'points')::numeric = 0.5) is not null, '0.5점 공개 상태');
 \echo 0.5점 테스트 통과
+
+-- 공결 증빙 사진은 부총대·총대만 볼 수 있다
+set role postgres;
+insert into periods (date, label, saved_at) values ('2026-09-27', '아침 출석', now()) returning id as pp \gset
+select _entry('2026-09-27', :'s1', '지각', '아침 출석', 1, 'att', :'pp', null, '부총대') as pe \gset
+set role anon;
+select create_excuse(:'s1', :'pe', '', 'data:image/jpeg;base64,/9j/4AAQSkZJRg==') as px \gset
+set role postgres;
+select photo_id as ph from excuses where id = :'px' \gset
+set role anon;
+select (login('학습부장', '1234')::json ->> 'token') as ot2 \gset
+select pg_temp.ok(get_photo(:'t2', :'ph') like 'data:image/jpeg%', '관리자는 공결 사진을 본다');
+do $$ begin
+  perform get_photo((select token from sessions where role = '학습부장' order by expires_at desc limit 1), (select photo_id from excuses where photo_id is not null limit 1));
+  raise exception 'FAIL: 총대단이 공결 사진을 봄';
+exception when insufficient_privilege then null;
+end $$;
+\echo 공결 사진 권한 테스트 통과
