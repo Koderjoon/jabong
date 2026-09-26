@@ -166,3 +166,26 @@ set role postgres;
 select pg_temp.ok((select voided_at is not null from ledger where id = :'me'), '직접 기록한 결석 공결 승인');
 select pg_temp.ok(not exists (select 1 from ledger where item = '실습' and src = 'manual' and id in (select ledger_id from excuses)), '실습 기록은 공결 대상 아님');
 \echo 직접 기록 공결 테스트 통과
+
+-- 실습부장은 출석 체크를 할 수 있고, 권한을 끄면 못 한다
+set role anon;
+select (login('실습부장 1', '1234')::json ->> 'token') as pt \gset
+select ensure_period(:'pt', '2026-09-28', '아침 출석', true) as pp2 \gset
+select save_attendance(:'pt', :'pp2', format('{"%s":"late"}', :'s1')::jsonb) as pn \gset
+select pg_temp.ok(:pn = 1, '실습부장 출석 저장');
+set role postgres;
+select pg_temp.ok((select lp.created_by from ledger l join ledger_private lp on lp.ledger_id = l.id where l.period_id = :'pp2') = '실습부장 1', '출석 기록자 = 실습부장 1');
+set role anon;
+select set_attend(:'t2', '실습부장 1', false);
+do $$ begin
+  perform save_attendance((select token from sessions where role = '실습부장 1' order by expires_at desc limit 1), (select id from periods where date = '2026-09-28'), '{}');
+  raise exception 'FAIL: 권한을 꺼도 출석 저장됨';
+exception when insufficient_privilege then null;
+end $$;
+do $$ begin
+  perform save_attendance((select token from sessions where role = '학습부장' order by expires_at desc limit 1), (select id from periods where date = '2026-09-28'), '{}');
+  raise exception 'FAIL: 학습부장이 출석 저장함';
+exception when insufficient_privilege then null;
+end $$;
+select pg_temp.ok((select (e ->> 'attend')::boolean from json_array_elements(public_state() -> 'accounts') e where e ->> 'role' = '실습부장 2'), '실습부장 2는 기본으로 켜짐');
+\echo 출석 권한 테스트 통과

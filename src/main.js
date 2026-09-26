@@ -37,6 +37,9 @@ const TABS = {
   officer: [['request', '요청하기'], ['reqs', '요청 현황'], ['board', '현황판']],
   admin: [['attend', '출석'], ['record', '기록'], ['inbox', '요청함'], ['notice', '공지'], ['manage', '관리']],
 };
+// 출석 권한을 받은 총대단(기본: 실습부장)은 맨 앞에 출석 탭이 생긴다
+const canAttend = () => Boolean(S.accounts.find((a) => a.role === UI.user)?.attend);
+const tabsOf = (role) => (role === 'officer' && UI.user && canAttend() ? [['attend', '출석'], ...TABS.officer] : TABS[role]);
 const STATUS = { pending: '대기', approved: '승인', rejected: '반려' };
 const pendingCount = () => S.requests.filter((r) => r.status === 'pending').length + S.excuses.filter((x) => x.status === 'pending').length;
 
@@ -260,7 +263,7 @@ function vAttend() {
     ${UI.attConfirm ? `<div class="att-confirm"><span>지금 표시한 지각 ${c.late}명 · 결석 ${c.absent}명 · 공결 ${c.excused}명이 모두 출석으로 바뀌어요. 되돌릴까요?</span>
     <div class="btns"><button class="btn danger small" data-act="att-clear-yes">네, 전원 출석으로</button><button class="btn ghost small" data-act="att-clear-no">그만두기</button></div></div>` : ''}`;
   }
-  return `<div><h1>출석 체크</h1><p class="sub">${UI.attView === 'grid' ? '칸을 누를 때마다 출석 → 지각 → 결석 → 공결 순으로 바뀌어요.' : '번호순으로 이름을 부르면서 바로 출결을 고르세요.'} 저장하면 지각 +1, 결석 +2가 교시마다 기록돼요. 이름은 관리자에게만 보여요.</p></div>
+  return `<div><h1>출석 체크</h1><p class="sub">${UI.attView === 'grid' ? '칸을 누를 때마다 출석 → 지각 → 결석 → 공결 순으로 바뀌어요.' : '번호순으로 이름을 부르면서 바로 출결을 고르세요.'} 저장하면 지각 +1, 결석 +2가 교시마다 기록돼요. 이름은 출석 체크하는 사람에게만 보여요.</p></div>
   <div class="seg"><button class="${UI.attView !== 'grid' ? 'on' : ''}" data-act="attview" data-v="list">호명 목록</button><button class="${UI.attView === 'grid' ? 'on' : ''}" data-act="attview" data-v="grid">한눈에 보기</button></div>
   <div class="toolbar"><input type="date" id="attDate" value="${UI.attDate}" data-bind="attDate" data-rerender="1" style="width:auto"></div>
   <div class="seg" style="flex-wrap:wrap">${ps.map((p) => `<button class="${p.id === pid ? 'on' : ''}" data-act="pick-period" data-id="${p.id}">${esc(p.label)}${S.att[p.id] ? ' ·저장됨' : ''}</button>`).join('')}</div>
@@ -411,6 +414,10 @@ function vManage() {
   ${S.presets.map((p) => `<div class="mrow"><input class="grow pr-name" data-id="${p.id}" value="${esc(p.name)}" style="width:auto" ${['지각', '결석'].includes(p.name) ? 'readonly' : ''}><input type="number" class="pr-pts" data-id="${p.id}" value="${p.points}"><button class="btn ghost small" data-act="preset-del" data-id="${p.id}" ${['지각', '결석'].includes(p.name) ? 'disabled' : ''}>삭제</button></div>`).join('')}
   <button class="btn" data-act="presets-save">항목 저장</button></div>
 
+  <div class="card"><h2>출석 체크 권한</h2>
+  <p class="hint" style="margin:0">켜 둔 총대단은 출석 탭에서 출석을 체크하고 저장할 수 있어요. 부총대·총대는 항상 할 수 있어요.</p>
+  ${S.accounts.filter((a) => !a.admin).map((a) => `<div class="mrow"><span class="grow">${esc(a.role)}</span><button class="btn small ${a.attend ? 'ok' : 'ghost'}" data-act="attend-perm" data-role="${esc(a.role)}" data-on="${a.attend ? '' : '1'}">${a.attend ? '켜짐' : '꺼짐'}</button></div>`).join('')}</div>
+
   <div class="card"><h2>비밀번호</h2>
   <p class="hint" style="margin:0">인수인계할 때는 다음 사람에게 지금 비밀번호와 복구 코드를 알려주고, 그 사람이 로그인해서 자기 비밀번호로 바꾸면 끝이에요.</p>
   <h2 style="font-size:14px">내 비밀번호 바꾸기 (${esc(UI.user)})</h2>
@@ -461,6 +468,8 @@ function render() {
     return;
   }
   const locked = UI.role !== 'student' && !(UI.user && roleOf(UI.user) === UI.role);
+  // 권한이 바뀌어 지금 탭을 더 못 쓰게 되면 첫 탭으로 옮긴다 (현황판은 누구나 볼 수 있다)
+  if (!locked && UI.tab !== 'board' && !tabsOf(UI.role).some(([k]) => k === UI.tab)) UI.tab = tabsOf(UI.role)[0][0];
   sub.innerHTML =
     UI.role === 'student'
       ? UI.user ? `<div class="who"><b style="color:var(--ink)">${esc(UI.user)}</b>로 로그인됨 · 학생 화면 보는 중</div>` : ''
@@ -478,7 +487,7 @@ function render() {
   const pc = pendingCount();
   tabs.innerHTML = locked
     ? ''
-    : TABS[UI.role].map(([k, l]) => `<button class="${UI.tab === k && !UI.sid ? 'on' : ''}" data-act="tab" data-tab="${k}">${l}${k === 'inbox' && pc ? `<span class="badge">${pc}</span>` : ''}</button>`).join('');
+    : tabsOf(UI.role).map(([k, l]) => `<button class="${UI.tab === k && !UI.sid ? 'on' : ''}" data-act="tab" data-tab="${k}">${l}${k === 'inbox' && pc ? `<span class="badge">${pc}</span>` : ''}</button>`).join('');
 }
 
 // 다른 사람이 데이터를 바꿔서 다시 그려야 할 때, 입력 중이면 입력이 끝날 때까지 미룬다
@@ -639,7 +648,7 @@ const A = {
   role: (d) => {
     UI.role = d.role;
     UI.sid = null;
-    UI.tab = TABS[d.role][0][0];
+    UI.tab = tabsOf(d.role)[0][0];
     window.scrollTo(0, 0);
   },
   login: async () => {
@@ -648,7 +657,7 @@ const A = {
     if (r.error) return toast(r.error);
     setSession({ token: r.token, role: r.role });
     UI.user = r.role;
-    UI.tab = TABS[UI.role][0][0];
+    UI.tab = tabsOf(UI.role)[0][0];
     await refresh();
   },
   logout: async () => {
@@ -694,6 +703,10 @@ const A = {
     await rpc('change_pw', { p_token: token(), p_cur: val('pw-cur'), p_new: val('pw-new') });
     render();
     return toast('내 비밀번호를 바꿨어요');
+  },
+  'attend-perm': async (d) => {
+    await run('set_attend', { p_role: d.role, p_on: Boolean(d.on) }, `${d.role} 출석 체크 권한을 ${d.on ? '켰어요' : '껐어요'}`);
+    return true;
   },
   'pw-reset': async () => {
     const who = val('pw-who');
@@ -1005,7 +1018,7 @@ async function boot() {
   await refresh();
   if (UI.user) {
     UI.role = roleOf(UI.user);
-    UI.tab = TABS[UI.role][0][0];
+    UI.tab = tabsOf(UI.role)[0][0];
   }
   render();
   let timer;

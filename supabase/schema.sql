@@ -175,6 +175,14 @@ insert into accounts (role, is_admin, sort) values
   ('총무', false, 6), ('학습부장', false, 7), ('정리부장', false, 8), ('치아부장', false, 9)
 on conflict do nothing;
 
+-- 출석 체크 권한 (부총대·총대는 항상 가능). 칸을 처음 만들 때만 실습부장에게 켜 두고, 이후에는 관리 탭에서 바꾼다.
+do $$ begin
+  if not exists (select 1 from information_schema.columns where table_name = 'accounts' and column_name = 'can_attend') then
+    alter table accounts add column can_attend boolean not null default false;
+    update accounts set can_attend = true where role in ('실습부장 1', '실습부장 2');
+  end if;
+end $$;
+
 insert into presets (name, points, sort)
 select * from (values ('지각', 1, 1), ('결석', 2, 2), ('실습실 뒷정리 미흡', 1, 3), ('실습', 1, 4), ('소치 실습', 1, 5), ('매점', -1, 6)) v
 where not exists (select 1 from presets);
@@ -263,6 +271,17 @@ begin
   return r;
 end $$;
 
+-- 출석 체크는 부총대·총대와 출석 권한을 받은 총대단이 할 수 있다
+create or replace function _session_attend(p_token uuid) returns text
+language plpgsql security definer set search_path = public as $$
+declare r text := _session(p_token, false);
+begin
+  if not exists (select 1 from accounts where role = r and (is_admin or can_attend)) then
+    raise exception '출석 체크 권한이 없어요' using errcode = '42501';
+  end if;
+  return r;
+end $$;
+
 create or replace function _entry(p_date date, p_sid uuid, p_item text, p_detail text, p_points numeric, p_src text,
   p_period uuid, p_request uuid, p_by text, p_requested_by text default null, p_approved_by text default null)
 returns uuid language plpgsql security definer set search_path = public as $$
@@ -348,7 +367,7 @@ language sql stable security definer set search_path = public as $$
         'points', r.points, 'reason', r.reason, 'photo', r.photo_id, 'status', r.status, 'note', r.review_note,
         'reviewer', r.reviewed_by, 'reviewedAt', _kst(r.reviewed_at), 'at', _kst(r.created_at)
       ) order by r.created_at), '[]') from requests r) else '[]'::json end,
-    'accounts', (select json_agg(json_build_object('role', role, 'admin', is_admin) order by sort) from accounts),
+    'accounts', (select json_agg(json_build_object('role', role, 'admin', is_admin, 'attend', is_admin or can_attend) order by sort) from accounts),
     'updatedAt', (select _kst(updated_at) from app_version where id = 1)
   )
 $$;
@@ -473,6 +492,15 @@ begin
   delete from sessions where role = p_role;
 end $$;
 
+create or replace function set_attend(p_token uuid, p_role text, p_on boolean) returns void
+language plpgsql security definer set search_path = public as $$
+declare who text := _session(p_token, true);
+begin
+  update accounts set can_attend = coalesce(p_on, false) where role = p_role and not is_admin;
+  if not found then raise exception '총대단 직책만 바꿀 수 있어요'; end if;
+  update app_version set version = version + 1, updated_at = now() where id = 1;
+end $$;
+
 create or replace function new_recovery(p_token uuid, p_pw text) returns text
 language plpgsql security definer set search_path = public, extensions as $$
 declare who text := _session(p_token, true); h text; code text;
@@ -486,7 +514,7 @@ end $$;
 
 create or replace function ensure_period(p_token uuid, p_date date, p_label text, p_morning boolean) returns uuid
 language plpgsql security definer set search_path = public as $$
-declare who text := _session(p_token, true); pid uuid;
+declare who text := _session_attend(p_token); pid uuid;
 begin
   if coalesce(trim(p_label), '') = '' then raise exception '교시 이름을 입력하세요'; end if;
   select id into pid from periods where date = p_date and label = trim(p_label);
@@ -500,7 +528,7 @@ end $$;
 create or replace function save_attendance(p_token uuid, p_period uuid, p_statuses jsonb) returns int
 language plpgsql security definer set search_path = public as $$
 declare
-  who text := _session(p_token, true);
+  who text := _session_attend(p_token);
   per periods; st record; want text; want_item text; cur ledger; pts int; n int := 0;
 begin
   select * into per from periods where id = p_period;
@@ -705,7 +733,7 @@ do $$ declare f text; begin
     foreach f in array array[
       'public_state()', 'create_excuse(uuid,uuid,text,text)', 'login(text,text)', 'recover(text,text,text)',
       'private_state(uuid)', 'logout(uuid)', 'get_photo(uuid,uuid)', 'create_request(uuid,date,uuid[],text,text,numeric,text,text)',
-      'change_pw(uuid,text,text)', 'reset_pw(uuid,text,text)', 'new_recovery(uuid,text)', 'ensure_period(uuid,date,text,boolean)',
+      'change_pw(uuid,text,text)', 'reset_pw(uuid,text,text)', 'set_attend(uuid,text,boolean)', 'new_recovery(uuid,text)', 'ensure_period(uuid,date,text,boolean)',
       'save_attendance(uuid,uuid,jsonb)', 'add_entries(uuid,date,uuid[],text,text,numeric)', 'edit_entry(uuid,uuid,date,text,text,numeric,text)',
       'void_entry(uuid,uuid,text)', 'review_request(uuid,uuid,boolean,text)', 'review_excuse(uuid,uuid,boolean,text)',
       'roster_apply(uuid,jsonb,jsonb,date)', 'presets_save(uuid,jsonb)', 'purge(uuid,date)'
