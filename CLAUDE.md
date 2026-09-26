@@ -20,6 +20,7 @@
 - 출석은 교시별이다. "아침 출석"은 날짜마다 항상 맨 앞에 있고, 서버에 없으면 `v:`로 시작하는 임시 id로 보여 주다가 저장할 때 `ensure_period`로 만든다. 지각 +1, 결석 +2 (항목 설정의 점수를 따른다).
 - 공지 문구 형식은 학급이 손으로 쓰던 카톡 공지를 그대로 따른다. `genNotice`를 고치면 `test/logic.test.js`의 기대 문자열도 확인한다.
 - 한글 입력: 입력칸을 통째로 다시 그리면 조합이 깨진다. 입력 중 갱신이 필요하면 `data-live`(추천·칩 영역만 갱신)나 `data-region`(특정 영역만 갱신)을 쓰고, `data-rerender`는 날짜·숫자·체크박스처럼 한글이 없는 칸에만 쓴다.
+- Supabase는 앱에서 온 요청의 `where` 없는 `delete`/`update`를 거절한다(pg_safeupdate). 로컬 Postgres에서는 통과하니, 전체를 지울 때도 `where true`를 붙인다. `test/schema.test.js`가 검사한다.
 - 서버 오류 메시지는 한국어로 `raise exception` 한다. 화면은 그 메시지를 그대로 토스트로 보여 준다.
 
 ## 명령

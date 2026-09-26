@@ -649,7 +649,8 @@ create or replace function presets_save(p_token uuid, p_list jsonb) returns void
 language plpgsql security definer set search_path = public as $$
 declare who text := _session(p_token, true); p jsonb; i int := 0;
 begin
-  delete from presets;
+  -- Supabase는 앱에서 온 요청이 where 없는 delete/update를 하면 막는다 (pg_safeupdate)
+  delete from presets where true;
   for p in select * from jsonb_array_elements(coalesce(p_list, '[]')) loop
     i := i + 1;
     if coalesce(trim(p ->> 'name'), '') <> '' then
@@ -689,7 +690,7 @@ begin
     raise exception '이미 설정했어요. 비밀번호는 앱의 관리 탭에서 바꾸세요';
   end if;
   if length(coalesce(p_pw, '')) < 4 then raise exception '비밀번호는 4자 이상이어야 해요'; end if;
-  update accounts set pw_hash = crypt(p_pw, gen_salt('bf'));
+  update accounts set pw_hash = crypt(p_pw, gen_salt('bf')) where true;
   code := _new_code();
   update settings set recovery_hash = crypt(_norm_code(code), gen_salt('bf')) where id = 1;
   return code;

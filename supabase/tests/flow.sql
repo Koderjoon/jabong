@@ -146,3 +146,10 @@ do $$ begin
 exception when insufficient_privilege then null;
 end $$;
 \echo 공결 사진 권한 테스트 통과
+
+-- 자주 쓰는 항목 저장 (지우고 다시 넣는다. 지각·결석은 빠지면 되살린다)
+set role anon;
+select presets_save(:'t2', '[{"name":"매점","points":-1},{"name":"청소 불참","points":2}]');
+set role postgres;
+select pg_temp.ok((select string_agg(name, ',' order by name) from presets) = '결석,매점,지각,청소 불참', '항목 저장');
+\echo 항목 저장 테스트 통과
