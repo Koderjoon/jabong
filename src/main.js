@@ -38,7 +38,6 @@ const TABS = {
 };
 const STATUS = { pending: '대기', approved: '승인', rejected: '반려' };
 const pendingCount = () => S.requests.filter((r) => r.status === 'pending').length + S.excuses.filter((x) => x.status === 'pending').length;
-const tone = (b) => (b >= 5 ? 'hot' : b > 0 ? 'pos' : b < 0 ? 'neg' : 'zero');
 
 function toast(msg) {
   const t = document.getElementById('toast');
@@ -86,16 +85,19 @@ async function signOut(msg) {
 
 /* ---------- 화면 ---------- */
 
+// 부총대·총대가 로그인해서 볼 때만 이름을 함께 보여 준다
+const isAdmin = () => UI.role === 'admin' && UI.user && roleOf(UI.user) === 'admin';
+
 function vBoard() {
+  const named = isAdmin();
   let list = active().map((s) => ({ s, b: bal(s.id) }));
   const q = UI.q.trim();
-  if (q) list = list.filter((x) => String(x.s.no).startsWith(q));
+  if (q) list = list.filter((x) => String(x.s.no).startsWith(q) || (named && (x.s.name || '').includes(q)));
   if (UI.sort === 'bal') list.sort((a, b) => b.b - a.b || a.s.no - b.s.no);
   return `<div><h1>자봉 현황</h1><p class="live"><span class="dot"></span>실시간 반영 · 마지막 변경 ${esc(S.updatedAt)}</p></div>
-  <div class="toolbar"><input type="search" id="q" inputmode="numeric" placeholder="번호 검색" value="${esc(UI.q)}" data-bind="q" data-rerender="1">
+  <div class="toolbar"><input type="search" id="q" ${named ? '' : 'inputmode="numeric" '}placeholder="${named ? '번호·이름 검색' : '번호 검색'}" value="${esc(UI.q)}" data-bind="q" data-region="board-grid">
   <div class="seg"><button class="${UI.sort === 'no' ? 'on' : ''}" data-act="sort" data-v="no">번호순</button><button class="${UI.sort === 'bal' ? 'on' : ''}" data-act="sort" data-v="bal">자봉 많은 순</button></div></div>
-  <div class="legend"><span><i style="background:var(--hot-soft)"></i>5점 이상</span><span><i style="background:var(--pen-soft)"></i>1~4점</span><span><i style="background:var(--merit-soft)"></i>상점 이월(−)</span></div>
-  <div class="grid">${list.map(({ s, b }) => `<button class="tile ${tone(b)}" data-act="open" data-sid="${s.id}"><span class="no">${s.no}</span><span class="pt">자봉 ${b}</span></button>`).join('') || '<p class="empty">아직 명단이 없어요.</p>'}</div>`;
+  <div class="grid${named ? ' named' : ''}" id="board-grid">${list.map(({ s, b }) => `<button class="tile" data-act="open" data-sid="${s.id}"><span class="no">${s.no}</span>${named ? `<span class="nm">${esc(s.name)}</span>` : ''}<span class="pt">자봉 ${b}</span></button>`).join('') || `<p class="empty">${S.students.length ? '찾는 학생이 없어요.' : '아직 명단이 없어요.'}</p>`}</div>`;
 }
 
 function vDetail() {
@@ -104,7 +106,7 @@ function vDetail() {
   const b = bal(s.id);
   const es = S.ledger.filter((e) => e.sid === s.id).sort((a, c) => c.date.localeCompare(a.date) || c.at.localeCompare(a.at));
   const dates = [...new Set(es.map((e) => e.date))];
-  const admin = UI.role === 'admin' && UI.user;
+  const admin = isAdmin();
   const ev = (e) => {
     const open = UI.openRev[e.id];
     return `<li class="ev ${e.voided ? 'void' : ''}">
@@ -471,8 +473,8 @@ function setPath(p, v) {
 
 // 입력칸은 그대로 두고 화면의 한 영역만 새로 그린다 (한글 입력이 끊기지 않게)
 function updateRegion(id) {
-  const V = { record: vRecord, manage: vManage, notice: vNotice };
-  if (!V[UI.tab]) return;
+  const V = { board: vBoard, record: vRecord, manage: vManage, notice: vNotice };
+  if (!V[UI.tab] || UI.sid) return;
   const t = document.createElement('div');
   t.innerHTML = V[UI.tab]();
   const src = t.querySelector('#' + id);

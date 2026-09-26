@@ -74,11 +74,8 @@ textarea{resize:vertical;min-height:70px}
 .tile{border:1px solid var(--line);background:var(--surface);border-radius:10px;padding:8px 4px 7px;display:flex;flex-direction:column;align-items:center;gap:1px}
 .tile .no{font-size:17px;font-weight:600}
 .tile .pt{font-size:11px;color:var(--muted)}
-.tile.pos{background:var(--pen-soft);border-color:transparent}.tile.pos .pt{color:var(--pen)}
-.tile.hot{background:var(--hot-soft);border-color:transparent}.tile.hot .pt,.tile.hot .no{color:var(--hot)}
-.tile.neg{background:var(--merit-soft);border-color:transparent}.tile.neg .pt{color:var(--merit)}
-.legend{display:flex;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--muted)}
-.legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:4px;vertical-align:-1px}
+.grid.named{grid-template-columns:repeat(auto-fill,minmax(78px,1fr))}
+.tile .nm{font-size:12px;font-weight:500;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 4px}
 
 .card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:14px;display:flex;flex-direction:column;gap:10px}
 .fld{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--muted)}
