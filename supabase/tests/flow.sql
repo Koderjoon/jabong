@@ -222,14 +222,8 @@ select pg_temp.ok(not exists (select 1 from presets where owner = '총대'), '�
 
 -- 백업 → 데이터 망가뜨리기 → 되살리기 하면 원래대로 돌아온다
 set role anon;
-select new_backup_key(:'t2') as bk \gset
-do $$ begin
-  perform backup_dump('틀린키');
-  raise exception 'FAIL: 틀린 백업 키로 백업됨';
-exception when invalid_authorization_specification then null;
-end $$;
-select backup_dump(:'bk')::text as dump \gset
-select pg_temp.ok(admin_dump(:'t2') -> 'tables' = (:'dump'::jsonb) -> 'tables', '부총대 백업 = 자동 백업');
+select backup_dump()::text as dump \gset
+select pg_temp.ok((:'dump'::jsonb) ->> 'format' = 'jabong-backup', '로그인 없이 백업 받기');
 set role postgres;
 select md5(string_agg(s.no || ':' || s.name || ':' || coalesce((select sum(points) from ledger l where l.student_id = s.id and voided_at is null), 0), ',' order by s.no)) as before_sig,
   (select count(*) from ledger) as before_n, (select count(*) from ledger_revisions) as before_r from students s \gset

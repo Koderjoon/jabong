@@ -175,8 +175,6 @@ create table if not exists settings (
   recovery_locked_until timestamptz
 );
 insert into settings (id) values (1) on conflict do nothing;
--- 자동 백업(GitHub Actions)이 쓰는 백업 키의 해시
-alter table settings add column if not exists backup_hash text;
 
 -- 변경 알림 전용. 브라우저가 Realtime으로 구독하는 유일한 테이블이라 비밀 정보를 두지 않는다.
 create table if not exists app_version (
@@ -770,34 +768,14 @@ create or replace function _dump() returns jsonb language sql stable security de
     ))
 $$;
 
--- 자동 백업용. GitHub Actions가 백업 키로 부른다.
-create or replace function backup_dump(p_key text) returns jsonb
-language plpgsql security definer set search_path = public, extensions as $$
-declare h text;
-begin
-  select backup_hash into h from settings where id = 1;
-  if h is null or coalesce(p_key, '') = '' or h <> crypt(p_key, h) then raise exception '백업 키가 맞지 않아요' using errcode = '28000'; end if;
-  return _dump();
-end $$;
-
--- 부총대가 앱에서 "지금 백업 파일 받기"를 누를 때
-create or replace function admin_dump(p_token uuid) returns jsonb
-language plpgsql security definer set search_path = public as $$
-begin
-  perform _session(p_token, true);
-  return _dump();
-end $$;
-
--- 자동 백업 키를 새로 만든다. 한 번만 보여 주고 해시만 저장한다.
-create or replace function new_backup_key(p_token uuid) returns text
-language plpgsql security definer set search_path = public, extensions as $$
-declare k text;
-begin
-  perform _session(p_token, true);
-  k := replace(_new_code() || _new_code(), '-', '');
-  update settings set backup_hash = crypt(k, gen_salt('bf')) where id = 1;
-  return k;
-end $$;
+-- 백업 파일 받기. 로그인 없이 누구나 부를 수 있다 (학급이 이름 공개를 괜찮다고 정했다).
+-- jabong-backup 저장소의 GitHub Actions가 매일 부르고, 관리 탭의 "지금 백업 파일 받기"도 이것을 쓴다.
+drop function if exists backup_dump(text);
+drop function if exists admin_dump(uuid);
+drop function if exists new_backup_key(uuid);
+create or replace function backup_dump() returns jsonb language sql stable security definer set search_path = public as $$
+  select _dump()
+$$;
 
 -- 백업 파일의 내용으로 데이터를 통째로 바꾼다. 비밀번호·로그인·사진은 그대로 둔다.
 create or replace function restore_backup(p_token uuid, p_data jsonb) returns json
@@ -871,7 +849,7 @@ do $$ declare f text; begin
       'change_pw(uuid,text,text)', 'reset_pw(uuid,text,text)', 'new_recovery(uuid,text)', 'ensure_period(uuid,date,text,boolean)',
       'save_attendance(uuid,uuid,jsonb)', 'request_attendance(uuid,uuid,jsonb)', 'review_attendance(uuid,uuid,boolean,text)', 'add_entries(uuid,date,uuid[],text,text,numeric)', 'edit_entry(uuid,uuid,date,text,text,numeric,text)',
       'void_entry(uuid,uuid,text)', 'review_request(uuid,uuid,boolean,text)', 'review_excuse(uuid,uuid,boolean,text)',
-      'roster_apply(uuid,jsonb,jsonb,date)', 'my_presets_save(uuid,jsonb)', 'purge(uuid,date)', 'backup_dump(text)', 'admin_dump(uuid)', 'new_backup_key(uuid)', 'restore_backup(uuid,jsonb)'
+      'roster_apply(uuid,jsonb,jsonb,date)', 'my_presets_save(uuid,jsonb)', 'purge(uuid,date)', 'backup_dump()', 'restore_backup(uuid,jsonb)'
     ] loop
       execute format('grant execute on function %s to anon, authenticated', f);
     end loop;
