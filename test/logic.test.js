@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { genNotice, planRoster, rosterOps, parseNums, expRange, exportSheets, bal, dupNums } from '../src/logic.js';
+import { genNotice, planRoster, rosterOps, parseNums, expRange, exportSheets, bal, dupNums, excusable } from '../src/logic.js';
 
 // 학생 70명과 기록을 만드는 도우미
 function state() {
@@ -134,4 +134,15 @@ test('0.5점: 공지 문구, 합계, 명단 붙여넣기', () => {
   const ok = planRoster(S, '1\t학생1\t2.5', false);
   assert.deepEqual(ok.adjs.map((a) => [a.from, a.to, a.delta]), [[0.5, 2.5, 2]]);
   assert.match(planRoster(S, '1\t학생1\t2.3', false).errors[0], /0\.5점 단위/);
+});
+
+test('공결 신청 대상: 출석 체크든 직접 기록이든 무효가 아닌 지각·결석', () => {
+  const S = state();
+  S.add('2026-09-26', '결석', '1교시', 2, [1], { src: 'att' });
+  S.add('2026-09-26', '결석', '', 2, [1]);
+  S.add('2026-09-26', '지각', '', 1, [1], { src: 'request' });
+  S.add('2026-09-26', '지각', '', 1, [1], { voided: { reason: 'x' } });
+  S.add('2026-09-26', '실습', '', 1, [1]);
+  S.add('2026-09-01', '결석', '', 2, [1], { src: 'import' });
+  assert.deepEqual(S.ledger.filter(excusable).map((e) => e.id), ['e1', 'e2', 'e3']);
 });

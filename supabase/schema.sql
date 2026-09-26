@@ -363,7 +363,9 @@ create or replace function create_excuse(p_student uuid, p_ledger uuid, p_reason
 language plpgsql security definer set search_path = public as $$
 declare nid uuid;
 begin
-  if not exists (select 1 from ledger where id = p_ledger and student_id = p_student and src = 'att' and voided_at is null) then
+  -- 출석 체크로 생긴 것뿐 아니라 직접 기록하거나 요청으로 들어온 지각·결석도 공결 신청할 수 있다
+  if not exists (select 1 from ledger where id = p_ledger and student_id = p_student and voided_at is null
+      and item in ('지각', '결석') and src in ('att', 'manual', 'request')) then
     raise exception '공결 신청할 수 있는 출결 기록이 아니에요';
   end if;
   if exists (select 1 from excuses where ledger_id = p_ledger and status = 'pending') then

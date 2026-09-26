@@ -153,3 +153,16 @@ select presets_save(:'t2', '[{"name":"매점","points":-1},{"name":"청소 불�
 set role postgres;
 select pg_temp.ok((select string_agg(name, ',' order by name) from presets) = '결석,매점,지각,청소 불참', '항목 저장');
 \echo 항목 저장 테스트 통과
+
+-- 직접 기록한 결석도 공결 신청·승인할 수 있다
+set role anon;
+select add_entries(:'t2', '2026-09-27', array[:'s3']::uuid[], '결석', '', 2);
+set role postgres;
+select id as me from ledger where student_id = :'s3' and item = '결석' and src = 'manual' \gset
+set role anon;
+select create_excuse(:'s3', :'me', '병원', null) as mx \gset
+select review_excuse(:'t2', :'mx', true, null);
+set role postgres;
+select pg_temp.ok((select voided_at is not null from ledger where id = :'me'), '직접 기록한 결석 공결 승인');
+select pg_temp.ok(not exists (select 1 from ledger where item = '실습' and src = 'manual' and id in (select ledger_id from excuses)), '실습 기록은 공결 대상 아님');
+\echo 직접 기록 공결 테스트 통과

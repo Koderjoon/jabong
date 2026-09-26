@@ -17,6 +17,8 @@ export const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Se
 
 export const live = (e) => !e.voided;
 // 직접 입력하는 점수는 0.5점 단위까지 허용한다 (출석 자동 기록은 정수)
+// 공결 신청할 수 있는 기록: 무효가 아닌 지각·결석 (출석 체크든 직접 기록이든)
+export const excusable = (e) => !e.voided && (e.item === '지각' || e.item === '결석') && ['att', 'manual', 'request'].includes(e.src);
 export const isHalfStep = (p) => Number.isFinite(p) && Number.isInteger(p * 2);
 export const stu = (S, id) => S.students.find((s) => s.id === id);
 export const noOf = (S, id) => stu(S, id)?.no ?? '?';

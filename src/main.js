@@ -207,7 +207,7 @@ function vExcuse() {
   const s = S.students.find((x) => x.active && x.no === Number(f.no));
   const cands = s
     ? S.ledger
-        .filter((e) => e.sid === s.id && live(e) && e.src === 'att' && !S.excuses.some((x) => x.eid === e.id && x.status === 'pending'))
+        .filter((e) => e.sid === s.id && L.excusable(e) && !S.excuses.some((x) => x.eid === e.id && x.status === 'pending'))
         .sort((a, b) => b.date.localeCompare(a.date))
     : [];
   const mine = s ? S.excuses.filter((x) => x.sid === s.id).sort((a, b) => b.at.localeCompare(a.at)) : [];
