@@ -292,7 +292,9 @@ function vExcuse() {
 }
 
 // 출석: 날짜마다 "아침 출석"은 항상 맨 앞에 있다. 아직 서버에 없는 교시는 v: 로 시작하는 임시 id를 쓴다.
+// 아침 출석은 부총대만 한다. 총대단 화면에는 나오지 않고, 총대단은 교시를 추가해서 체크한다.
 function periodsOf(date) {
+  if (!isAdmin()) return S.periods.filter((p) => p.date === date && !p.morning);
   const ps = S.periods.filter((p) => p.date === date);
   if (!ps.some((p) => p.morning)) ps.unshift({ id: `v:${date}:아침 출석`, date, label: '아침 출석', morning: true });
   return ps.sort((a, b) => (b.morning ? 1 : 0) - (a.morning ? 1 : 0));
@@ -313,7 +315,7 @@ function vAttend() {
   const ps = periodsOf(UI.attDate);
   if (!ps.some((p) => p.id === UI.attPid)) UI.attPid = ps.find((p) => !S.att[p.id])?.id || ps[0]?.id || null;
   const pid = UI.attPid;
-  let body = '';
+  let body = isAdmin() ? '' : '<p class="empty">위에서 교시를 추가한 뒤 출석을 체크하세요.<br>예: 1교시 구강해부학</p>';
   if (pid) {
     const d = attDraft(pid);
     const c = { late: 0, absent: 0, excused: 0 };
