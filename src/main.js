@@ -35,7 +35,7 @@ const UI = {
 const TABS = {
   student: [['board', '현황판'], ['excuse', '공결 신청']],
   officer: [['request', '요청하기'], ['reqs', '요청 현황'], ['board', '현황판']],
-  admin: [['attend', '출석'], ['record', '기록'], ['inbox', '요청함'], ['notice', '공지'], ['manage', '관리']],
+  admin: [['attend', '출석'], ['record', '기록'], ['inbox', '요청함'], ['notice', '공지'], ['manage', '관리'], ['board', '현황판']],
 };
 // 출석 권한을 받은 총대단(기본: 실습부장)은 맨 앞에 출석 탭이 생긴다
 const canAttend = () => Boolean(S.accounts.find((a) => a.role === UI.user)?.attend);
@@ -89,11 +89,13 @@ async function signOut(msg) {
 
 /* ---------- 화면 ---------- */
 
-// 부총대·총대가 로그인해서 볼 때만 이름을 함께 보여 준다
+// 부총대·총대만 (기록자·승인자 같은 관리 정보)
 const isAdmin = () => UI.role === 'admin' && UI.user && roleOf(UI.user) === 'admin';
+// 로그인한 총대단 전체(부총대·총대 포함). 현황판과 학생 상세에 이름을 함께 보여 준다
+const isStaff = () => UI.role !== 'student' && UI.user && roleOf(UI.user) === UI.role;
 
 function vBoard() {
-  const named = isAdmin();
+  const named = isStaff();
   let list = active().map((s) => ({ s, b: bal(s.id) }));
   const q = UI.q.trim();
   if (q) list = list.filter((x) => String(x.s.no).startsWith(q) || (named && (x.s.name || '').includes(q)));
@@ -122,7 +124,7 @@ function vDetail() {
   </li>`;
   };
   return `<button class="back" data-act="back">← 현황판</button>
-  <div class="hero"><div><h1>${s.no}번${admin && s.name ? ` <span class="sub" style="font-size:15px">${esc(s.name)}</span>` : ''}</h1><p class="sub">기록 ${es.filter(live).length}건${es.some((e) => e.voided) ? ` · 무효 ${es.filter((e) => e.voided).length}건` : ''}</p></div>
+  <div class="hero"><div><h1>${s.no}번${isStaff() && s.name ? ` <span class="sub" style="font-size:15px">${esc(s.name)}</span>` : ''}</h1><p class="sub">기록 ${es.filter(live).length}건${es.some((e) => e.voided) ? ` · 무효 ${es.filter((e) => e.voided).length}건` : ''}</p></div>
   <div style="text-align:right"><div class="sub">자봉</div><div class="big ${b > 0 ? 'p' : b < 0 ? 'm' : ''}">${b}</div></div></div>
   ${UI.role === 'student' ? `<button class="btn ghost" data-act="to-excuse" data-no="${s.no}">이 번호로 공결 신청</button>` : ''}
   ${admin ? `<button class="btn ghost" data-act="to-record" data-no="${s.no}">이 학생 기록 수정·무효 처리</button>` : ''}
@@ -132,7 +134,8 @@ function vDetail() {
 function liveParts(fk) {
   const f = UI[fk];
   const { sids, bad } = parseNums(f.nums);
-  const fq = (f.find || '').trim();
+  // 추천은 입력칸의 마지막 낱말로 찾는다 (앞의 낱말은 띄어쓰기할 때 이미 선택으로 옮겨진다)
+  const fq = (f.find || '').trim().split(/[\s,]+/).pop() || '';
   const sg = fq ? active().filter((s) => (s.name || '').includes(fq) || String(s.no).startsWith(fq)).slice(0, 8) : [];
   const dup = L.dupNums(S, f);
   return {
@@ -143,6 +146,29 @@ function liveParts(fk) {
     dup: dup.length ? `<div class="warn">같은 날짜·항목으로 이미 요청됐거나 기록된 번호: ${dup.join(', ')}</div>` : '',
   };
 }
+function addStudents(fk, ids) {
+  const f = UI[fk];
+  const { sids } = parseNums(f.nums);
+  ids.forEach((id) => sids.includes(id) || sids.push(id));
+  f.nums = sids.map(noOf).join(' ');
+}
+
+// 학생 입력칸의 완성된 낱말(번호나 정확한 이름)을 선택으로 옮긴다. 못 찾은 낱말은 칸에 남긴다.
+// lastToo가 아니면 아직 치고 있는 마지막 낱말은 건드리지 않는다.
+function commitPicker(el, lastToo) {
+  const fk = el.dataset.picker;
+  const words = el.value.split(/[\s,]+/).filter(Boolean);
+  const typing = lastToo || /[\s,]$/.test(el.value) ? '' : words.pop() || '';
+  const { sids, bad } = parseNums(words.join(' '));
+  addStudents(fk, sids);
+  const rest = [...bad, typing].filter(Boolean).join(' ');
+  const next = rest && !typing ? rest + ' ' : rest;
+  if (el.value !== next) el.value = next;
+  UI[fk].find = next;
+  updateLive(fk);
+  return { added: sids.length, bad };
+}
+
 function updateLive(fk) {
   const l = liveParts(fk);
   ['sugg', 'chips', 'dup'].forEach((k) => {
@@ -160,9 +186,9 @@ function entryFields(fk) {
   <label class="fld pts-fld"><span>점수</span><input type="number" step="0.5" inputmode="decimal" id="${fk}-points" value="${esc(f.points)}" data-bind="${fk}.points"></label></div>
   <p class="hint">+는 자봉, −는 상점이에요. 0.5점 단위로도 적을 수 있어요. 항목명과 점수는 불러온 뒤에도 고칠 수 있어요.</p>
   <label class="fld"><span>세부내용 (선택)</span><input id="${fk}-detail" value="${esc(f.detail)}" placeholder="예: 전원 안끔" data-bind="${fk}.detail"></label>
-  <label class="fld"><span>학생 찾기 (이름 또는 번호)</span><input id="${fk}-find" type="search" value="${esc(f.find)}" placeholder="예: 김민 또는 56" autocomplete="off" data-bind="${fk}.find" data-live="${fk}"></label>
+  <label class="fld"><span>학생</span><input id="${fk}-find" type="search" value="${esc(f.find)}" placeholder="이름이나 번호 (예: 김민, 56 59)" autocomplete="off" enterkeyhint="done" data-bind="${fk}.find" data-picker="${fk}"></label>
+  <p class="hint">이름 일부를 치고 목록에서 고르거나, 번호를 띄어 쓰며 연달아 적으세요.</p>
   <div id="${fk}-sugg">${P.sugg}</div>
-  <label class="fld"><span>선택된 학생 (번호나 이름을 직접 적어도 돼요)</span><input id="${fk}-nums" value="${esc(f.nums)}" placeholder="예: 56 59 또는 김민서" data-bind="${fk}.nums" data-live="${fk}"></label>
   <div class="chips" id="${fk}-chips">${P.chips}</div>
   <div id="${fk}-dup">${P.dup}</div>`;
 }
@@ -475,7 +501,7 @@ function render() {
       ? UI.user ? `<div class="who"><b style="color:var(--ink)">${esc(UI.user)}</b>로 로그인됨 · 학생 화면 보는 중</div>` : ''
       : locked
         ? '<div class="mocknote">총대단과 부총대·총대는 자기 직책의 비밀번호로 로그인해요.</div>'
-        : `<div class="who"><b style="color:var(--ink)">${esc(UI.user)}</b>로 로그인됨 ${UI.role === 'admin' ? '<button class="btn ghost small" data-act="tab" data-tab="board">현황판 보기</button>' : ''}<button class="btn ghost small" data-act="logout">로그아웃</button></div>`;
+        : `<div class="who"><b style="color:var(--ink)">${esc(UI.user)}</b>로 로그인됨 <button class="btn ghost small" data-act="logout">로그아웃</button></div>`;
   const V = { board: vBoard, excuse: vExcuse, request: vRequest, reqs: vReqs, attend: vAttend, record: vRecord, inbox: vInbox, notice: vNotice, manage: vManage };
   const codeCard =
     !locked && UI.role === 'admin' && UI.newCode
@@ -556,6 +582,7 @@ document.addEventListener('input', (ev) => {
     }
   }
   if (b === 'noticeFrom' || b === 'noticeTo') UI.noticeText = null;
+  if (el.dataset.picker) return ev.isComposing ? updateLive(el.dataset.picker) : commitPicker(el, false);
   if (el.dataset.live) return updateLive(el.dataset.live);
   if (el.dataset.region) return updateRegion(el.dataset.region);
   if (el.dataset.rerender && !ev.isComposing) rerenderKeep(el);
@@ -565,7 +592,8 @@ document.addEventListener('compositionend', (ev) => {
   const el = ev.target;
   if (!el.dataset?.bind) return;
   setPath(el.dataset.bind, el.value);
-  if (el.dataset.live) updateLive(el.dataset.live);
+  if (el.dataset.picker) commitPicker(el, false);
+  else if (el.dataset.live) updateLive(el.dataset.live);
   else if (el.dataset.region) updateRegion(el.dataset.region);
   else if (el.dataset.rerender) rerenderKeep(el);
 });
@@ -622,12 +650,18 @@ async function saveAttendance() {
 }
 
 async function submitEntry(fk) {
+  // 학생 칸에 치다 만 번호·이름이 있으면 먼저 선택으로 옮긴다
+  const inp = document.getElementById(fk + '-find');
+  if (inp && inp.value.trim()) {
+    const { bad } = commitPicker(inp, true);
+    if (bad.length) return toast(`학생 칸의 "${bad.join(', ')}"을(를) 목록에서 골라 주세요`);
+  }
   const f = UI[fk];
   const { sids, bad } = parseNums(f.nums);
   const pts = Number(f.points);
   if (!f.item.trim()) return toast('항목명을 입력하세요');
   if (!L.isHalfStep(pts) || pts === 0) return toast('점수는 0이 아닌 0.5점 단위로 적어 주세요');
-  if (!sids.length || bad.length) return toast('학생 번호를 확인하세요');
+  if (!sids.length || bad.length) return toast('학생을 골라 주세요');
   const common = { p_date: f.date, p_sids: sids, p_item: f.item.trim(), p_detail: f.detail.trim(), p_points: pts };
   if (fk === 'reqForm') {
     await run('create_request', { ...common, p_reason: f.reason.trim(), p_photo: f.photo || null }, '요청을 보냈어요');
@@ -746,18 +780,21 @@ const A = {
     UI.recFilter = d.no;
   },
   pick: (d) => {
-    const f = UI[d.fk];
-    const { sids } = parseNums(f.nums);
-    if (!sids.includes(d.sid)) sids.push(d.sid);
-    f.nums = sids.map(noOf).join(' ');
-    f.find = '';
-    render();
-    document.getElementById(d.fk + '-find')?.focus();
+    addStudents(d.fk, [d.sid]);
+    const inp = document.getElementById(d.fk + '-find');
+    UI[d.fk].find = '';
+    if (inp) {
+      inp.value = '';
+      inp.focus();
+    }
+    updateLive(d.fk);
     return true;
   },
   unpick: (d) => {
     const f = UI[d.fk];
     f.nums = parseNums(f.nums).sids.filter((x) => x !== d.sid).map(noOf).join(' ');
+    updateLive(d.fk);
+    return true;
   },
   'roster-apply': async () => {
     const plan = L.planRoster(S, UI.rosterText, UI.rosterReplace);
@@ -1003,8 +1040,19 @@ document.addEventListener('click', async (ev) => {
   }
 });
 
-// 로그인 칸에서 Enter
+// 로그인 칸에서 Enter, 학생 칸에서 Enter
 document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter' && ev.target.dataset?.picker && !ev.isComposing) {
+    ev.preventDefault();
+    const el = ev.target;
+    const fk = el.dataset.picker;
+    const { bad } = commitPicker(el, true);
+    if (bad.length === 1) {
+      const first = document.querySelector(`#${fk}-sugg [data-act="pick"]`);
+      if (first) first.click();
+    }
+    return;
+  }
   if (ev.key === 'Enter' && ev.target.id === 'login-pw') document.querySelector('[data-act="login"]')?.click();
 });
 
