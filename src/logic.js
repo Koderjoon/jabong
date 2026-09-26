@@ -223,8 +223,9 @@ export function expRange(S, exp, todayStr) {
     return s1 ? [`${y}-03-01`, `${y}-08-31`, `${y}-1학기`] : [`${sy}-09-01`, monthEnd(`${sy + 1}-02`), `${sy}-2학기`];
   }
   if (exp.range === 'all') {
-    const f = S.ledger.map((x) => x.date).sort()[0] || todayStr;
-    return [f, todayStr, '전체'];
+    // 날짜를 앞으로 적은 기록도 빠지지 않게 마지막 기록 날짜까지 (정리 전에 받는 파일이라 하나도 빠지면 안 된다)
+    const ds = S.ledger.map((x) => x.date).sort();
+    return [ds[0] || todayStr, ds.length && ds.at(-1) > todayStr ? ds.at(-1) : todayStr, '전체'];
   }
   const from = exp.from || todayStr;
   const to = exp.to || todayStr;

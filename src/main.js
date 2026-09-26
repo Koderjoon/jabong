@@ -95,6 +95,7 @@ function resetDrafts() {
   UI.attPid = null;
   UI.photos = {};
   UI.myPresetsOpen = false;
+  UI.rosterOpen = false;
   UI.pwOpen = false;
   UI.hist = { list: null, limit: 50, preview: null, loading: false };
   UI.bk = { pw: '', file: null, fileName: '', dump: null, typed: '' };
@@ -135,7 +136,8 @@ function vDetail() {
   const s = stu(UI.sid);
   if (!s) return '<button class="back" data-act="back">← 현황판</button><p class="empty">학생을 찾을 수 없어요.</p>';
   const b = bal(s.id);
-  const es = S.ledger.filter((e) => e.sid === s.id).sort((a, c) => c.date.localeCompare(a.date) || c.at.localeCompare(a.at));
+  // 서버 목록은 오래된 순이라 뒤집은 뒤 정렬한다: 화면 시각이 분 단위여서 같은 분에 생긴 기록도 최신이 위로 온다
+  const es = S.ledger.filter((e) => e.sid === s.id).reverse().sort((a, c) => c.date.localeCompare(a.date) || c.at.localeCompare(a.at));
   const dates = [...new Set(es.map((e) => e.date))];
   const admin = isAdmin();
   const ev = (e) => {
@@ -319,7 +321,7 @@ function vExcuse() {
         .filter((e) => e.sid === s.id && L.excusable(e) && !S.excuses.some((x) => x.eid === e.id && x.status === 'pending'))
         .sort((a, b) => b.date.localeCompare(a.date))
     : [];
-  const mine = s ? S.excuses.filter((x) => x.sid === s.id).sort((a, b) => b.at.localeCompare(a.at)) : [];
+  const mine = s ? S.excuses.filter((x) => x.sid === s.id).reverse().sort((a, b) => b.at.localeCompare(a.at)) : [];
   return `<div><h1>공결 신청</h1><p class="sub">번호만 입력하면 돼요. 부총대가 증빙을 확인하고 승인하면 해당 자봉이 무효 처리돼요.</p></div>
   <div class="card"><label class="fld"><span>내 번호</span><input id="exc-no" inputmode="numeric" value="${esc(f.no)}" data-bind="excForm.no" data-rerender="1" placeholder="예: 56"></label>
   ${s ? (cands.length ? `<label class="fld"><span>공결 처리할 출결</span><select id="exc-eid" data-bind="excForm.eid"><option value="">선택하세요</option>${cands.map((e) => `<option value="${e.id}" ${f.eid === e.id ? 'selected' : ''}>${mdw(e.date)} ${esc(periodLabel(e))} ${e.item} ${sgn(e.points)}</option>`).join('')}</select></label>
@@ -339,9 +341,9 @@ function periodsOf(date) {
   if (!ps.some((p) => p.morning)) ps.unshift({ id: `v:${date}:아침 출석`, date, label: '아침 출석', morning: true });
   return ps.sort((a, b) => (b.morning ? 1 : 0) - (a.morning ? 1 : 0));
 }
-// 내가 보낸 출석 요청 중 가장 최근 것 (총대단)
-const myAttReq = (pid) =>
-  (S.attRequests || []).filter((a) => a.pid === pid && a.by === UI.user).sort((a, b) => b.at.localeCompare(a.at))[0];
+// 내가 보낸 출석 요청 중 가장 최근 것 (총대단). 서버가 보낸 시각순 목록의 마지막이다
+// (화면용 시각은 분 단위라, 같은 분에 다시 보낸 요청을 시각 글자로 비교하면 예전 것을 고를 수 있다)
+const myAttReq = (pid) => (S.attRequests || []).filter((a) => a.pid === pid && a.by === UI.user).at(-1);
 function attDraft(pid) {
   if (!UI.draft[pid]) {
     const mine = !isAdmin() && myAttReq(pid);
@@ -350,6 +352,8 @@ function attDraft(pid) {
   return UI.draft[pid];
 }
 const ST = { present: ['✓', '출석'], late: ['지', '지각'], absent: ['결', '결석'], excused: ['공', '공결'] };
+// 출결 초안과 저장된 출결이 같은지 (학생 순서와 무관하게)
+const sameAtt = (a, b) => Object.keys(a).length === Object.keys(b).length && Object.keys(a).every((k) => a[k] === b[k]);
 
 function vAttend() {
   const ps = periodsOf(UI.attDate);
@@ -361,7 +365,7 @@ function vAttend() {
     const c = { late: 0, absent: 0, excused: 0 };
     Object.values(d).forEach((v) => c[v] != null && c[v]++);
     const saved = !!S.att[pid];
-    const dirty = JSON.stringify(d) !== JSON.stringify(S.att[pid] || {});
+    const dirty = !sameAtt(d, S.att[pid] || {});
     const admin = isAdmin();
     const mine = !admin && myAttReq(pid);
     const pendingHere = admin ? (S.attRequests || []).filter((a) => a.pid === pid && a.status === 'pending') : [];
@@ -395,7 +399,7 @@ function vAttend() {
 
 function vRecord() {
   const q = UI.recFilter.trim();
-  let list = [...S.ledger].sort((a, b) => b.date.localeCompare(a.date) || b.at.localeCompare(a.at));
+  let list = [...S.ledger].reverse().sort((a, b) => b.date.localeCompare(a.date) || b.at.localeCompare(a.at));
   if (q) list = list.filter((e) => String(noOf(e.sid)) === q || e.item.includes(q) || (e.detail || '').includes(q));
   const shown = list.slice(0, 40);
   const row = (e) => {
@@ -529,7 +533,7 @@ function vManage() {
     ${plan.adjs.length ? '<p class="hint" style="margin:0">자봉 조정은 점수를 덮어쓰지 않고, 차이만큼 "자봉 조정" 기록을 추가해요. 처음 들어오는 학생은 "기존 누적"으로 기록돼요.</p>' : ''}
     <button class="btn" data-act="roster-apply" ${plan.errors.length || !total ? 'disabled' : ''}>${total}건 적용</button>` : ''}</div></div>
 
-  <details class="card"><summary><b>명단 하나씩 고치기 (${active().length}명)</b></summary>
+  <details class="card" ${UI.rosterOpen ? 'open' : ''}><summary data-act="roster-toggle"><b>명단 하나씩 고치기 (${active().length}명)</b></summary>
   <div class="req-top"><span></span><button class="btn ghost small" data-act="stu-add">학생 추가</button></div>
   <p class="hint" style="margin:0">번호를 바꿔도 기록은 그 학생을 따라가요. 제외해도 기록은 남아요. 이름은 출석 체크용이라 관리자에게만 보여요.</p>
   <div class="mlist">${all.map((s) => `<div class="mrow"><input type="number" class="no-in" data-sid="${s.id}" value="${s.no}" aria-label="번호" ${s.active ? '' : 'disabled'}><input class="grow name-in" data-sid="${s.id}" value="${esc(s.name)}" placeholder="이름" aria-label="이름" style="width:auto;min-width:0" ${s.active ? '' : 'disabled'}><span class="note">${s.active ? `자봉 ${bal(s.id)}` : '제외됨'}</span><button class="btn ghost small" data-act="stu-toggle" data-sid="${s.id}">${s.active ? '제외' : '복귀'}</button></div>`).join('')}</div>
@@ -579,7 +583,7 @@ function vHistory() {
     if (!h.loading) {
       h.loading = true;
       loadHistory()
-        .catch((e) => toast(e.message))
+        .catch((e) => (e.code === '28000' ? signOut(e.message) : toast(e.message)))
         .finally(() => {
           h.loading = false;
           render();
@@ -894,8 +898,12 @@ async function saveAttendance(asRequest) {
     await run('request_attendance', { p_period: pid, p_statuses: draft }, '출석 요청을 보냈어요 · 부총대 확인을 기다려요');
     return;
   }
-  await run('save_attendance', { p_period: pid, p_statuses: draft }, (n) => `저장했어요 · 새 기록 ${n}건`);
+  // 저장이 끝나면 초안을 지운 뒤에 다시 그린다 (먼저 그리면 방금 저장한 초안이 "변경 사항 있음"으로 보인다)
+  const n = await rpc('save_attendance', { p_token: token(), p_period: pid, p_statuses: draft });
   delete UI.draft[pid];
+  await refresh();
+  render();
+  toast(`저장했어요 · 새 기록 ${n}건`);
 }
 
 function readMyPresets() {
@@ -1362,6 +1370,11 @@ const A = {
   'hist-more': async () => {
     UI.hist.limit += 50;
     await loadHistory();
+  },
+  // 명단 하나씩 고치기를 펼친 채로 두어야 학생을 추가·제외한 뒤 바로 이어서 고칠 수 있다
+  'roster-toggle': () => {
+    UI.rosterOpen = !UI.rosterOpen;
+    return true;
   },
   'mypresets-toggle': () => {
     UI.myPresetsOpen = !UI.myPresetsOpen;

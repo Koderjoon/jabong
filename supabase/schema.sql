@@ -855,7 +855,7 @@ begin
   for p in select * from jsonb_array_elements(coalesce(p_list, '[]')) loop
     i := i + 1;
     if coalesce(trim(p ->> 'name'), '') <> '' then
-      if (p ->> 'points')::int = 0 then raise exception '점수는 0이 아닌 정수여야 해요'; end if;
+      if coalesce(p ->> 'points', '') !~ '^-?[0-9]{1,6}$' or (p ->> 'points')::int = 0 then raise exception '점수는 0이 아닌 정수여야 해요'; end if;
       insert into presets (name, points, sort, owner) values (trim(p ->> 'name'), (p ->> 'points')::int, 100 + i, who);
     end if;
   end loop;
