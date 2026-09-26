@@ -123,3 +123,15 @@ test('내보내기 시트: 기간 시작·변동·현재 자봉, 이름은 넣�
   assert.deepEqual(revisions[0].change, '점수: +2 → +1');
   assert.ok(!JSON.stringify({ summary, rows, revisions }).includes('학생1'));
 });
+
+test('0.5점: 공지 문구, 합계, 명단 붙여넣기', () => {
+  const S = state();
+  S.add('2026-09-26', '실습', '', 0.5, [3, 1]);
+  S.add('2026-09-26', '실습', '', 0.5, [3]);
+  S.add('2026-09-26', '매점', '', -1.5, [2]);
+  assert.equal(genNotice(S, '2026-09-26', '2026-09-26'), '😿 9/26 자봉, 상점 공지하겠습니다.\n실습: 1, 3 (+0.5)\n\n매점: 2 (-1.5)');
+  assert.equal(bal(S, 's3'), 1);
+  const ok = planRoster(S, '1\t학생1\t2.5', false);
+  assert.deepEqual(ok.adjs.map((a) => [a.from, a.to, a.delta]), [[0.5, 2.5, 2]]);
+  assert.match(planRoster(S, '1\t학생1\t2.3', false).errors[0], /0\.5점 단위/);
+});

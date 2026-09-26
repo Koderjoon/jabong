@@ -16,6 +16,8 @@ export const mdw = (d) => `${md(d)}(${DOW[new Date(d + 'T00:00:00').getDay()]})`
 export const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul' }).format(new Date());
 
 export const live = (e) => !e.voided;
+// 직접 입력하는 점수는 0.5점 단위까지 허용한다 (출석 자동 기록은 정수)
+export const isHalfStep = (p) => Number.isFinite(p) && Number.isInteger(p * 2);
 export const stu = (S, id) => S.students.find((s) => s.id === id);
 export const noOf = (S, id) => stu(S, id)?.no ?? '?';
 export const active = (S) => S.students.filter((s) => s.active).sort((a, b) => a.no - b.no);
@@ -125,14 +127,18 @@ export function planRoster(S, text, replace) {
       .map((c) => c.trim())
       .filter(Boolean);
     if (!cells.length) return;
-    const INT = /^[+-]?\d+$/;
+    const NUM = /^[+-]?\d+(\.\d+)?$/;
     const ni = cells.findIndex((c) => /^\d+$/.test(c));
     const num = cells[ni];
-    const name = cells.find((c) => !INT.test(c));
-    const score = cells.find((c, j) => j !== ni && INT.test(c));
+    const name = cells.find((c) => !NUM.test(c));
+    const score = cells.find((c, j) => j !== ni && NUM.test(c));
     if (!num && /번호|이름|성명/.test(line)) return;
     if (!num || !name) {
       errors.push(`${i + 1}번째 줄 "${line.trim()}": 번호와 이름이 모두 있어야 해요`);
+      return;
+    }
+    if (score != null && !isHalfStep(Number(score))) {
+      errors.push(`${i + 1}번째 줄 "${line.trim()}": 자봉은 0.5점 단위로 적어 주세요`);
       return;
     }
     rows.push({ no: Number(num), name, score: score == null ? null : Number(score) });

@@ -112,3 +112,19 @@ do $$ begin
 exception when insufficient_privilege then null;
 end $$;
 \echo 사진 검증 통과
+
+-- 직접 입력은 0.5점 단위까지 된다
+set role anon;
+select (login('부총대', '1234')::json ->> 'token') as t2 \gset
+select add_entries(:'t2', '2026-09-26', array[:'s1']::uuid[], '실습', '', 0.5);
+do $$ begin
+  perform add_entries((select token from sessions s join accounts a using (role) where a.is_admin limit 1), '2026-09-26', array[(select id from students limit 1)], '실습', '', 0.3);
+  raise exception 'FAIL: 0.3점이 통과함';
+exception when insufficient_privilege then null;
+  when others then if sqlerrm like 'FAIL%' then raise; end if;
+end $$;
+select roster_apply(:'t2', '[]', format('[{"name":"사아자","to":2.5}]')::jsonb, '2026-09-26');
+set role postgres;
+select pg_temp.ok((select sum(points) from ledger where student_id = :'s3' and voided_at is null) = 2.5, '명단 붙여넣기 자봉 2.5');
+select pg_temp.ok((select json_agg(e) from json_array_elements(public_state() -> 'ledger') e where (e ->> 'points')::numeric = 0.5) is not null, '0.5점 공개 상태');
+\echo 0.5점 테스트 통과

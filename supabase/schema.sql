@@ -48,6 +48,21 @@ create table if not exists attendance (
   primary key (period_id, student_id)
 );
 
+-- (0.5점 도입 전에 만든 DB라면) 점수 칸을 0.5 단위로 바꾸고, 정수 버전 함수를 지운다
+do $$ begin
+  if exists (select 1 from information_schema.columns where table_name = 'ledger' and column_name = 'points' and data_type = 'integer') then
+    alter table ledger alter column points type numeric(7,1);
+    alter table ledger add constraint ledger_points_half check (points * 2 = trunc(points * 2));
+    alter table requests alter column points type numeric(7,1);
+    alter table requests add constraint requests_points_half check (points * 2 = trunc(points * 2));
+  end if;
+end $$;
+drop function if exists _entry(date, uuid, text, text, int, text, uuid, uuid, text, text, text);
+drop function if exists _check_items(text, int);
+drop function if exists create_request(uuid, date, uuid[], text, text, int, text, text);
+drop function if exists add_entries(uuid, date, uuid[], text, text, int);
+drop function if exists edit_entry(uuid, uuid, date, text, text, int, text);
+
 -- 공개되는 기록 본문. 누가 기록·요청했는지는 ledger_private에 따로 둔다.
 create table if not exists ledger (
   id uuid primary key default gen_random_uuid(),
@@ -55,7 +70,7 @@ create table if not exists ledger (
   student_id uuid not null references students on delete cascade,
   item text not null,
   detail text not null default '',
-  points int not null,
+  points numeric(7,1) not null check (points * 2 = trunc(points * 2)),
   src text not null check (src in ('att', 'manual', 'request', 'import', 'carry')),
   period_id uuid references periods on delete set null,
   request_id uuid,
@@ -99,7 +114,7 @@ create table if not exists requests (
   student_ids uuid[] not null,
   item text not null,
   detail text not null default '',
-  points int not null,
+  points numeric(7,1) not null check (points * 2 = trunc(points * 2)),
   reason text not null default '',
   photo_id uuid references photos on delete set null,
   status text not null default 'pending' check (status in ('pending', 'approved', 'rejected')),
@@ -248,7 +263,7 @@ begin
   return r;
 end $$;
 
-create or replace function _entry(p_date date, p_sid uuid, p_item text, p_detail text, p_points int, p_src text,
+create or replace function _entry(p_date date, p_sid uuid, p_item text, p_detail text, p_points numeric, p_src text,
   p_period uuid, p_request uuid, p_by text, p_requested_by text default null, p_approved_by text default null)
 returns uuid language plpgsql security definer set search_path = public as $$
 declare nid uuid;
@@ -289,10 +304,12 @@ begin
   delete from sessions where expires_at < now();
 end $$;
 
-create or replace function _check_items(p_item text, p_points int) returns void language plpgsql as $$
+create or replace function _check_items(p_item text, p_points numeric) returns void language plpgsql as $$
 begin
   if coalesce(trim(p_item), '') = '' then raise exception '항목명을 입력하세요'; end if;
-  if p_points is null or p_points = 0 then raise exception '점수는 0이 아닌 정수여야 해요'; end if;
+  if p_points is null or p_points = 0 or p_points * 2 <> trunc(p_points * 2) then
+    raise exception '점수는 0이 아닌 0.5점 단위로 적어 주세요';
+  end if;
 end $$;
 
 -- 화면이 쓰는 전체 상태를 JSON 하나로 만든다. p_private가 아니면 이름·기록자를 뺀다.
@@ -417,7 +434,7 @@ begin
   return (select data from photos where id = p_id);
 end $$;
 
-create or replace function create_request(p_token uuid, p_date date, p_sids uuid[], p_item text, p_detail text, p_points int, p_reason text, p_photo text)
+create or replace function create_request(p_token uuid, p_date date, p_sids uuid[], p_item text, p_detail text, p_points numeric, p_reason text, p_photo text)
 returns uuid language plpgsql security definer set search_path = public as $$
 declare who text := _session(p_token, false); nid uuid;
 begin
@@ -506,7 +523,7 @@ begin
   return n;
 end $$;
 
-create or replace function add_entries(p_token uuid, p_date date, p_sids uuid[], p_item text, p_detail text, p_points int) returns int
+create or replace function add_entries(p_token uuid, p_date date, p_sids uuid[], p_item text, p_detail text, p_points numeric) returns int
 language plpgsql security definer set search_path = public as $$
 declare who text := _session(p_token, true); sid uuid; n int := 0;
 begin
@@ -519,7 +536,7 @@ begin
   return n;
 end $$;
 
-create or replace function edit_entry(p_token uuid, p_id uuid, p_date date, p_item text, p_detail text, p_points int, p_reason text) returns void
+create or replace function edit_entry(p_token uuid, p_id uuid, p_date date, p_item text, p_detail text, p_points numeric, p_reason text) returns void
 language plpgsql security definer set search_path = public as $$
 declare who text := _session(p_token, true); e ledger; b jsonb := '{}'; a jsonb := '{}';
 begin
@@ -594,7 +611,7 @@ end $$;
 -- p_adjs: [{name, to}]  — 해당 학생의 자봉이 to가 되도록 차이만큼 기록을 더한다
 create or replace function roster_apply(p_token uuid, p_ops jsonb, p_adjs jsonb, p_date date) returns int
 language plpgsql security definer set search_path = public as $$
-declare who text := _session(p_token, true); o jsonb; a jsonb; sid uuid; cur int; fresh boolean; n int := 0;
+declare who text := _session(p_token, true); o jsonb; a jsonb; sid uuid; cur numeric; fresh boolean; n int := 0;
 begin
   -- 번호를 바꿀 학생은 잠시 명단에서 빼 두어야 번호를 서로 맞바꿀 수 있다
   update students set active = false
@@ -613,9 +630,10 @@ begin
     select id into sid from students where active and name = a ->> 'name';
     if sid is null then raise exception '학생을 찾을 수 없어요: %', a ->> 'name'; end if;
     select coalesce(sum(points), 0), count(*) = 0 into cur, fresh from ledger where student_id = sid and voided_at is null;
-    if (a ->> 'to')::int <> cur then
+    if (a ->> 'to')::numeric * 2 <> trunc((a ->> 'to')::numeric * 2) then raise exception '자봉 점수는 0.5점 단위로 적어 주세요: %', a ->> 'name'; end if;
+    if (a ->> 'to')::numeric <> cur then
       perform _entry(p_date, sid, case when fresh then '기존 누적' else '자봉 조정' end,
-        case when fresh then '' else '명단 붙여넣기' end, (a ->> 'to')::int - cur, 'import', null, null, who);
+        case when fresh then '' else '명단 붙여넣기' end, (a ->> 'to')::numeric - cur, 'import', null, null, who);
     end if;
     n := n + 1;
   end loop;
@@ -646,7 +664,7 @@ declare who text := _session(p_token, true); old_n int; carry_n int := 0; r reco
 begin
   select count(*) into old_n from ledger where date <= p_cut;
   create temp table _sums on commit drop as
-    select student_id, sum(points)::int as pts from ledger where date <= p_cut and voided_at is null group by student_id;
+    select student_id, sum(points) as pts from ledger where date <= p_cut and voided_at is null group by student_id;
   delete from ledger where date <= p_cut;
   for r in select * from _sums where pts <> 0 loop
     perform _entry(p_cut, r.student_id, '이월', format('%s까지 합계', to_char(p_cut, 'FMMM/FMDD')), r.pts, 'carry', null, null, who);
@@ -680,9 +698,9 @@ do $$ declare f text; begin
     execute 'revoke execute on all functions in schema public from public, anon, authenticated';
     foreach f in array array[
       'public_state()', 'create_excuse(uuid,uuid,text,text)', 'login(text,text)', 'recover(text,text,text)',
-      'private_state(uuid)', 'logout(uuid)', 'get_photo(uuid,uuid)', 'create_request(uuid,date,uuid[],text,text,int,text,text)',
+      'private_state(uuid)', 'logout(uuid)', 'get_photo(uuid,uuid)', 'create_request(uuid,date,uuid[],text,text,numeric,text,text)',
       'change_pw(uuid,text,text)', 'reset_pw(uuid,text,text)', 'new_recovery(uuid,text)', 'ensure_period(uuid,date,text,boolean)',
-      'save_attendance(uuid,uuid,jsonb)', 'add_entries(uuid,date,uuid[],text,text,int)', 'edit_entry(uuid,uuid,date,text,text,int,text)',
+      'save_attendance(uuid,uuid,jsonb)', 'add_entries(uuid,date,uuid[],text,text,numeric)', 'edit_entry(uuid,uuid,date,text,text,numeric,text)',
       'void_entry(uuid,uuid,text)', 'review_request(uuid,uuid,boolean,text)', 'review_excuse(uuid,uuid,boolean,text)',
       'roster_apply(uuid,jsonb,jsonb,date)', 'presets_save(uuid,jsonb)', 'purge(uuid,date)'
     ] loop

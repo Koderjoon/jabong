@@ -151,8 +151,8 @@ function entryFields(fk) {
   return `<div class="row2"><label class="fld grow"><span>날짜</span><input type="date" id="${fk}-date" value="${esc(f.date)}" data-bind="${fk}.date" data-rerender="1"></label>
   <label class="fld grow"><span>항목 불러오기</span><select id="${fk}-preset" data-bind="${fk}.preset" data-rerender="1"><option value="">직접 입력</option>${S.presets.map((p) => `<option value="${p.id}" ${f.preset === p.id ? 'selected' : ''}>${esc(p.name)} (${sgn(p.points)})</option>`).join('')}</select></label></div>
   <div class="row2"><label class="fld grow"><span>항목명</span><input id="${fk}-item" value="${esc(f.item)}" placeholder="예: 실습실 뒷정리 미흡" data-bind="${fk}.item" data-live="${fk}"></label>
-  <label class="fld pts-fld"><span>점수</span><input type="number" step="1" id="${fk}-points" value="${esc(f.points)}" data-bind="${fk}.points"></label></div>
-  <p class="hint">+는 자봉, −는 상점이에요. 항목명과 점수는 불러온 뒤에도 고칠 수 있어요.</p>
+  <label class="fld pts-fld"><span>점수</span><input type="number" step="0.5" inputmode="decimal" id="${fk}-points" value="${esc(f.points)}" data-bind="${fk}.points"></label></div>
+  <p class="hint">+는 자봉, −는 상점이에요. 0.5점 단위로도 적을 수 있어요. 항목명과 점수는 불러온 뒤에도 고칠 수 있어요.</p>
   <label class="fld"><span>세부내용 (선택)</span><input id="${fk}-detail" value="${esc(f.detail)}" placeholder="예: 전원 안끔" data-bind="${fk}.detail"></label>
   <label class="fld"><span>학생 찾기 (이름 또는 번호)</span><input id="${fk}-find" type="search" value="${esc(f.find)}" placeholder="예: 김민 또는 56" autocomplete="off" data-bind="${fk}.find" data-live="${fk}"></label>
   <div id="${fk}-sugg">${P.sugg}</div>
@@ -273,7 +273,7 @@ function vRecord() {
   const row = (e) => {
     let extra = '';
     if (UI.editId === e.id)
-      extra = `<div class="edit"><div class="row2"><label class="fld grow"><span>날짜</span><input type="date" id="ed-date" value="${e.date}"></label><label class="fld pts-fld"><span>점수</span><input type="number" id="ed-points" value="${e.points}"></label></div>
+      extra = `<div class="edit"><div class="row2"><label class="fld grow"><span>날짜</span><input type="date" id="ed-date" value="${e.date}"></label><label class="fld pts-fld"><span>점수</span><input type="number" step="0.5" inputmode="decimal" id="ed-points" value="${e.points}"></label></div>
       <label class="fld"><span>항목명</span><input id="ed-item" value="${esc(e.item)}"></label><label class="fld"><span>세부</span><input id="ed-detail" value="${esc(e.detail)}"></label>
       <label class="fld"><span>수정 사유 (필수, 학생들에게 공개)</span><input id="ed-reason"></label><div class="btns"><button class="btn small" data-act="edit-save" data-id="${e.id}">수정 저장</button><button class="btn ghost small" data-act="edit-cancel">닫기</button></div></div>`;
     if (UI.voidId === e.id)
@@ -585,7 +585,7 @@ async function submitEntry(fk) {
   const { sids, bad } = parseNums(f.nums);
   const pts = Number(f.points);
   if (!f.item.trim()) return toast('항목명을 입력하세요');
-  if (!Number.isInteger(pts) || pts === 0) return toast('점수는 0이 아닌 정수여야 해요');
+  if (!L.isHalfStep(pts) || pts === 0) return toast('점수는 0이 아닌 0.5점 단위로 적어 주세요');
   if (!sids.length || bad.length) return toast('학생 번호를 확인하세요');
   const common = { p_date: f.date, p_sids: sids, p_item: f.item.trim(), p_detail: f.detail.trim(), p_points: pts };
   if (fk === 'reqForm') {
@@ -789,7 +789,7 @@ const A = {
   },
   'edit-save': async (d) => {
     const pts = Number(val('ed-points'));
-    if (!Number.isInteger(pts)) return toast('점수는 정수여야 해요');
+    if (!L.isHalfStep(pts) || pts === 0) return toast('점수는 0이 아닌 0.5점 단위로 적어 주세요');
     await rpc('edit_entry', { p_token: token(), p_id: d.id, p_date: val('ed-date'), p_item: val('ed-item'), p_detail: val('ed-detail'), p_points: pts, p_reason: val('ed-reason') });
     UI.editId = null;
     UI.noticeText = null;
