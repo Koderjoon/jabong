@@ -1,0 +1,20 @@
+{
+  "name": "jabong",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "25학번 자봉·상점 장부",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.117.2",
+    "write-excel-file": "^4.1.1"
+  },
+  "devDependencies": {
+    "vite": "^8.3.1"
+  }
+}

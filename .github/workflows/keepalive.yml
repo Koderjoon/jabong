@@ -1,0 +1,23 @@
+name: 잠들지 않게 깨우기
+
+# Supabase 무료 프로젝트는 1주일 동안 접속이 없으면 일시정지된다. 사흘마다 한 번 공개 상태를 읽어 깨워 둔다.
+on:
+  schedule:
+    - cron: '17 3 */3 * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 공개 상태 읽기
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_ANON_KEY" ]; then
+            echo "저장소 Secrets에 SUPABASE_URL, SUPABASE_ANON_KEY를 넣어 주세요 (README 4번)"; exit 1
+          fi
+          curl -fsS -X POST "$SUPABASE_URL/rest/v1/rpc/public_state" \
+            -H "apikey: $SUPABASE_ANON_KEY" -H "Content-Type: application/json" -d '{}' -o /dev/null
+          echo "깨웠어요"
