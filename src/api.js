@@ -1,8 +1,9 @@
 // Supabase 연결. 모든 읽기·쓰기는 supabase/schema.sql의 함수(RPC)로만 한다.
 import { createClient } from '@supabase/supabase-js';
 
-const url = import.meta.env.VITE_SUPABASE_URL;
-const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
+// Supabase 설정 화면의 Data API 주소는 끝에 /rest/v1/ 이 붙어 있어서, 그대로 넣어도 되게 떼어 낸다
+const url = (import.meta.env.VITE_SUPABASE_URL || '').trim().replace(/\/+$/, '').replace(/\/rest\/v1$/, '');
+const key = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim();
 
 export const configured = Boolean(url && key);
 const sb = configured ? createClient(url, key, { auth: { persistSession: false } }) : null;
