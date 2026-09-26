@@ -88,8 +88,11 @@ textarea{resize:vertical;min-height:70px}
 .linkbtn{border:0;background:none;color:var(--accent);font-size:12px;padding:2px 0;text-align:left}
 .ptsbox{position:relative}
 .ptsbox input{padding-right:40px}
-.ptsbox .ptsdrop{position:absolute;top:1px;right:1px;bottom:1px;width:36px;display:flex;align-items:center;justify-content:center;border-left:1px solid var(--line);border-radius:0 9px 9px 0;background:var(--sunk);color:var(--accent);font-size:13px;pointer-events:none}
-.ptsbox select{position:absolute;top:0;right:0;bottom:0;width:38px;opacity:0;cursor:pointer;padding:0}
+.ptsbox .ptsdrop{position:absolute;top:1px;right:1px;bottom:1px;width:36px;border:0;border-left:1px solid var(--line);border-radius:0 9px 9px 0;background:var(--sunk);color:var(--accent);font-size:13px;padding:0}
+.ptspop{position:absolute;right:0;top:calc(100% + 4px);z-index:20;display:grid;grid-template-columns:repeat(5,40px);gap:4px;padding:6px;background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:0 8px 24px rgb(0 0 0/.14)}
+.ptspop button{height:36px;border:1px solid var(--line);border-radius:8px;background:var(--surface);font-family:var(--mono);font-weight:600;font-size:14px;padding:0}
+.ptspop button.p{color:var(--pen)}.ptspop button.m{color:var(--merit)}
+.ptspop button:active{background:var(--accent-soft)}
 .pickgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(64px,1fr));gap:5px}
 .pickgrid button{border:1px solid var(--line);background:var(--surface);border-radius:9px;padding:6px 2px;display:flex;flex-direction:column;align-items:center;min-width:0}
 .pickgrid b{font-family:var(--mono);font-size:15px}

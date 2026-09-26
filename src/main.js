@@ -200,12 +200,22 @@ function updateLive(fk) {
   });
 }
 
-// 점수 칸: 가운데는 숫자를 직접 적고, 오른쪽 ▾를 누르면 +5 ~ -5(1점 단위) 목록에서 고른다
+// 점수 칸: 가운데는 숫자를 직접 적고, 오른쪽 ▾를 누르면 바로 아래에 작은 숫자판이 뜬다.
+// 숫자를 누르면 곧바로 들어가고 숫자판은 닫힌다 (폰 기본 선택창처럼 "완료"를 누를 필요가 없다).
 const POINT_CHOICES = [5, 4, 3, 2, 1, -1, -2, -3, -4, -5];
 function pointsField(fk) {
   const f = UI[fk];
   return `<div class="ptsbox"><input type="number" step="0.5" inputmode="decimal" id="${fk}-points" value="${esc(f.points)}" data-bind="${fk}.points" aria-label="점수 직접 입력">
-  <span class="ptsdrop" aria-hidden="true">▾</span><select data-ptsdrop="${fk}" aria-label="점수 목록에서 고르기"><option value="" hidden></option>${POINT_CHOICES.map((p) => `<option value="${p}">${sgn(p)}</option>`).join('')}</select></div>`;
+  <button type="button" class="ptsdrop" data-act="pts-open" data-fk="${fk}" aria-label="점수 고르기" aria-expanded="false">▾</button>
+  <div class="ptspop" id="${fk}-ptspop" hidden>${POINT_CHOICES.map((p) => `<button type="button" class="${p > 0 ? 'p' : 'm'}" data-act="pts-pick" data-fk="${fk}" data-v="${p}">${sgn(p)}</button>`).join('')}</div></div>`;
+}
+function closePtsPops(except) {
+  document.querySelectorAll('.ptspop').forEach((el) => {
+    if (el !== except) {
+      el.hidden = true;
+      el.parentElement.querySelector('.ptsdrop')?.setAttribute('aria-expanded', 'false');
+    }
+  });
 }
 
 const myPresets = () => S.presets.filter((p) => UI.user && p.owner === UI.user);
@@ -228,7 +238,7 @@ function entryFields(fk) {
   <label class="fld grow"><span>항목 불러오기</span><select id="${fk}-preset" data-bind="${fk}.preset" data-rerender="1"><option value="">직접 입력</option>${presetOptions(f.preset)}</select></label></div>
   <div class="row2"><label class="fld grow"><span>항목명</span><input id="${fk}-item" value="${esc(f.item)}" placeholder="예: 실습실 뒷정리 미흡" data-bind="${fk}.item" data-live="${fk}"></label>
   <label class="fld pts-fld"><span>점수</span>${pointsField(fk)}</label></div>
-  <p class="hint">+는 자봉, −는 상점이에요. 목록에 없는 점수는 맨 아래 "직접 입력"을 고르세요. 항목명과 점수는 불러온 뒤에도 고칠 수 있어요.</p>
+  <p class="hint">+는 자봉, −는 상점이에요. 점수는 칸에 직접 적거나 ▾를 눌러 고르세요.</p>
   <label class="fld"><span>세부내용 (선택)</span><input id="${fk}-detail" value="${esc(f.detail)}" placeholder="예: 전원 안끔" data-bind="${fk}.detail"></label>
   <label class="fld"><span>학생</span><input id="${fk}-find" type="search" value="${esc(f.find)}" placeholder="이름이나 번호 (예: 김민, 56 59)" autocomplete="off" enterkeyhint="done" data-bind="${fk}.find" data-picker="${fk}"></label>
   <p class="hint">이름 일부를 치고 목록에서 고르거나, 번호를 띄어 쓰며 연달아 적으세요.</p>
@@ -646,15 +656,6 @@ function rerenderKeep(el) {
 
 document.addEventListener('input', (ev) => {
   const el = ev.target;
-  // 점수 목록에서 고르면 가운데 칸에 넣고, 같은 점수를 다시 고를 수 있게 목록은 비워 둔다
-  if (el.dataset?.ptsdrop) {
-    const fk = el.dataset.ptsdrop;
-    UI[fk].points = Number(el.value);
-    const box = document.getElementById(fk + '-points');
-    if (box) box.value = el.value;
-    el.value = '';
-    return;
-  }
   const b = el.dataset?.bind;
   if (!b) return;
   setPath(b, el.type === 'checkbox' ? el.checked : el.value);
@@ -1129,6 +1130,20 @@ const A = {
     await run('roster_apply', { p_ops: ops, p_adjs: [], p_date: TODAY }, '명단을 저장했어요');
     return true;
   },
+  'pts-open': (d) => {
+    const pop = document.getElementById(d.fk + '-ptspop');
+    closePtsPops(pop);
+    pop.hidden = !pop.hidden;
+    document.querySelector(`[data-act="pts-open"][data-fk="${d.fk}"]`)?.setAttribute('aria-expanded', String(!pop.hidden));
+    return true;
+  },
+  'pts-pick': (d) => {
+    UI[d.fk].points = Number(d.v);
+    const box = document.getElementById(d.fk + '-points');
+    if (box) box.value = d.v;
+    closePtsPops();
+    return true;
+  },
   'mypresets-toggle': () => {
     UI.myPresetsOpen = !UI.myPresetsOpen;
     return true;
@@ -1156,6 +1171,8 @@ const A = {
 
 let busy = false;
 document.addEventListener('click', async (ev) => {
+  // 점수 숫자판 밖을 누르면 닫는다
+  if (!ev.target.closest('.ptsbox')) closePtsPops();
   const el = ev.target.closest('[data-act]');
   if (!el || busy) return;
   const act = el.dataset.act;
