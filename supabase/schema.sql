@@ -137,6 +137,19 @@ create table if not exists excuses (
   reviewed_at timestamptz
 );
 
+-- 총대단이 보낸 출석 요청. 부총대가 승인하면 그 교시의 출석으로 저장된다.
+create table if not exists attendance_requests (
+  id uuid primary key default gen_random_uuid(),
+  period_id uuid not null references periods on delete cascade,
+  statuses jsonb not null default '{}',
+  requested_by text not null,
+  status text not null default 'pending' check (status in ('pending', 'approved', 'rejected')),
+  reviewed_by text,
+  review_note text,
+  created_at timestamptz not null default now(),
+  reviewed_at timestamptz
+);
+
 -- 직책별 계정. role이 곧 화면에 보이는 이름이다.
 create table if not exists accounts (
   role text primary key,
@@ -170,18 +183,16 @@ create table if not exists app_version (
 insert into app_version (id) values (1) on conflict do nothing;
 
 insert into accounts (role, is_admin, sort) values
-  ('부총대', true, 1), ('총대', true, 2),
+  ('부총대', true, 1), ('총대', false, 2),
   ('실습부장 1', false, 3), ('실습부장 2', false, 4), ('운영부장', false, 5),
   ('총무', false, 6), ('학습부장', false, 7), ('정리부장', false, 8), ('치아부장', false, 9)
 on conflict do nothing;
 
--- 출석 체크 권한 (부총대·총대는 항상 가능). 칸을 처음 만들 때만 실습부장에게 켜 두고, 이후에는 관리 탭에서 바꾼다.
-do $$ begin
-  if not exists (select 1 from information_schema.columns where table_name = 'accounts' and column_name = 'can_attend') then
-    alter table accounts add column can_attend boolean not null default false;
-    update accounts set can_attend = true where role in ('실습부장 1', '실습부장 2');
-  end if;
-end $$;
+-- 관리자는 부총대 한 명이다. 총대는 총대단이다 (예전 DB는 여기서 바뀐다).
+update accounts set is_admin = false where role = '총대' and is_admin;
+-- 출석 요청을 보낼 수 있는 총대단: 실습부장 1·2와 총대 (고정)
+alter table accounts add column if not exists can_attend boolean not null default false;
+update accounts set can_attend = (role in ('실습부장 1', '실습부장 2', '총대')) where true;
 
 insert into presets (name, points, sort)
 select * from (values ('지각', 1, 1), ('결석', 2, 2), ('실습실 뒷정리 미흡', 1, 3), ('실습', 1, 4), ('소치 실습', 1, 5), ('매점', -1, 6)) v
@@ -200,6 +211,7 @@ alter table ledger_revisions enable row level security;
 alter table photos enable row level security;
 alter table requests enable row level security;
 alter table excuses enable row level security;
+alter table attendance_requests enable row level security;
 alter table accounts enable row level security;
 alter table sessions enable row level security;
 alter table settings enable row level security;
@@ -222,7 +234,7 @@ begin
 end $$;
 
 do $$ declare t text; begin
-  foreach t in array array['students','presets','periods','attendance','ledger','ledger_revisions','requests','excuses'] loop
+  foreach t in array array['students','presets','periods','attendance','ledger','ledger_revisions','requests','excuses','attendance_requests'] loop
     execute format('drop trigger if exists bump on %I', t);
     execute format('create trigger bump after insert or update or delete on %I for each statement execute function _bump()', t);
   end loop;
@@ -267,17 +279,17 @@ begin
   from sessions s join accounts a on a.role = s.role
   where s.token = p_token and s.expires_at > now();
   if r is null then raise exception '로그인이 끊겼어요. 다시 로그인해 주세요' using errcode = '28000'; end if;
-  if p_admin and not adm then raise exception '부총대·총대만 할 수 있어요' using errcode = '42501'; end if;
+  if p_admin and not adm then raise exception '부총대만 할 수 있어요' using errcode = '42501'; end if;
   return r;
 end $$;
 
--- 출석 체크는 부총대·총대와 출석 권한을 받은 총대단이 할 수 있다
+-- 출석은 부총대가 저장하고, 실습부장 1·2와 총대는 요청을 보낸다
 create or replace function _session_attend(p_token uuid) returns text
 language plpgsql security definer set search_path = public as $$
 declare r text := _session(p_token, false);
 begin
   if not exists (select 1 from accounts where role = r and (is_admin or can_attend)) then
-    raise exception '출석 체크 권한이 없어요' using errcode = '42501';
+    raise exception '출석을 요청할 수 있는 직책이 아니에요' using errcode = '42501';
   end if;
   return r;
 end $$;
@@ -347,6 +359,7 @@ language sql stable security definer set search_path = public as $$
         'id', l.id, 'date', l.date, 'sid', l.student_id, 'item', l.item, 'detail', l.detail, 'points', l.points,
         'src', l.src, 'pid', l.period_id, 'at', _kst(l.created_at),
         'by', case when p_private then case when l.src = 'request' then lp.requested_by else lp.created_by end end,
+        'requestedBy', case when p_private then lp.requested_by end,
         'approvedBy', case when p_private then lp.approved_by end,
         'voided', case when l.voided_at is null then null else json_build_object(
           'reason', l.void_reason, 'at', _kst(l.voided_at), 'by', case when p_private then lp.voided_by end) end,
@@ -367,6 +380,10 @@ language sql stable security definer set search_path = public as $$
         'points', r.points, 'reason', r.reason, 'photo', r.photo_id, 'status', r.status, 'note', r.review_note,
         'reviewer', r.reviewed_by, 'reviewedAt', _kst(r.reviewed_at), 'at', _kst(r.created_at)
       ) order by r.created_at), '[]') from requests r) else '[]'::json end,
+    'attRequests', case when p_private then (select coalesce(json_agg(json_build_object(
+        'id', a.id, 'pid', a.period_id, 'statuses', a.statuses, 'by', a.requested_by, 'status', a.status,
+        'note', a.review_note, 'reviewer', a.reviewed_by, 'at', _kst(a.created_at), 'reviewedAt', _kst(a.reviewed_at)
+      ) order by a.created_at), '[]') from attendance_requests a) else '[]'::json end,
     'accounts', (select json_agg(json_build_object('role', role, 'admin', is_admin, 'attend', is_admin or can_attend) order by sort) from accounts),
     'updatedAt', (select _kst(updated_at) from app_version where id = 1)
   )
@@ -428,7 +445,7 @@ begin
       recovery_locked_until = case when recovery_fails + 1 >= 5 then now() + interval '10 minutes' end where id = 1;
     return json_build_object('error', '복구 코드가 맞지 않아요');
   end if;
-  if not exists (select 1 from accounts where role = p_role and is_admin) then return json_build_object('error', '부총대나 총대만 복구할 수 있어요'); end if;
+  if not exists (select 1 from accounts where role = p_role and is_admin) then return json_build_object('error', '복구 코드로는 부총대 비밀번호만 새로 정할 수 있어요'); end if;
   if length(coalesce(p_new, '')) < 4 then return json_build_object('error', '새 비밀번호는 4자 이상이어야 해요'); end if;
   code := _new_code();
   update settings set recovery_hash = crypt(_norm_code(code), gen_salt('bf')), recovery_fails = 0, recovery_locked_until = null where id = 1;
@@ -453,7 +470,7 @@ $$;
 create or replace function get_photo(p_token uuid, p_id uuid) returns text language plpgsql security definer set search_path = public as $$
 begin
   perform _session(p_token, false);
-  -- 공결 증빙(진료확인서 등)은 부총대·총대만 본다
+  -- 공결 증빙(진료확인서 등)은 부총대만 본다
   if exists (select 1 from excuses where photo_id = p_id) then perform _session(p_token, true); end if;
   return (select data from photos where id = p_id);
 end $$;
@@ -480,7 +497,7 @@ begin
   update accounts set pw_hash = crypt(p_new, gen_salt('bf')) where role = who;
 end $$;
 
--- ───────────────────────── 부총대·총대 전용 ─────────────────────────
+-- ───────────────────────── 부총대 전용 ─────────────────────────
 
 create or replace function reset_pw(p_token uuid, p_role text, p_new text) returns void
 language plpgsql security definer set search_path = public, extensions as $$
@@ -492,14 +509,7 @@ begin
   delete from sessions where role = p_role;
 end $$;
 
-create or replace function set_attend(p_token uuid, p_role text, p_on boolean) returns void
-language plpgsql security definer set search_path = public as $$
-declare who text := _session(p_token, true);
-begin
-  update accounts set can_attend = coalesce(p_on, false) where role = p_role and not is_admin;
-  if not found then raise exception '총대단 직책만 바꿀 수 있어요'; end if;
-  update app_version set version = version + 1, updated_at = now() where id = 1;
-end $$;
+drop function if exists set_attend(uuid, text, boolean);
 
 create or replace function new_recovery(p_token uuid, p_pw text) returns text
 language plpgsql security definer set search_path = public, extensions as $$
@@ -525,11 +535,12 @@ begin
 end $$;
 
 -- 한 교시의 출결을 저장한다. p_statuses = {학생 id: 'late'|'absent'|'excused'} (없으면 출석)
-create or replace function save_attendance(p_token uuid, p_period uuid, p_statuses jsonb) returns int
+-- 한 교시의 출결을 반영한다. p_by는 저장(승인)한 사람, p_requested_by는 출석 요청을 보낸 사람
+create or replace function _apply_attendance(p_period uuid, p_statuses jsonb, p_by text, p_requested_by text) returns int
 language plpgsql security definer set search_path = public as $$
 declare
-  who text := _session_attend(p_token);
-  per periods; st record; want text; want_item text; cur ledger; pts int; n int := 0;
+  who text := p_by;
+  per periods; st record; want text; want_item text; cur ledger; pts int; n int := 0; nid uuid;
 begin
   select * into per from periods where id = p_period;
   if not found then raise exception '교시를 찾을 수 없어요'; end if;
@@ -549,10 +560,49 @@ begin
     end if;
     if want_item is not null and (cur.id is null or cur.item <> want_item) then
       select points into pts from presets where name = want_item order by sort limit 1;
-      perform _entry(per.date, st.id, want_item, per.label, coalesce(pts, case want_item when '지각' then 1 else 2 end), 'att', p_period, null, who);
+      nid := _entry(per.date, st.id, want_item, per.label, coalesce(pts, case want_item when '지각' then 1 else 2 end), 'att', p_period, null, who,
+        p_requested_by, case when p_requested_by is not null then who end);
       n := n + 1;
     end if;
   end loop;
+  return n;
+end $$;
+
+create or replace function save_attendance(p_token uuid, p_period uuid, p_statuses jsonb) returns int
+language plpgsql security definer set search_path = public as $$
+declare who text := _session(p_token, true);
+begin
+  return _apply_attendance(p_period, p_statuses, who, null);
+end $$;
+
+-- 총대단의 출석 요청. 같은 사람이 같은 교시에 대기 중인 요청이 있으면 내용을 바꾼다.
+create or replace function request_attendance(p_token uuid, p_period uuid, p_statuses jsonb) returns uuid
+language plpgsql security definer set search_path = public as $$
+declare who text := _session_attend(p_token); rid uuid;
+begin
+  if not exists (select 1 from periods where id = p_period) then raise exception '교시를 찾을 수 없어요'; end if;
+  select id into rid from attendance_requests where period_id = p_period and requested_by = who and status = 'pending';
+  if rid is null then
+    insert into attendance_requests (period_id, statuses, requested_by) values (p_period, coalesce(p_statuses, '{}'), who) returning id into rid;
+  else
+    update attendance_requests set statuses = coalesce(p_statuses, '{}'), created_at = now() where id = rid;
+  end if;
+  return rid;
+end $$;
+
+create or replace function review_attendance(p_token uuid, p_id uuid, p_approve boolean, p_note text) returns int
+language plpgsql security definer set search_path = public as $$
+declare who text := _session(p_token, true); r attendance_requests; n int := 0;
+begin
+  select * into r from attendance_requests where id = p_id for update;
+  if not found or r.status <> 'pending' then raise exception '이미 처리된 요청이에요'; end if;
+  if p_approve then
+    n := _apply_attendance(r.period_id, r.statuses, who, r.requested_by);
+    update attendance_requests set status = 'approved', reviewed_by = who, reviewed_at = now() where id = p_id;
+  else
+    if coalesce(trim(p_note), '') = '' then raise exception '반려 사유를 입력하세요'; end if;
+    update attendance_requests set status = 'rejected', review_note = trim(p_note), reviewed_by = who, reviewed_at = now() where id = p_id;
+  end if;
   return n;
 end $$;
 
@@ -733,8 +783,8 @@ do $$ declare f text; begin
     foreach f in array array[
       'public_state()', 'create_excuse(uuid,uuid,text,text)', 'login(text,text)', 'recover(text,text,text)',
       'private_state(uuid)', 'logout(uuid)', 'get_photo(uuid,uuid)', 'create_request(uuid,date,uuid[],text,text,numeric,text,text)',
-      'change_pw(uuid,text,text)', 'reset_pw(uuid,text,text)', 'set_attend(uuid,text,boolean)', 'new_recovery(uuid,text)', 'ensure_period(uuid,date,text,boolean)',
-      'save_attendance(uuid,uuid,jsonb)', 'add_entries(uuid,date,uuid[],text,text,numeric)', 'edit_entry(uuid,uuid,date,text,text,numeric,text)',
+      'change_pw(uuid,text,text)', 'reset_pw(uuid,text,text)', 'new_recovery(uuid,text)', 'ensure_period(uuid,date,text,boolean)',
+      'save_attendance(uuid,uuid,jsonb)', 'request_attendance(uuid,uuid,jsonb)', 'review_attendance(uuid,uuid,boolean,text)', 'add_entries(uuid,date,uuid[],text,text,numeric)', 'edit_entry(uuid,uuid,date,text,text,numeric,text)',
       'void_entry(uuid,uuid,text)', 'review_request(uuid,uuid,boolean,text)', 'review_excuse(uuid,uuid,boolean,text)',
       'roster_apply(uuid,jsonb,jsonb,date)', 'presets_save(uuid,jsonb)', 'purge(uuid,date)'
     ] loop

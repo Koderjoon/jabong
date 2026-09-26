@@ -17,7 +17,7 @@ end $$;
 
 select (login('부총대', '1234')::json ->> 'token') as t \gset
 select (login('학습부장', '1234')::json ->> 'token') as ot \gset
-select login('총대', 'wrong')::json ->> 'error' as err \gset
+select login('정리부장', 'wrong')::json ->> 'error' as err \gset
 select pg_temp.ok(:'err' = '비밀번호가 맞지 않아요', '틀린 비밀번호');
 
 -- 명단 3명 + 현재 자봉
@@ -83,9 +83,11 @@ select pg_temp.ok(:'before' = :'after', '정리 후에도 점수가 같아야 �
 
 -- 복구 코드로 비밀번호 재설정 → 새 코드 발급
 set role anon;
-select recover(:'code', '총대', 'abcd')::json ->> 'code' as newcode \gset
-select (login('총대', 'abcd')::json ->> 'token') is not null as recovered \gset
-select recover(:'code', '총대', 'zzzz')::json ->> 'error' as oldcode \gset
+select recover(:'code', '총대', 'abcd')::json ->> 'error' as notadmin \gset
+select pg_temp.ok(:'notadmin' = '복구 코드로는 부총대 비밀번호만 새로 정할 수 있어요', '총대는 복구 대상 아님');
+select recover(:'code', '부총대', '1234')::json ->> 'code' as newcode \gset
+select (login('부총대', '1234')::json ->> 'token') is not null as recovered \gset
+select recover(:'code', '부총대', 'zzzz')::json ->> 'error' as oldcode \gset
 select pg_temp.ok(:'recovered'::boolean, '복구 코드로 비밀번호 재설정');
 select pg_temp.ok(:'oldcode' = '복구 코드가 맞지 않아요', '쓴 복구 코드는 다시 못 씀');
 
@@ -167,25 +169,36 @@ select pg_temp.ok((select voided_at is not null from ledger where id = :'me'), '
 select pg_temp.ok(not exists (select 1 from ledger where item = '실습' and src = 'manual' and id in (select ledger_id from excuses)), '실습 기록은 공결 대상 아님');
 \echo 직접 기록 공결 테스트 통과
 
--- 실습부장은 출석 체크를 할 수 있고, 권한을 끄면 못 한다
+-- 실습부장·총대는 출석을 요청하고, 부총대가 승인하면 반영된다. 직접 저장은 부총대만.
 set role anon;
 select (login('실습부장 1', '1234')::json ->> 'token') as pt \gset
+select (login('총대', '1234')::json ->> 'token') as ct \gset
 select ensure_period(:'pt', '2026-09-28', '아침 출석', true) as pp2 \gset
-select save_attendance(:'pt', :'pp2', format('{"%s":"late"}', :'s1')::jsonb) as pn \gset
-select pg_temp.ok(:pn = 1, '실습부장 출석 저장');
-set role postgres;
-select pg_temp.ok((select lp.created_by from ledger l join ledger_private lp on lp.ledger_id = l.id where l.period_id = :'pp2') = '실습부장 1', '출석 기록자 = 실습부장 1');
-set role anon;
-select set_attend(:'t2', '실습부장 1', false);
+select request_attendance(:'pt', :'pp2', format('{"%s":"late"}', :'s1')::jsonb) as ar \gset
+-- 같은 교시를 다시 보내면 대기 중인 요청이 바뀐다
+select request_attendance(:'pt', :'pp2', format('{"%s":"late","%s":"absent"}', :'s1', :'s2')::jsonb) as ar2 \gset
+select pg_temp.ok(:'ar' = :'ar2', '대기 중 요청은 덮어쓴다');
+select request_attendance(:'ct', :'pp2', '{}') as cr \gset
 do $$ begin
   perform save_attendance((select token from sessions where role = '실습부장 1' order by expires_at desc limit 1), (select id from periods where date = '2026-09-28'), '{}');
-  raise exception 'FAIL: 권한을 꺼도 출석 저장됨';
+  raise exception 'FAIL: 실습부장이 출석을 바로 저장함';
 exception when insufficient_privilege then null;
 end $$;
 do $$ begin
-  perform save_attendance((select token from sessions where role = '학습부장' order by expires_at desc limit 1), (select id from periods where date = '2026-09-28'), '{}');
-  raise exception 'FAIL: 학습부장이 출석 저장함';
+  perform request_attendance((select token from sessions where role = '학습부장' order by expires_at desc limit 1), (select id from periods where date = '2026-09-28'), '{}');
+  raise exception 'FAIL: 학습부장이 출석 요청함';
 exception when insufficient_privilege then null;
 end $$;
-select pg_temp.ok((select (e ->> 'attend')::boolean from json_array_elements(public_state() -> 'accounts') e where e ->> 'role' = '실습부장 2'), '실습부장 2는 기본으로 켜짐');
+do $$ begin
+  perform add_entries((select token from sessions where role = '총대' order by expires_at desc limit 1), '2026-09-28', array[]::uuid[], 'x', '', 1);
+  raise exception 'FAIL: 총대가 직접 기록함';
+exception when insufficient_privilege then null;
+end $$;
+select review_attendance(:'t2', :'ar', true, null) as an \gset
+select pg_temp.ok(:an = 2, '출석 요청 승인 → 기록 2건');
+select review_attendance(:'t2', :'cr', false, '중복') is null as rj \gset
+set role postgres;
+select pg_temp.ok((select lp.requested_by = '실습부장 1' and lp.approved_by = '부총대' from ledger l join ledger_private lp on lp.ledger_id = l.id where l.period_id = :'pp2' and l.item = '결석'), '출석 기록에 요청자·승인자');
+select pg_temp.ok((select string_agg(role, ',' order by sort) from accounts where can_attend) = '총대,실습부장 1,실습부장 2', '출석 요청 직책');
+select pg_temp.ok((select string_agg(role, ',') from accounts where is_admin) = '부총대', '관리자는 부총대뿐');
 \echo 출석 권한 테스트 통과

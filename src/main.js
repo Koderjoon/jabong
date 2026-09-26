@@ -5,7 +5,7 @@ import { esc, sgn, md, mdw, live } from './logic.js';
 import { configured, rpc, onChange, getSession, setSession } from './api.js';
 import { downloadExport } from './excel.js';
 
-let S = { students: [], presets: [], periods: [], att: {}, ledger: [], excuses: [], requests: [], accounts: [], updatedAt: '' };
+let S = { students: [], presets: [], periods: [], att: {}, ledger: [], excuses: [], requests: [], attRequests: [], accounts: [], updatedAt: '' };
 let loaded = false;
 let loadError = null;
 let TODAY = L.today();
@@ -48,7 +48,8 @@ const TABS = {
 const canAttend = () => Boolean(S.accounts.find((a) => a.role === UI.user)?.attend);
 const tabsOf = (role) => (role === 'officer' && UI.user && canAttend() ? [['attend', '출석'], ...TABS.officer] : TABS[role]);
 const STATUS = { pending: '대기', approved: '승인', rejected: '반려' };
-const pendingCount = () => S.requests.filter((r) => r.status === 'pending').length + S.excuses.filter((x) => x.status === 'pending').length;
+const pendingCount = () =>
+  [S.requests, S.excuses, S.attRequests || []].reduce((n, l) => n + l.filter((x) => x.status === 'pending').length, 0);
 
 function toast(msg) {
   const t = document.getElementById('toast');
@@ -83,8 +84,18 @@ async function run(fn, args, msg) {
   return r;
 }
 
+// 사람이 바뀌면 입력 중이던 내용(출석 초안, 폼)을 비운다
+function resetDrafts() {
+  UI.draft = {};
+  UI.recForm = blankForm();
+  UI.reqForm = blankForm();
+  UI.attPid = null;
+  UI.photos = {};
+}
+
 async function signOut(msg) {
   setSession(null);
+  resetDrafts();
   UI.user = null;
   UI.role = 'student';
   UI.tab = 'board';
@@ -96,9 +107,9 @@ async function signOut(msg) {
 
 /* ---------- 화면 ---------- */
 
-// 부총대·총대만 (기록자·승인자 같은 관리 정보)
+// 부총대만 (기록자·승인자 같은 관리 정보)
 const isAdmin = () => UI.role === 'admin' && UI.user && roleOf(UI.user) === 'admin';
-// 로그인한 총대단 전체(부총대·총대 포함). 현황판과 학생 상세에 이름을 함께 보여 준다
+// 로그인한 총대단 전체(부총대 포함). 현황판과 학생 상세에 이름을 함께 보여 준다
 const isStaff = () => UI.role !== 'student' && UI.user && roleOf(UI.user) === UI.role;
 
 function vBoard() {
@@ -127,7 +138,7 @@ function vDetail() {
     ${e.voided ? `<div class="note">무효 · ${esc(e.voided.reason)} · ${esc(e.voided.at)}</div>` : ''}
     ${e.revs?.length ? `<button class="revbtn" data-act="rev" data-id="${e.id}">수정됨 ${e.revs.length}회 ${open ? '▾' : '▸'}</button>
       ${open ? e.revs.map((r) => `<div class="rev"><span>${esc(r.at)}</span>${Object.keys(r.after).map((k) => `<b>${L.fieldName(k)}: ${esc(L.fmtVal(k, r.before[k]))} → ${esc(L.fmtVal(k, r.after[k]))}</b>`).join('')}<span>사유: ${esc(r.reason)}</span></div>`).join('') : ''}` : ''}
-    ${admin ? `<div class="note">${e.src === 'request' ? `요청: ${esc(e.by)} · 승인: ${esc(e.approvedBy)}` : `기록: ${esc(e.by || '-')}`}${e.voided?.by ? ` · 무효 처리: ${esc(e.voided.by)}` : ''}${e.revs?.length ? ` · 수정: ${esc([...new Set(e.revs.map((r) => r.by))].join(', '))}` : ''} (관리자에게만 보임)</div>` : ''}
+    ${admin ? `<div class="note">${e.src === 'request' ? `요청: ${esc(e.by)} · 승인: ${esc(e.approvedBy)}` : e.requestedBy ? `출석 요청: ${esc(e.requestedBy)} · 승인: ${esc(e.approvedBy)}` : `기록: ${esc(e.by || '-')}`}${e.voided?.by ? ` · 무효 처리: ${esc(e.voided.by)}` : ''}${e.revs?.length ? ` · 수정: ${esc([...new Set(e.revs.map((r) => r.by))].join(', '))}` : ''} (관리자에게만 보임)</div>` : ''}
   </li>`;
   };
   return `<button class="back" data-act="back">← 현황판</button>
@@ -221,7 +232,7 @@ function photoView(id) {
 
 function vRequest() {
   const f = UI.reqForm;
-  return `<div><h1>상점·자봉 요청</h1><p class="sub">부총대나 총대가 승인하면 반영돼요. 요청자 이름은 학생들에게 보이지 않아요.</p></div>
+  return `<div><h1>상점·자봉 요청</h1><p class="sub">부총대가 승인하면 반영돼요. 요청자 이름은 학생들에게 보이지 않아요.</p></div>
   <div class="card">${entryFields('reqForm')}
   <label class="fld"><span>사유 (선택)</span><textarea id="reqForm-reason" data-bind="reqForm.reason" placeholder="필요하면 적어주세요">${esc(f.reason)}</textarea></label>
   ${photoField('reqForm', f.photo)}
@@ -237,9 +248,25 @@ function reqCard(r, admin) {
   ${admin && r.status === 'pending' ? `<input id="note-${r.id}" placeholder="반려 사유 (반려할 때 필수)"><div class="btns"><button class="btn ok small" data-act="req-ok" data-id="${r.id}">승인</button><button class="btn danger small" data-act="req-no" data-id="${r.id}">반려</button></div>` : ''}</div>`;
 }
 
+// 출석 요청 카드: 교시, 요청자, 지각·결석·공결 명단
+function attReqCard(a, admin) {
+  const per = S.periods.find((p) => p.id === a.pid);
+  const groups = ['late', 'absent', 'excused']
+    .map((k) => [k, Object.entries(a.statuses || {}).filter(([, v]) => v === k).map(([sid]) => sid).sort((x, y) => noOf(x) - noOf(y))])
+    .filter(([, l]) => l.length);
+  const others = admin ? (S.attRequests || []).filter((o) => o.pid === a.pid && o.id !== a.id && o.status === 'pending') : [];
+  return `<div class="card"><div class="req-top"><span class="pill ${a.status}">출석 ${STATUS[a.status]}</span><span class="note">${esc(a.by)} · ${esc(a.at)}</span></div>
+  <div class="req-body"><b>${per ? `${mdw(per.date)} ${esc(per.label)}` : '지워진 교시'}</b></div>
+  ${groups.map(([k, l]) => `<div class="note">${ST[k][1]} ${l.length}명</div><div class="chips">${l.map((id) => `<span class="chip">${noOf(id)} ${esc(stu(id)?.name || '')}</span>`).join('')}</div>`).join('') || '<div class="note">전원 출석</div>'}
+  ${a.status !== 'pending' ? `<div class="note">${esc(a.reviewer || '')} · ${esc(a.reviewedAt || '')}${a.note ? ` · 반려 사유: ${esc(a.note)}` : ''}</div>` : ''}
+  ${admin && a.status === 'pending' ? `${S.att[a.pid] ? '<div class="warn">이미 저장된 교시예요. 승인하면 이 요청 내용으로 바뀌어요.</div>' : ''}${others.length ? `<div class="warn">같은 교시에 ${others.map((o) => esc(o.by)).join(', ')}의 요청도 있어요.</div>` : ''}
+  <input id="note-${a.id}" placeholder="반려 사유 (반려할 때 필수)"><div class="btns"><button class="btn ok small" data-act="att-ok" data-id="${a.id}">승인 (출석 저장)</button><button class="btn danger small" data-act="att-no" data-id="${a.id}">반려</button></div>` : ''}</div>`;
+}
+
 function vReqs() {
-  const list = [...S.requests].sort((a, b) => b.at.localeCompare(a.at));
-  return `<div><h1>요청 현황</h1><p class="sub">총대단 전체의 요청과 처리 상태예요. 같은 건을 두 번 요청하지 않게 확인하세요.</p></div>${list.map((r) => reqCard(r, false)).join('') || '<p class="empty">요청이 없어요.</p>'}`;
+  const list = [...S.requests.map((r) => ({ at: r.at, html: () => reqCard(r, false) })), ...(S.attRequests || []).map((a) => ({ at: a.at, html: () => attReqCard(a, false) }))]
+    .sort((a, b) => b.at.localeCompare(a.at));
+  return `<div><h1>요청 현황</h1><p class="sub">총대단 전체의 요청과 처리 상태예요. 같은 건을 두 번 요청하지 않게 확인하세요.</p></div>${list.map((x) => x.html()).join('') || '<p class="empty">요청이 없어요.</p>'}`;
 }
 
 const periodLabel = (e) => S.periods.find((p) => p.id === e.pid)?.label || e.detail;
@@ -253,7 +280,7 @@ function vExcuse() {
         .sort((a, b) => b.date.localeCompare(a.date))
     : [];
   const mine = s ? S.excuses.filter((x) => x.sid === s.id).sort((a, b) => b.at.localeCompare(a.at)) : [];
-  return `<div><h1>공결 신청</h1><p class="sub">번호만 입력하면 돼요. 부총대나 총대가 증빙을 확인하고 승인하면 해당 자봉이 무효 처리돼요.</p></div>
+  return `<div><h1>공결 신청</h1><p class="sub">번호만 입력하면 돼요. 부총대가 증빙을 확인하고 승인하면 해당 자봉이 무효 처리돼요.</p></div>
   <div class="card"><label class="fld"><span>내 번호</span><input id="exc-no" inputmode="numeric" value="${esc(f.no)}" data-bind="excForm.no" data-rerender="1" placeholder="예: 56"></label>
   ${s ? (cands.length ? `<label class="fld"><span>공결 처리할 출결</span><select id="exc-eid" data-bind="excForm.eid"><option value="">선택하세요</option>${cands.map((e) => `<option value="${e.id}" ${f.eid === e.id ? 'selected' : ''}>${mdw(e.date)} ${esc(periodLabel(e))} ${e.item} ${sgn(e.points)}</option>`).join('')}</select></label>
   <label class="fld"><span>사유 (선택)</span><textarea id="exc-reason" data-bind="excForm.reason" placeholder="예: 예비군 훈련">${esc(f.reason)}</textarea></label>
@@ -270,8 +297,14 @@ function periodsOf(date) {
   if (!ps.some((p) => p.morning)) ps.unshift({ id: `v:${date}:아침 출석`, date, label: '아침 출석', morning: true });
   return ps.sort((a, b) => (b.morning ? 1 : 0) - (a.morning ? 1 : 0));
 }
+// 내가 보낸 출석 요청 중 가장 최근 것 (총대단)
+const myAttReq = (pid) =>
+  (S.attRequests || []).filter((a) => a.pid === pid && a.by === UI.user).sort((a, b) => b.at.localeCompare(a.at))[0];
 function attDraft(pid) {
-  if (!UI.draft[pid]) UI.draft[pid] = { ...(S.att[pid] || {}) };
+  if (!UI.draft[pid]) {
+    const mine = !isAdmin() && myAttReq(pid);
+    UI.draft[pid] = { ...((mine && mine.status === 'pending' ? mine.statuses : S.att[pid]) || {}) };
+  }
   return UI.draft[pid];
 }
 const ST = { present: ['✓', '출석'], late: ['지', '지각'], absent: ['결', '결석'], excused: ['공', '공결'] };
@@ -287,6 +320,12 @@ function vAttend() {
     Object.values(d).forEach((v) => c[v] != null && c[v]++);
     const saved = !!S.att[pid];
     const dirty = JSON.stringify(d) !== JSON.stringify(S.att[pid] || {});
+    const admin = isAdmin();
+    const mine = !admin && myAttReq(pid);
+    const pendingHere = admin ? (S.attRequests || []).filter((a) => a.pid === pid && a.status === 'pending') : [];
+    const state = admin
+      ? saved ? (dirty ? '변경 사항 있음' : '저장됨') : '아직 저장 안 됨'
+      : mine?.status === 'pending' ? '요청 보냄 · 부총대 확인 대기 중' : saved ? '부총대가 저장한 교시예요' : '아직 요청 안 함';
     body =
       (UI.attView === 'grid'
         ? `<div class="att">${active().map((s) => {
@@ -297,12 +336,14 @@ function vAttend() {
             const st = d[s.id] || 'present';
             return `<div class="call ${st}"><span class="no">${s.no}</span><span class="nm">${esc(s.name || '이름 없음')}</span><div class="st4" role="group" aria-label="${s.no}번 출결">${Object.entries(ST).map(([k, [, l]]) => `<button class="${k} ${st === k ? 'on' : ''}" data-act="setst" data-sid="${s.id}" data-v="${k}">${l}</button>`).join('')}</div></div>`;
           }).join('') || '<p class="empty">관리 탭에서 명단을 먼저 넣어 주세요.</p>'}</div>`) +
-      `<div class="att-foot"><span class="note">지각 ${c.late} · 결석 ${c.absent} · 공결 ${c.excused}<br>${saved ? (dirty ? '변경 사항 있음' : '저장됨') : '아직 저장 안 됨'}</span>
-    <div class="btns"><button class="btn ghost small" data-act="att-clear">전원 출석으로 되돌리기</button><button class="btn" data-act="att-save">저장</button></div></div>
+      `${pendingHere.length ? `<div class="warn">이 교시에 ${pendingHere.map((a) => esc(a.by)).join(', ')}의 출석 요청이 있어요. 요청함에서 확인하세요.</div>` : ''}
+    ${mine?.status === 'rejected' ? `<div class="warn">지난 요청이 반려됐어요: ${esc(mine.note || '')}</div>` : ''}
+    <div class="att-foot"><span class="note">지각 ${c.late} · 결석 ${c.absent} · 공결 ${c.excused}<br>${state}</span>
+    <div class="btns"><button class="btn ghost small" data-act="att-clear">전원 출석으로 되돌리기</button>${admin ? '<button class="btn" data-act="att-save">저장</button>' : `<button class="btn" data-act="att-request">${mine?.status === 'pending' ? '요청 다시 보내기' : '출석 요청 보내기'}</button>`}</div></div>
     ${UI.attConfirm ? `<div class="att-confirm"><span>지금 표시한 지각 ${c.late}명 · 결석 ${c.absent}명 · 공결 ${c.excused}명이 모두 출석으로 바뀌어요. 되돌릴까요?</span>
     <div class="btns"><button class="btn danger small" data-act="att-clear-yes">네, 전원 출석으로</button><button class="btn ghost small" data-act="att-clear-no">그만두기</button></div></div>` : ''}`;
   }
-  return `<div><h1>출석 체크</h1><p class="sub">${UI.attView === 'grid' ? '칸을 누를 때마다 출석 → 지각 → 결석 → 공결 순으로 바뀌어요.' : '번호순으로 이름을 부르면서 바로 출결을 고르세요.'} 저장하면 지각 +1, 결석 +2가 교시마다 기록돼요. 이름은 출석 체크하는 사람에게만 보여요.</p></div>
+  return `<div><h1>출석 체크</h1><p class="sub">${UI.attView === 'grid' ? '칸을 누를 때마다 출석 → 지각 → 결석 → 공결 순으로 바뀌어요.' : '번호순으로 이름을 부르면서 바로 출결을 고르세요.'} ${isAdmin() ? '저장하면 지각 +1, 결석 +2가 교시마다 기록돼요.' : '다 고른 뒤 요청을 보내면 부총대가 확인하고 저장해요.'} 이름은 총대단에게만 보여요.</p></div>
   <div class="seg"><button class="${UI.attView !== 'grid' ? 'on' : ''}" data-act="attview" data-v="list">호명 목록</button><button class="${UI.attView === 'grid' ? 'on' : ''}" data-act="attview" data-v="grid">한눈에 보기</button></div>
   <div class="toolbar"><input type="date" id="attDate" value="${UI.attDate}" data-bind="attDate" data-rerender="1" style="width:auto"></div>
   <div class="seg" style="flex-wrap:wrap">${ps.map((p) => `<button class="${p.id === pid ? 'on' : ''}" data-act="pick-period" data-id="${p.id}">${esc(p.label)}${S.att[p.id] ? ' ·저장됨' : ''}</button>`).join('')}</div>
@@ -336,7 +377,9 @@ function vRecord() {
 function vInbox() {
   const rq = S.requests.filter((r) => r.status === 'pending');
   const ex = S.excuses.filter((x) => x.status === 'pending');
-  return `<div><h1>요청함</h1><p class="sub">총대단 요청 ${rq.length}건 · 공결 신청 ${ex.length}건</p></div>
+  const ar = (S.attRequests || []).filter((a) => a.status === 'pending');
+  return `<div><h1>요청함</h1><p class="sub">출석 요청 ${ar.length}건 · 총대단 요청 ${rq.length}건 · 공결 신청 ${ex.length}건</p></div>
+  ${ar.length ? `<h2>출석 요청</h2>${ar.map((a) => attReqCard(a, true)).join('')}` : ''}
   <h2>총대단 요청</h2>${rq.map((r) => reqCard(r, true)).join('') || '<p class="empty">대기 중인 요청이 없어요.</p>'}
   <h2>공결 신청</h2>${ex.map((x) => {
     const e = S.ledger.find((l) => l.id === x.eid);
@@ -352,9 +395,11 @@ function vDone() {
   const items = [
     ...S.requests.filter((r) => r.status !== 'pending').map((r) => ({ kind: 'req', at: r.reviewedAt || r.at, r })),
     ...S.excuses.filter((x) => x.status !== 'pending').map((x) => ({ kind: 'exc', at: x.reviewedAt || x.at, x })),
+    ...(S.attRequests || []).filter((a) => a.status !== 'pending').map((a) => ({ kind: 'att', at: a.reviewedAt || a.at, a })),
   ].sort((a, b) => b.at.localeCompare(a.at));
   const shown = items.slice(0, UI.doneLimit);
   const card = (it) => {
+    if (it.kind === 'att') return attReqCard(it.a, false);
     if (it.kind === 'req') {
       const r = it.r;
       return `<div class="card"><div class="req-top"><span class="pill ${r.status}">총대단 요청 ${STATUS[r.status]}</span><span class="note">${esc(r.reviewer || '')} · ${esc(it.at)}</span></div>
@@ -370,7 +415,7 @@ function vDone() {
     <div class="note">신청: ${esc(x.at)}${x.reason ? ` · 사유: ${esc(x.reason)}` : ''}</div>
     ${x.note ? `<div class="note">반려 사유: ${esc(x.note)}</div>` : ''}${photoView(x.photo)}</div>`;
   };
-  return `<h2>처리한 내역</h2><p class="sub" style="margin-top:-12px">승인·반려한 건이에요. 증빙 사진은 처리 후 180일 동안 볼 수 있어요.</p>
+  return `<h2>처리한 내역</h2><p class="sub" style="margin-top:-12px">승인·반려한 출석 요청, 총대단 요청, 공결 신청이에요. 증빙 사진은 처리 후 180일 동안 볼 수 있어요.</p>
   ${shown.map(card).join('') || '<p class="empty">아직 처리한 건이 없어요.</p>'}
   ${items.length > shown.length ? `<button class="btn ghost" data-act="done-more">더 보기 (${items.length - shown.length}건 남음)</button>` : ''}`;
 }
@@ -453,10 +498,6 @@ function vManage() {
   ${S.presets.map((p) => `<div class="mrow"><input class="grow pr-name" data-id="${p.id}" value="${esc(p.name)}" style="width:auto" ${['지각', '결석'].includes(p.name) ? 'readonly' : ''}><input type="number" class="pr-pts" data-id="${p.id}" value="${p.points}"><button class="btn ghost small" data-act="preset-del" data-id="${p.id}" ${['지각', '결석'].includes(p.name) ? 'disabled' : ''}>삭제</button></div>`).join('')}
   <button class="btn" data-act="presets-save">항목 저장</button></div>
 
-  <div class="card"><h2>출석 체크 권한</h2>
-  <p class="hint" style="margin:0">켜 둔 총대단은 출석 탭에서 출석을 체크하고 저장할 수 있어요. 부총대·총대는 항상 할 수 있어요.</p>
-  ${S.accounts.filter((a) => !a.admin).map((a) => `<div class="mrow"><span class="grow">${esc(a.role)}</span><button class="btn small ${a.attend ? 'ok' : 'ghost'}" data-act="attend-perm" data-role="${esc(a.role)}" data-on="${a.attend ? '' : '1'}">${a.attend ? '켜짐' : '꺼짐'}</button></div>`).join('')}</div>
-
   <div class="card"><h2>비밀번호</h2>
   <p class="hint" style="margin:0">인수인계할 때는 다음 사람에게 지금 비밀번호와 복구 코드를 알려주고, 그 사람이 로그인해서 자기 비밀번호로 바꾸면 끝이에요.</p>
   <h2 style="font-size:14px">내 비밀번호 바꾸기 (${esc(UI.user)})</h2>
@@ -467,7 +508,7 @@ function vManage() {
   <div class="row2"><select id="pw-who" class="grow">${S.accounts.map((a) => a.role).filter((r) => r !== UI.user).map((r) => `<option>${esc(r)}</option>`).join('')}</select><input type="password" id="pw-reset" class="grow" placeholder="새 비밀번호" autocomplete="new-password"></div>
   <button class="btn ghost" data-act="pw-reset">재설정</button>
   <h2 style="font-size:14px">복구 코드</h2>
-  <p class="hint" style="margin:0">부총대와 총대가 둘 다 비밀번호를 잊었을 때 쓰는 비상 코드예요. 잃어버렸거나 다른 사람이 봤을 것 같으면 새로 만드세요. 이전 코드는 바로 못 쓰게 돼요.</p>
+  <p class="hint" style="margin:0">부총대가 비밀번호를 잊었을 때 쓰는 비상 코드예요. 잃어버렸거나 다른 사람이 봤을 것 같으면 새로 만드세요. 이전 코드는 바로 못 쓰게 돼요.</p>
   <input type="password" id="rc-pw" placeholder="내 비밀번호 확인" autocomplete="current-password"><button class="btn ghost" data-act="rc-new">새 복구 코드 만들기</button></div>
 
   ${vPurge()}`;
@@ -475,11 +516,11 @@ function vManage() {
 
 function vLogin() {
   const list = UI.role === 'admin' ? admins() : officers();
-  return `<div><h1>${UI.role === 'admin' ? '부총대·총대' : '총대단'} 로그인</h1><p class="sub">직책을 고르고 비밀번호를 입력하세요.</p></div>
+  return `<div><h1>${UI.role === 'admin' ? '부총대' : '총대단'} 로그인</h1><p class="sub">직책을 고르고 비밀번호를 입력하세요.</p></div>
   <div class="card"><label class="fld"><span>직책</span><select id="login-who">${list.map((o) => `<option>${esc(o)}</option>`).join('')}</select></label>
   <label class="fld"><span>비밀번호</span><input type="password" id="login-pw" autocomplete="current-password"></label>
   <button class="btn" data-act="login">로그인</button>
-  <p class="hint" style="margin:0">${UI.role === 'admin' ? '비밀번호를 잊었으면 다른 관리자(부총대↔총대)에게 재설정을 부탁하세요. 둘 다 잊었으면 복구 코드를 쓰세요.' : '비밀번호를 잊었으면 부총대나 총대에게 재설정을 부탁하세요.'}</p>
+  <p class="hint" style="margin:0">${UI.role === 'admin' ? '비밀번호를 잊었으면 아래 복구 코드로 새로 정하세요.' : '비밀번호를 잊었으면 부총대에게 재설정을 부탁하세요.'}</p>
   ${UI.role === 'admin' ? '<button class="btn ghost small" data-act="recover-open" style="align-self:flex-start">복구 코드로 들어가기</button>' : ''}</div>
   ${UI.role === 'admin' && UI.recover ? `<div class="card"><h2>복구 코드로 들어가기</h2>
   <label class="fld"><span>복구 코드</span><input id="rc-code" class="mono" placeholder="XXXX-XXXX-XXXX" autocomplete="off"></label>
@@ -513,7 +554,7 @@ function render() {
     UI.role === 'student'
       ? UI.user ? `<div class="who"><b style="color:var(--ink)">${esc(UI.user)}</b>로 로그인됨 · 학생 화면 보는 중</div>` : ''
       : locked
-        ? '<div class="mocknote">총대단과 부총대·총대는 자기 직책의 비밀번호로 로그인해요.</div>'
+        ? '<div class="mocknote">총대단과 부총대는 자기 직책의 비밀번호로 로그인해요.</div>'
         : `<div class="who"><b style="color:var(--ink)">${esc(UI.user)}</b>로 로그인됨 <button class="btn ghost small" data-act="logout">로그아웃</button></div>`;
   const V = { board: vBoard, excuse: vExcuse, request: vRequest, reqs: vReqs, attend: vAttend, record: vRecord, inbox: vInbox, notice: vNotice, manage: vManage };
   const codeCard =
@@ -648,7 +689,7 @@ async function copyText(text, ok) {
   }
 }
 
-async function saveAttendance() {
+async function saveAttendance(asRequest) {
   let pid = UI.attPid;
   const draft = attDraft(pid);
   if (pid.startsWith('v:')) {
@@ -657,6 +698,10 @@ async function saveAttendance() {
     UI.draft[real] = draft;
     delete UI.draft[pid];
     UI.attPid = pid = real;
+  }
+  if (asRequest) {
+    await run('request_attendance', { p_period: pid, p_statuses: draft }, '출석 요청을 보냈어요 · 부총대 확인을 기다려요');
+    return;
   }
   await run('save_attendance', { p_period: pid, p_statuses: draft }, (n) => `저장했어요 · 새 기록 ${n}건`);
   delete UI.draft[pid];
@@ -704,8 +749,9 @@ const A = {
     if (r.error) return toast(r.error);
     setSession({ token: r.token, role: r.role });
     UI.user = r.role;
-    UI.tab = tabsOf(UI.role)[0][0];
+    resetDrafts();
     await refresh();
+    UI.tab = tabsOf(UI.role)[0][0];
   },
   logout: async () => {
     try {
@@ -725,6 +771,7 @@ const A = {
     if (r.error) return toast(r.error);
     setSession({ token: r.token, role: r.role });
     UI.user = r.role;
+    resetDrafts();
     UI.newCode = r.code;
     UI.recover = false;
     UI.tab = TABS.admin[0][0];
@@ -750,10 +797,6 @@ const A = {
     await rpc('change_pw', { p_token: token(), p_cur: val('pw-cur'), p_new: val('pw-new') });
     render();
     return toast('내 비밀번호를 바꿨어요');
-  },
-  'attend-perm': async (d) => {
-    await run('set_attend', { p_role: d.role, p_on: Boolean(d.on) }, `${d.role} 출석 체크 권한을 ${d.on ? '켰어요' : '껐어요'}`);
-    return true;
   },
   'pw-reset': async () => {
     const who = val('pw-who');
@@ -882,7 +925,21 @@ const A = {
     return true;
   },
   'att-save': async () => {
-    await saveAttendance();
+    await saveAttendance(false);
+    return true;
+  },
+  'att-request': async () => {
+    await saveAttendance(true);
+    return true;
+  },
+  'att-ok': async (d) => {
+    await run('review_attendance', { p_id: d.id, p_approve: true, p_note: null }, (n) => `출석을 저장했어요 · 새 기록 ${n}건`);
+    UI.draft = {};
+    UI.noticeText = null;
+    return true;
+  },
+  'att-no': async (d) => {
+    await run('review_attendance', { p_id: d.id, p_approve: false, p_note: val('note-' + d.id) }, '반려했어요');
     return true;
   },
   'rec-add': () => submitEntry('recForm'),
@@ -944,7 +1001,7 @@ const A = {
     UI.excForm = { no: f.no, eid: '', reason: '', photo: '' };
     await refresh();
     render();
-    return toast('신청했어요 · 부총대·총대 확인을 기다려요');
+    return toast('신청했어요 · 부총대 확인을 기다려요');
   },
   'done-more': () => {
     UI.doneLimit += 20;
