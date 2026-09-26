@@ -85,17 +85,29 @@ GitHub 저장소 → **Settings → Secrets and variables → Actions → New re
 npm install
 cp .env.example .env.local   # Supabase 주소와 키를 넣는다
 npm run dev                  # http://localhost:5173
-npm test                     # 계산 로직 유닛 테스트 (공지 문구, 명단 붙여넣기, 내보내기)
 npm run build
 ```
 
-DB 함수 테스트는 로컬 Postgres 16에서 돌린다 (CI도 같은 방식).
+테스트는 세 가지다. CI(GitHub Actions)가 올릴 때마다 모두 돌린다.
+
+| 명령 | 무엇을 | 필요한 것 |
+|---|---|---|
+| `npm test` | 계산 로직 (공지 문구, 명단 붙여넣기, 내보내기) | 없음 |
+| `npm run test:db` | 모든 서버 함수: 권한·입력 검사·동작, 작업 내역 이동·되돌리기, 백업·정리 | Postgres 16 |
+| `npm run test:e2e` | 실제 화면을 Chromium으로 열고 학생·총대단·부총대의 모든 버튼을 누른다 | Postgres 16, Chromium |
 
 ```bash
-psql -c "create role anon nologin" -c "create role authenticated nologin" -c "create database jabong"
-psql -d jabong -v ON_ERROR_STOP=1 -f supabase/schema.sql
-psql -d jabong -v ON_ERROR_STOP=1 -f supabase/tests/flow.sql   # "모든 DB 흐름 테스트 통과"
-psql -d jabong -v ON_ERROR_STOP=1 -f supabase/tests/rewind.sql # 새 DB에서. "뒤로가기·앞으로 가기 테스트 통과"
+# Postgres 접속 정보 (예시)
+export PGHOST=localhost PGUSER=postgres PGPASSWORD=postgres
+npm run test:db
+npx playwright install chromium   # 처음 한 번
+npm run test:e2e
 ```
+
+- DB 테스트(`supabase/tests/`)는 테스트마다 새 DB를 만들고 `schema.sql`을 두 번 실행한 뒤 돌린다. 함수는 브라우저와 같은 `anon` 역할로 부른다.
+  - `flow.sql`: 처음부터 끝까지 한 번 쓰는 흐름
+  - `functions.sql`: 서버 함수 29개 전부 (노출·권한, 입력 검사 문구, 동작, 로그인 잠금, 복구 코드, 사진 정리, 백업·정리)
+  - `rewind.sql`, `rewind_all.sql`: 뒤로가기·앞으로 가기·이 작업만 되돌리기. 데이터를 바꾸는 모든 함수를 부른 뒤 모든 시점으로 오가며 데이터가 그 시점과 똑같은지 확인한다
+- 브라우저 테스트(`e2e/`)는 가짜 Supabase(`e2e/server.mjs`, 로컬 Postgres 함수를 부른다)로 인터넷 없이 돈다. 폰 크기(390px, 320px) 화면이 가로로 넘치지 않는지와 화면 오류가 없는지도 본다. Realtime(다른 기기의 변경이 바로 보이는 것)은 흉내 내지 않는다. 시스템에 따로 설치된 Chromium을 쓰려면 `CHROMIUM_PATH`에 실행 파일 경로를 준다.
 
 `schema.sql`은 여러 번 실행해도 된다. 함수를 고쳤으면 Supabase SQL Editor에 파일 전체를 다시 붙여넣고 실행한다.

@@ -28,16 +28,22 @@
 - 한글 입력: 입력칸을 통째로 다시 그리면 조합이 깨진다. 입력 중 갱신이 필요하면 `data-live`(추천·칩 영역만 갱신)나 `data-region`(특정 영역만 갱신)을 쓰고, `data-rerender`는 날짜·숫자·체크박스처럼 한글이 없는 칸에만 쓴다.
 - Supabase는 앱에서 온 요청의 `where` 없는 `delete`/`update`를 거절한다(pg_safeupdate). 로컬 Postgres에서는 통과하니, 전체를 지울 때도 `where true`를 붙인다. `test/schema.test.js`가 검사한다.
 - 백업: `_dump()`가 비밀번호·로그인·사진을 뺀 전체 데이터를 JSON으로 만든다. `backup_dump()`는 로그인 없이 누구나 부를 수 있다(학급이 이름 공개를 괜찮다고 정했다). jabong-backup 저장소의 GitHub Actions가 매일 이것을 받아 암호화 없이 올린다. `restore_backup`은 부총대만 되고, 되살리기 직전에 화면이 현재 상태 파일을 먼저 받게 한다. `src/backupcrypt.js`는 예전에 암호를 걸어 받은 파일을 열 때만 쓴다.
-- 작업 내역(뒤로가기·앞으로 가기): 데이터를 바꾸는 서버 함수는 권한 확인 직후 `_op(누가, 종류, 요약)`을 불러야 한다. 그러면 트리거 `zz_log`(_log_change)가 그 트랜잭션에서 바뀐 행의 전·후를 `op_changes`에 남긴다. `_op`를 빼먹으면 그 작업은 작업 내역에 없고 되돌릴 수도 없다. 작업은 한 줄 시간선이다: `history_move(시점)`은 그 작업 직후 상태로 뒤·앞으로 옮기며 `ops.undone`만 바꾸고, `history_drop(작업)`은 작업 하나만 되돌려 `ops.dropped`로 빼 두고, `history_restore(작업)`가 다시 살린다. 빼 둔 작업은 뒤·앞으로 이동할 때 데이터는 건드리지 않고 undone 표시만 함께 옮긴다. **이동·되돌리기 자체는 기록을 남기지 않는다** (사용자가 정함. 남는 이력은 기록의 수정·무효뿐). 새 작업을 하면 `_op`가 undone 작업(뒤로 간 쪽의 빼 둔 작업 포함)을 지운다. 작업 밖에서 바뀐 행이 있거나 뒤 작업과 겹치면 `_apply_op`가 P0002로 멈춘다. 미리보기는 끝까지 계산한 뒤 P0003으로 전부 취소한다. 새 표를 만들면 `zz_log` 트리거 목록, `_log_change`의 기본키 매핑, `_dump`, `restore_backup`에 넣는다. 정리·되살리기는 `_op(..., false)`로 넘을 수 없게 하고 작업 로그를 비운다. 테스트는 `supabase/tests/rewind.sql`, 기능을 빼는 방법은 `supabase/rollback-rewind.sql`.
+- 작업 내역(뒤로가기·앞으로 가기): 데이터를 바꾸는 서버 함수는 권한 확인 직후 `_op(누가, 종류, 요약)`을 불러야 한다. 그러면 트리거 `zz_log`(_log_change)가 그 트랜잭션에서 바뀐 행의 전·후를 `op_changes`에 남긴다. `_op`를 빼먹으면 그 작업은 작업 내역에 없고 되돌릴 수도 없다. 작업은 한 줄 시간선이다: `history_move(시점)`은 그 작업 직후 상태로 뒤·앞으로 옮기며 `ops.undone`만 바꾸고, `history_drop(작업)`은 작업 하나만 되돌려 `ops.dropped`로 빼 두고, `history_restore(작업)`가 다시 살린다. 빼 둔 작업은 뒤·앞으로 이동할 때 데이터는 건드리지 않고 undone 표시만 함께 옮긴다. **이동·되돌리기 자체는 기록을 남기지 않는다** (사용자가 정함. 남는 이력은 기록의 수정·무효뿐). 새 작업을 하면 `_op`가 undone 작업(뒤로 간 쪽의 빼 둔 작업 포함)을 지운다. 작업 밖에서 바뀐 행이 있거나 뒤 작업과 겹치면 `_apply_op`가 P0002로 멈춘다. 미리보기는 끝까지 계산한 뒤 P0003으로 전부 취소한다. 새 표를 만들면 `zz_log` 트리거 목록, `_log_change`의 기본키 매핑, `_dump`, `restore_backup`에 넣는다. 정리·되살리기는 `_op(..., false)`로 넘을 수 없게 하고 작업 로그를 비운다. 테스트는 `supabase/tests/rewind.sql`·`rewind_all.sql`, 기능을 빼는 방법은 `supabase/rollback-rewind.sql`.
 - DB 테스트에서 권한 오류를 기대할 때는 `pg_temp.expect(쿼리, 오류코드, 설명)`에 미리 받아 둔 토큰을 넣는다. anon으로 바꾼 뒤 표를 읽는 하위 쿼리를 쓰면 표 읽기 권한 때문에 엉뚱하게 통과한다.
 - 서버 오류 메시지는 한국어로 `raise exception` 한다. 화면은 그 메시지를 그대로 토스트로 보여 준다.
 
 ## 명령
 
 ```bash
-npm test          # node:test 유닛 테스트
+npm test          # node:test 유닛 테스트 (src/logic.js)
+npm run test:db   # DB 테스트 전부 (supabase/tests/run.sh, PGHOST·PGUSER·PGPASSWORD 필요)
+npm run test:e2e  # 브라우저 전체 기능 테스트 (e2e/, Postgres + Chromium, CHROMIUM_PATH로 실행 파일 지정 가능)
 npm run build
 npm run dev       # .env.local에 VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY 필요
 ```
 
-DB 테스트: README의 "개발" 절 참고 (`supabase/tests/flow.sql`, anon 역할로 전환해 권한까지 검증). CI(`.github/workflows/test.yml`)가 두 테스트와 빌드를 모두 돌린다.
+CI(`.github/workflows/test.yml`)가 세 가지 테스트와 빌드를 모두 돌린다.
+
+- 서버 함수를 새로 만들거나 바꾸면 `supabase/tests/functions.sql`에 권한·검사·동작을 넣는다. 첫 절의 "브라우저에 열린 함수" 목록도 고친다. 데이터를 바꾸는 함수면 `rewind_all.sql`의 시나리오에도 한 번 부르게 넣는다 (모든 시점 왕복 검증).
+- 화면을 바꾸면 `e2e/app.test.mjs`의 해당 절을 고친다. 이 파일은 위에서부터 이어지는 이야기라 앞 절의 데이터(명단·점수)를 뒤에서 쓴다. 점수 기대값을 바꿀 때는 앞 절에서 누가 몇 점을 받았는지 따라가 본다.
+- 테스트가 정말 잡는지 보려면 코드를 일부러 망가뜨려 돌려 본다 (돌연변이 검사). 통과만 보고 끝내지 않는다.

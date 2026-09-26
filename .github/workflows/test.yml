@@ -27,15 +27,23 @@ jobs:
         run: npm test
       - name: 빌드
         run: npm run build
-      - name: DB 흐름 테스트
+      - name: DB 테스트 (흐름 · 모든 서버 함수 · 작업 내역)
         env:
           PGHOST: localhost
           PGUSER: postgres
           PGPASSWORD: postgres
-        run: |
-          psql -v ON_ERROR_STOP=1 -c "create role anon nologin" -c "create role authenticated nologin" -c "create database jabong"
-          psql -d jabong -v ON_ERROR_STOP=1 -f supabase/schema.sql
-          psql -d jabong -v ON_ERROR_STOP=1 -f supabase/tests/flow.sql
-          psql -v ON_ERROR_STOP=1 -c "create database jabong_rw"
-          psql -d jabong_rw -v ON_ERROR_STOP=1 -f supabase/schema.sql
-          psql -d jabong_rw -v ON_ERROR_STOP=1 -f supabase/tests/rewind.sql
+        run: npm run test:db
+      - name: 브라우저 설치
+        run: npx playwright install --with-deps chromium
+      - name: 브라우저 전체 기능 테스트
+        env:
+          PGHOST: localhost
+          PGUSER: postgres
+          PGPASSWORD: postgres
+        run: npm run test:e2e
+      - name: 실패하면 테스트 중 받은 파일 남기기
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-out
+          path: e2e/out
