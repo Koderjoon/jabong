@@ -91,6 +91,7 @@ function resetDrafts() {
   UI.reqForm = blankForm();
   UI.attPid = null;
   UI.photos = {};
+  UI.myPresetsOpen = false;
 }
 
 async function signOut(msg) {
@@ -199,14 +200,33 @@ function updateLive(fk) {
   });
 }
 
+// 점수 목록: +5 ~ -5, 0.5점 단위
+const POINT_CHOICES = Array.from({ length: 21 }, (_, i) => 5 - i * 0.5).filter((p) => p !== 0);
+function pointsField(fk) {
+  const f = UI[fk];
+  const n = Number(f.points);
+  if (f.ptsCustom || !POINT_CHOICES.includes(n))
+    return `<input type="number" step="0.5" inputmode="decimal" id="${fk}-points" value="${esc(f.points)}" data-bind="${fk}.points">
+    <button class="linkbtn" data-act="pts-list" data-fk="${fk}">목록에서 고르기</button>`;
+  return `<select id="${fk}-ptsel" data-bind="${fk}.ptsel" data-rerender="1">${POINT_CHOICES.map((p) => `<option value="${p}" ${p === n ? 'selected' : ''}>${sgn(p)}</option>`).join('')}<option value="custom">직접 입력…</option></select>`;
+}
+
+const commonPresets = () => S.presets.filter((p) => !p.owner);
+const myPresets = () => S.presets.filter((p) => UI.user && p.owner === UI.user);
+function presetOptions(sel) {
+  const opt = (p) => `<option value="${p.id}" ${sel === p.id ? 'selected' : ''}>${esc(p.name)} (${sgn(p.points)})</option>`;
+  const mine = myPresets();
+  return commonPresets().map(opt).join('') + (mine.length ? `<optgroup label="내 항목">${mine.map(opt).join('')}</optgroup>` : '');
+}
+
 function entryFields(fk) {
   const f = UI[fk];
   const P = liveParts(fk);
   return `<div class="row2"><label class="fld grow"><span>날짜</span><input type="date" id="${fk}-date" value="${esc(f.date)}" data-bind="${fk}.date" data-rerender="1"></label>
-  <label class="fld grow"><span>항목 불러오기</span><select id="${fk}-preset" data-bind="${fk}.preset" data-rerender="1"><option value="">직접 입력</option>${S.presets.map((p) => `<option value="${p.id}" ${f.preset === p.id ? 'selected' : ''}>${esc(p.name)} (${sgn(p.points)})</option>`).join('')}</select></label></div>
+  <label class="fld grow"><span>항목 불러오기</span><select id="${fk}-preset" data-bind="${fk}.preset" data-rerender="1"><option value="">직접 입력</option>${presetOptions(f.preset)}</select></label></div>
   <div class="row2"><label class="fld grow"><span>항목명</span><input id="${fk}-item" value="${esc(f.item)}" placeholder="예: 실습실 뒷정리 미흡" data-bind="${fk}.item" data-live="${fk}"></label>
-  <label class="fld pts-fld"><span>점수</span><input type="number" step="0.5" inputmode="decimal" id="${fk}-points" value="${esc(f.points)}" data-bind="${fk}.points"></label></div>
-  <p class="hint">+는 자봉, −는 상점이에요. 0.5점 단위로도 적을 수 있어요. 항목명과 점수는 불러온 뒤에도 고칠 수 있어요.</p>
+  <label class="fld pts-fld"><span>점수</span>${pointsField(fk)}</label></div>
+  <p class="hint">+는 자봉, −는 상점이에요. 목록에 없는 점수는 맨 아래 "직접 입력"을 고르세요. 항목명과 점수는 불러온 뒤에도 고칠 수 있어요.</p>
   <label class="fld"><span>세부내용 (선택)</span><input id="${fk}-detail" value="${esc(f.detail)}" placeholder="예: 전원 안끔" data-bind="${fk}.detail"></label>
   <label class="fld"><span>학생</span><input id="${fk}-find" type="search" value="${esc(f.find)}" placeholder="이름이나 번호 (예: 김민, 56 59)" autocomplete="off" enterkeyhint="done" data-bind="${fk}.find" data-picker="${fk}"></label>
   <p class="hint">이름 일부를 치고 목록에서 고르거나, 번호를 띄어 쓰며 연달아 적으세요.</p>
@@ -236,7 +256,11 @@ function vRequest() {
   <div class="card">${entryFields('reqForm')}
   <label class="fld"><span>사유 (선택)</span><textarea id="reqForm-reason" data-bind="reqForm.reason" placeholder="필요하면 적어주세요">${esc(f.reason)}</textarea></label>
   ${photoField('reqForm', f.photo)}
-  <button class="btn" data-act="req-add">요청 보내기</button></div>`;
+  <button class="btn" data-act="req-add">요청 보내기</button></div>
+  <details class="card" ${UI.myPresetsOpen ? 'open' : ''}><summary data-act="mypresets-toggle"><b>내 자주 쓰는 항목 (${myPresets().length})</b></summary>
+  <p class="hint" style="margin:0">여기서 만든 항목은 나(${esc(UI.user)})의 "항목 불러오기" 목록에만 나와요. 고친 뒤 "내 항목 저장"을 눌러야 반영돼요.</p>
+  ${myPresets().map((p) => `<div class="mrow"><input class="grow my-pr-name" data-id="${p.id}" value="${esc(p.name)}" style="width:auto" placeholder="항목명"><input type="number" class="my-pr-pts" data-id="${p.id}" value="${p.points}" aria-label="점수"><button class="btn ghost small" data-act="mypreset-del" data-id="${p.id}">삭제</button></div>`).join('') || '<p class="note">아직 없어요.</p>'}
+  <div class="btns"><button class="btn ghost small" data-act="mypreset-add">항목 추가</button><button class="btn small" data-act="mypresets-save">내 항목 저장</button></div></details>`;
 }
 
 function reqCard(r, admin) {
@@ -497,7 +521,7 @@ function vManage() {
 
   <div class="card"><div class="req-top"><h2>자주 쓰는 항목</h2><button class="btn ghost small" data-act="preset-add">항목 추가</button></div>
   <p class="hint" style="margin:0">지각·결석은 출석 체크에 쓰여요. 점수를 바꿔도 과거 기록은 그대로예요. 고친 뒤 "항목 저장"을 눌러야 반영돼요.</p>
-  ${S.presets.map((p) => `<div class="mrow"><input class="grow pr-name" data-id="${p.id}" value="${esc(p.name)}" style="width:auto" ${['지각', '결석'].includes(p.name) ? 'readonly' : ''}><input type="number" class="pr-pts" data-id="${p.id}" value="${p.points}"><button class="btn ghost small" data-act="preset-del" data-id="${p.id}" ${['지각', '결석'].includes(p.name) ? 'disabled' : ''}>삭제</button></div>`).join('')}
+  ${commonPresets().map((p) => `<div class="mrow"><input class="grow pr-name" data-id="${p.id}" value="${esc(p.name)}" style="width:auto" ${['지각', '결석'].includes(p.name) ? 'readonly' : ''}><input type="number" class="pr-pts" data-id="${p.id}" value="${p.points}"><button class="btn ghost small" data-act="preset-del" data-id="${p.id}" ${['지각', '결석'].includes(p.name) ? 'disabled' : ''}>삭제</button></div>`).join('')}
   <button class="btn" data-act="presets-save">항목 저장</button></div>
 
   <div class="card"><h2>비밀번호</h2>
@@ -635,7 +659,13 @@ document.addEventListener('input', (ev) => {
     if (p) {
       UI[fk].item = p.name;
       UI[fk].points = p.points;
+      UI[fk].ptsCustom = false;
     }
+  }
+  if (b.endsWith('.ptsel')) {
+    const f = UI[b.split('.')[0]];
+    if (el.value === 'custom') f.ptsCustom = true;
+    else f.points = Number(el.value);
   }
   if (b === 'noticeFrom' || b === 'noticeTo') UI.noticeText = null;
   if (el.dataset.picker) return ev.isComposing ? updateLive(el.dataset.picker) : commitPicker(el, false);
@@ -707,6 +737,17 @@ async function saveAttendance(asRequest) {
   }
   await run('save_attendance', { p_period: pid, p_statuses: draft }, (n) => `저장했어요 · 새 기록 ${n}건`);
   delete UI.draft[pid];
+}
+
+function readMyPresets() {
+  document.querySelectorAll('.my-pr-name').forEach((i) => {
+    const p = S.presets.find((x) => x.id === i.dataset.id);
+    if (p) p.name = i.value;
+  });
+  document.querySelectorAll('.my-pr-pts').forEach((i) => {
+    const p = S.presets.find((x) => x.id === i.dataset.id);
+    if (p) p.points = Number(i.value);
+  });
 }
 
 async function submitEntry(fk) {
@@ -1090,10 +1131,38 @@ const A = {
     return true;
   },
   'preset-add': () => {
-    S.presets.push({ id: 'new' + Date.now(), name: '새 항목', points: 1 });
+    S.presets.push({ id: 'new' + Date.now(), name: '새 항목', points: 1, owner: null });
   },
   'preset-del': (d) => {
     S.presets = S.presets.filter((p) => p.id !== d.id);
+  },
+  'mypresets-toggle': () => {
+    UI.myPresetsOpen = !UI.myPresetsOpen;
+    return true;
+  },
+  // 저장 전 편집 중인 값을 잃지 않게, 추가·삭제할 때 입력칸의 값을 먼저 읽어 둔다
+  'mypreset-add': () => {
+    readMyPresets();
+    S.presets.push({ id: 'new' + Date.now(), name: '', points: 1, owner: UI.user });
+    UI.myPresetsOpen = true;
+  },
+  'mypreset-del': (d) => {
+    readMyPresets();
+    S.presets = S.presets.filter((p) => p.id !== d.id);
+    UI.myPresetsOpen = true;
+  },
+  'mypresets-save': async () => {
+    readMyPresets();
+    const list = myPresets().filter((p) => p.name.trim());
+    if (list.some((p) => !Number.isInteger(p.points) || p.points === 0)) return toast('점수는 0이 아닌 정수여야 해요');
+    UI.myPresetsOpen = true;
+    await run('my_presets_save', { p_list: list.map((p) => ({ name: p.name.trim(), points: p.points })) }, '내 항목을 저장했어요');
+    return true;
+  },
+  'pts-list': (d) => {
+    const f = UI[d.fk];
+    f.ptsCustom = false;
+    if (!POINT_CHOICES.includes(Number(f.points))) f.points = 1;
   },
   'presets-save': async () => {
     const list = [...document.querySelectorAll('.pr-name')].map((i) => ({

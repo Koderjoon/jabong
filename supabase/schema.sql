@@ -25,12 +25,14 @@ create table if not exists students (
 -- 재학 중인 학생끼리만 번호가 겹치면 안 된다 (제외된 학생의 옛 번호는 재사용 가능)
 create unique index if not exists students_no_active on students (no) where active;
 
+-- 자주 쓰는 항목. owner가 비어 있으면 공용(부총대가 관리), 있으면 그 직책의 "내 항목"
 create table if not exists presets (
   id uuid primary key default gen_random_uuid(),
   name text not null,
   points int not null,
   sort int not null default 0
 );
+alter table presets add column if not exists owner text;
 
 create table if not exists periods (
   id uuid primary key default gen_random_uuid(),
@@ -196,7 +198,7 @@ update accounts set can_attend = (role in ('실습부장 1', '실습부장 2', '
 
 insert into presets (name, points, sort)
 select * from (values ('지각', 1, 1), ('결석', 2, 2), ('실습실 뒷정리 미흡', 1, 3), ('실습', 1, 4), ('소치 실습', 1, 5), ('매점', -1, 6)) v
-where not exists (select 1 from presets);
+where not exists (select 1 from presets where owner is null);
 
 -- ───────────────────────── 권한 ─────────────────────────
 -- 테이블은 모두 잠그고, app_version만 Realtime 알림용으로 읽기를 연다.
@@ -351,7 +353,7 @@ language sql stable security definer set search_path = public as $$
         then json_build_object('id', id, 'no', no, 'name', name, 'active', active)
         else json_build_object('id', id, 'no', no, 'active', active) end order by active desc, no), '[]')
       from students),
-    'presets', (select coalesce(json_agg(json_build_object('id', id, 'name', name, 'points', points) order by sort, name), '[]') from presets),
+    'presets', (select coalesce(json_agg(json_build_object('id', id, 'name', name, 'points', points, 'owner', owner) order by sort, name), '[]') from presets),
     'periods', (select coalesce(json_agg(json_build_object('id', id, 'date', date, 'label', label, 'morning', morning) order by date, morning desc, label), '[]') from periods),
     'att', (select coalesce(json_object_agg(p.id, (select coalesce(json_object_agg(a.student_id, a.status), '{}') from attendance a where a.period_id = p.id)), '{}')
       from periods p where p.saved_at is not null),
@@ -559,7 +561,7 @@ begin
       perform _void(cur.id, case when want = 'excused' then '공결 처리' else '출석 정정' end, who);
     end if;
     if want_item is not null and (cur.id is null or cur.item <> want_item) then
-      select points into pts from presets where name = want_item order by sort limit 1;
+      select points into pts from presets where name = want_item and owner is null order by sort limit 1;
       nid := _entry(per.date, st.id, want_item, per.label, coalesce(pts, case want_item when '지각' then 1 else 2 end), 'att', p_period, null, who,
         p_requested_by, case when p_requested_by is not null then who end);
       n := n + 1;
@@ -730,15 +732,31 @@ language plpgsql security definer set search_path = public as $$
 declare who text := _session(p_token, true); p jsonb; i int := 0;
 begin
   -- Supabase는 앱에서 온 요청이 where 없는 delete/update를 하면 막는다 (pg_safeupdate)
-  delete from presets where true;
+  delete from presets where owner is null;
   for p in select * from jsonb_array_elements(coalesce(p_list, '[]')) loop
     i := i + 1;
     if coalesce(trim(p ->> 'name'), '') <> '' then
       insert into presets (name, points, sort) values (trim(p ->> 'name'), (p ->> 'points')::int, i);
     end if;
   end loop;
-  if not exists (select 1 from presets where name = '지각') then insert into presets (name, points, sort) values ('지각', 1, 0); end if;
-  if not exists (select 1 from presets where name = '결석') then insert into presets (name, points, sort) values ('결석', 2, 0); end if;
+  if not exists (select 1 from presets where name = '지각' and owner is null) then insert into presets (name, points, sort) values ('지각', 1, 0); end if;
+  if not exists (select 1 from presets where name = '결석' and owner is null) then insert into presets (name, points, sort) values ('결석', 2, 0); end if;
+end $$;
+
+-- 총대단 각자의 "내 항목"을 통째로 바꾼다
+create or replace function my_presets_save(p_token uuid, p_list jsonb) returns void
+language plpgsql security definer set search_path = public as $$
+declare who text := _session(p_token, false); p jsonb; i int := 0;
+begin
+  delete from presets where owner = who;
+  for p in select * from jsonb_array_elements(coalesce(p_list, '[]')) loop
+    i := i + 1;
+    if coalesce(trim(p ->> 'name'), '') <> '' then
+      if (p ->> 'points')::int = 0 then raise exception '점수는 0이 아닌 정수여야 해요'; end if;
+      insert into presets (name, points, sort, owner) values (trim(p ->> 'name'), (p ->> 'points')::int, 100 + i, who);
+    end if;
+  end loop;
+  if i > 30 then raise exception '내 항목은 30개까지 만들 수 있어요'; end if;
 end $$;
 
 -- 기준 날짜까지의 기록을 학생별 "이월" 한 줄로 합친다. 점수는 그대로 유지된다.
@@ -786,7 +804,7 @@ do $$ declare f text; begin
       'change_pw(uuid,text,text)', 'reset_pw(uuid,text,text)', 'new_recovery(uuid,text)', 'ensure_period(uuid,date,text,boolean)',
       'save_attendance(uuid,uuid,jsonb)', 'request_attendance(uuid,uuid,jsonb)', 'review_attendance(uuid,uuid,boolean,text)', 'add_entries(uuid,date,uuid[],text,text,numeric)', 'edit_entry(uuid,uuid,date,text,text,numeric,text)',
       'void_entry(uuid,uuid,text)', 'review_request(uuid,uuid,boolean,text)', 'review_excuse(uuid,uuid,boolean,text)',
-      'roster_apply(uuid,jsonb,jsonb,date)', 'presets_save(uuid,jsonb)', 'purge(uuid,date)'
+      'roster_apply(uuid,jsonb,jsonb,date)', 'presets_save(uuid,jsonb)', 'my_presets_save(uuid,jsonb)', 'purge(uuid,date)'
     ] loop
       execute format('grant execute on function %s to anon, authenticated', f);
     end loop;

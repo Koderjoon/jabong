@@ -202,3 +202,18 @@ select pg_temp.ok((select lp.requested_by = '실습부장 1' and lp.approved_by 
 select pg_temp.ok((select string_agg(role, ',' order by sort) from accounts where can_attend) = '총대,실습부장 1,실습부장 2', '출석 요청 직책');
 select pg_temp.ok((select string_agg(role, ',') from accounts where is_admin) = '부총대', '관리자는 부총대뿐');
 \echo 출석 권한 테스트 통과
+
+-- 총대단 "내 항목": 각자 따로, 공용 항목 저장이 지우지 않는다
+set role anon;
+select my_presets_save(:'ct', '[{"name":"실습 준비 미흡","points":1},{"name":"실습 도우미","points":-1}]');
+select my_presets_save(:'pt', '[{"name":"기구 미반납","points":2}]');
+select presets_save(:'t2', '[{"name":"매점","points":-1}]');
+set role postgres;
+select pg_temp.ok((select string_agg(name, ',' order by name) from presets where owner = '총대') = '실습 도우미,실습 준비 미흡', '총대 내 항목');
+select pg_temp.ok((select count(*) from presets where owner = '실습부장 1') = 1, '실습부장 내 항목');
+select pg_temp.ok((select string_agg(name, ',' order by name) from presets where owner is null) = '결석,매점,지각', '공용 항목');
+set role anon;
+select my_presets_save(:'ct', '[]');
+set role postgres;
+select pg_temp.ok(not exists (select 1 from presets where owner = '총대'), '내 항목 비우기');
+\echo 내 항목 테스트 통과
