@@ -221,6 +221,10 @@ test('입력 추천 · 교시: 같은 요일 → 최근 → 자주, 그 날짜�
   assert.deepEqual(g(suggestPeriods(S, '2026-09-22', '')), ['같은 요일:1교시 생리학', '최근:3교시 조직학', '최근:2교시 약리학', '최근:1교시 구강해부학']);
   assert.deepEqual(g(suggestPeriods(S, '2026-09-22', '교시 조')), [':3교시 조직학']);
   assert.ok(!suggestPeriods(S, '2026-09-22', '').some((x) => x.v === '아침 출석'));
+  // 같은 날 교시가 여럿이면 교시 순서대로
+  const T = state();
+  T.periods.push({ date: '2026-09-07', label: '3교시 조직학' }, { date: '2026-09-07', label: '1교시 구강해부학' }, { date: '2026-09-07', label: '2교시 생리학' });
+  assert.deepEqual(g(suggestPeriods(T, '2026-09-14', '')), ['같은 요일:1교시 구강해부학', '같은 요일:2교시 생리학', '같은 요일:3교시 조직학']);
 });
 
 test('입력 추천 · 사유: 앱이 붙인 사유는 빼고, 요청 사유는 내 것만', () => {

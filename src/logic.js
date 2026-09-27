@@ -360,7 +360,9 @@ export function suggestPeriods(S, date, typed) {
   const dow = new Date(date + 'T00:00:00').getDay();
   const ev = S.periods
     .filter((p) => !p.morning && !taken.has(p.label))
-    .map((p) => ({ v: p.label, at: p.date, mine: new Date(p.date + 'T00:00:00').getDay() === dow }));
+    .map((p) => ({ v: p.label, at: p.date, mine: new Date(p.date + 'T00:00:00').getDay() === dow }))
+    // 같은 날짜의 교시는 1교시, 2교시… 순으로 보이게 (같은 시각이면 목록 뒤쪽이 앞에 오므로 이름을 거꾸로 놓는다)
+    .sort((a, b) => a.at.localeCompare(b.at) || b.v.localeCompare(a.v));
   return rank(ev, typed, [['같은 요일', 'mine', 4], ['최근', 'recent', 3], ['자주', 'freq', 3]], (s) => s.v === (typed || '').trim());
 }
 
