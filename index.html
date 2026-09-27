@@ -93,7 +93,7 @@ textarea{resize:vertical;min-height:70px}
 .chip{border:0}
 .linkbtn{border:0;background:none;color:var(--accent);font-size:12px;padding:2px 0;text-align:left}
 .itembox{position:relative}
-.itembox input{padding-right:84px}
+.itembox>input{padding-right:84px}
 .itembox .itemdrop{position:absolute;top:1px;right:1px;bottom:1px;width:78px;border:0;border-left:1px solid var(--line);border-radius:0 9px 9px 0;background:var(--sunk);color:var(--accent);font-size:13px;font-weight:600;padding:0}
 .prpop{position:absolute;left:0;right:0;top:calc(100% + 4px);z-index:20;display:flex;flex-direction:column;gap:4px;padding:6px;background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:0 8px 24px rgb(0 0 0/.14);max-height:60vh;overflow:auto}
 .prpop[hidden]{display:none}
@@ -102,6 +102,9 @@ textarea{resize:vertical;min-height:70px}
 .pr-use b{font-family:var(--mono);font-weight:600}.pr-use b.p{color:var(--pen)}.pr-use b.m{color:var(--merit)}
 .pr-use:active,.pr-add:active{background:var(--accent-soft)}
 .pr-del{width:36px;flex:0 0 36px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--muted);font-size:16px;padding:0}
+.pr-new{display:grid;grid-template-columns:1fr 76px;gap:6px;padding:6px;border:1px dashed var(--accent);border-radius:8px}
+.pr-new input{width:100%;min-width:0}
+.pr-new .btns{grid-column:1/-1}
 .pr-add{border:1px dashed var(--accent);border-radius:8px;background:transparent;color:var(--accent);padding:8px 10px;font-size:13px;font-weight:600;text-align:left}
 .ptsbox{position:relative}
 .ptsbox input{padding-right:40px}

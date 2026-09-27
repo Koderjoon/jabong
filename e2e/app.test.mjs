@@ -680,28 +680,40 @@ test('총대단 로그인: 탭, 비밀번호 바꾸기(검사·성공·다시 �
   assert.deepEqual(await O.tabs(), ['요청하기', '요청 현황', '현황판']);
 });
 
-test('총대단: 항목명 칸의 불러오기 — 지금 적은 항목 추가(검사), 고르기, 빼기, 바깥 누르면 닫힘', async () => {
+test('총대단: 항목명 칸의 불러오기 — "추가"를 누르면 그 자리에서 항목명·점수 입력(검사·Enter·취소), 고르기, 빼기, 바깥 누르면 닫힘', async () => {
   const pop = '#reqForm-prpop';
+  await O.page.fill('#reqForm-item', '적던 항목');
   await O.click('[data-act="pr-open"][data-fk="reqForm"]');
   assert.match(await O.text(pop), /아직 없어요/);
-  assert.equal(await O.toast(`${pop} [data-act="pr-add"]`), '항목명을 먼저 적어 주세요');
-  await O.page.fill('#reqForm-item', '청소 불참');
-  assert.ok(await O.page.isHidden(pop), '항목명 칸을 누르면 불러오기 창은 닫힌다');
-  await O.page.fill('#reqForm-points', '2');
-  await O.click('[data-act="pr-open"][data-fk="reqForm"]');
-  assert.match(await O.text(`${pop} [data-act="pr-add"]`), /청소 불참 \+2/);
-  assert.equal(await O.toast(`${pop} [data-act="pr-add"]`), '자주 쓰는 항목에 넣었어요: 청소 불참 +2');
+  assert.equal(await O.page.$('#reqForm-prname'), null);
+  await O.click(`${pop} [data-act="pr-add"]`);
+  assert.equal(await O.page.evaluate(() => document.activeElement.id), 'reqForm-prname', '추가를 누르면 항목명 칸으로 바로');
+  assert.equal(await O.page.inputValue('#reqForm-prname'), '');
+  assert.equal(await O.page.inputValue('#reqForm-prpts'), '1');
+  await O.fits('불러오기 새 항목 입력');
+  assert.equal(await O.toast(`${pop} [data-act="pr-save"]`), '항목명을 적어 주세요');
+  await O.page.fill('#reqForm-prname', '청소 불참');
+  await O.page.fill('#reqForm-prpts', '1.5');
+  assert.equal(await O.toast(`${pop} [data-act="pr-save"]`), '자주 쓰는 항목 점수는 0이 아닌 정수여야 해요');
+  await O.page.fill('#reqForm-prpts', '2');
+  await O.page.evaluate(() => (document.getElementById('toast').hidden = true));
+  await O.page.press('#reqForm-prpts', 'Enter');
+  await O.page.waitForFunction(() => document.querySelector('#toast > span')?.textContent.startsWith('자주 쓰는 항목에 넣었어요'));
+  assert.equal(await O.text('#toast > span'), '자주 쓰는 항목에 넣었어요: 청소 불참 +2');
   assert.ok(await O.page.isVisible(pop), '넣은 뒤에도 창이 열려 있다');
-  assert.equal(await O.toast(`${pop} [data-act="pr-add"]`), '이미 있는 항목이에요');
-  await O.page.fill('#reqForm-item', '반값');
-  await O.page.fill('#reqForm-points', '1.5');
-  await O.click('[data-act="pr-open"][data-fk="reqForm"]');
-  assert.equal(await O.toast(`${pop} [data-act="pr-add"]`), '자주 쓰는 항목 점수는 0이 아닌 정수여야 해요');
-  await O.page.fill('#reqForm-item', '임시');
-  await O.page.fill('#reqForm-points', '1');
-  await O.click('[data-act="pr-open"][data-fk="reqForm"]');
-  await O.toast(`${pop} [data-act="pr-add"]`);
-  assert.deepEqual(await O.page.$$eval(`${pop} .pr-use`, (b) => b.map((x) => x.textContent)), ['청소 불참 +2', '임시 +1']);
+  assert.equal(await O.page.$('#reqForm-prname'), null, '입력칸은 닫히고 목록에 들어간다');
+  assert.equal(await O.page.inputValue('#reqForm-item'), '적던 항목', '적던 항목명은 그대로');
+  await O.click(`${pop} [data-act="pr-add"]`);
+  await O.page.fill('#reqForm-prname', '청소 불참');
+  await O.page.fill('#reqForm-prpts', '2');
+  assert.equal(await O.toast(`${pop} [data-act="pr-save"]`), '이미 있는 항목이에요');
+  await O.click(`${pop} [data-act="pr-cancel"]`);
+  assert.equal(await O.page.$('#reqForm-prname'), null);
+  await O.click(`${pop} [data-act="pr-add"]`);
+  await O.page.fill('#reqForm-prname', '임시');
+  await O.page.fill('#reqForm-prpts', '-1');
+  await O.toast(`${pop} [data-act="pr-save"]`);
+  assert.deepEqual(await O.page.$$eval(`${pop} .pr-use`, (b) => b.map((x) => x.textContent)), ['청소 불참 +2', '임시 -1']);
   assert.equal(await O.toast(`${pop} .pr-row:has-text("임시") [data-act="pr-del"]`), '자주 쓰는 항목에서 뺐어요: 임시');
   assert.deepEqual(await O.page.$$eval(`${pop} .pr-use`, (b) => b.map((x) => x.textContent)), ['청소 불참 +2']);
   await O.page.click('h1');
@@ -709,7 +721,9 @@ test('총대단: 항목명 칸의 불러오기 — 지금 적은 항목 추가(�
   assert.equal((await one(`select count(*)::int as n from presets where owner = '학습부장'`)).n, 1);
   assert.equal((await one(`select count(*)::int as n from presets where owner = '부총대'`)).n, 6, '다른 직책 항목은 그대로');
   await O.page.fill('#reqForm-item', '');
-  await O.page.fill('#reqForm-points', '1');
+  // 날짜는 왼쪽, 점수는 오른쪽
+  const x = async (sel) => (await O.page.$eval(sel, (el) => el.getBoundingClientRect().left));
+  assert.ok((await x('#reqForm-date')) < (await x('#reqForm-points')));
 });
 
 test('총대단: 사진 붙인 요청, 숫자판으로 상점 요청, 요청 현황, 현황판 이름', async () => {
