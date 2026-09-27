@@ -28,7 +28,7 @@
 - 입력 추천: 칸에 `data-suggest="종류"`(item·detail·period·editReason·voidReason·note·reqReason)를 붙이면, 칸을 누를 때 `logic.js`의 `suggest*`가 지난 기록(S)에서 뽑은 최근·자주 쓴 값을 칸 아래 `#sugbox`에 띄운다. 따로 저장하지 않는다(어느 기기든 같고 작업 내역과 함께 움직인다). 항목명은 점수도 함께 넣는다. 교시는 같은 요일 것을 먼저. 화면 시각은 분 단위라, 같은 분이면 서버 목록에서 뒤에 있는 것을 최근으로 본다. 상자는 점수 칸과 한 줄(`.row2`)이면 그 줄 아래에 붙인다 — 줄 안에 넣으면 폰·크롬에서 커서가 튀어 친 글자 순서가 뒤집힌다.
 - 되돌리기 버튼: 부총대 작업 뒤 안내는 `doneToast()`로 띄운다. `ops_list`의 맨 위 작업이 방금 내 것이면 "되돌리기"(=`history_drop`)를 붙인다. 안내 글자는 `#toast > span`, 버튼은 그 옆이다.
 - 학생 "내 번호"는 `localStorage`(`jabong-myno`)에만 둔다. 서버에 저장하지 않는다(번호만 고르면 누구나 되는 것과 같은 수준).
-- 홈 화면 앱: `public/manifest.webmanifest`와 아이콘(`public/icon-*.png`). 서비스 워커는 두지 않는다(캐시 때문에 새 버전이 늦게 보이는 일을 피하려고).
+- 홈 화면 앱: `public/manifest.webmanifest`와 아이콘(`public/icon-*.png`, 파비콘 `favicon-64.png`). 아이콘은 Pretendard ExtraBold로 그린 "자봉" PNG다(SVG로 두면 폰에 글꼴이 없어 모양이 바뀐다). 서비스 워커는 두지 않는다(캐시 때문에 새 버전이 늦게 보이는 일을 피하려고).
 - 한글 입력: 입력칸을 통째로 다시 그리면 조합이 깨진다. 입력 중 갱신이 필요하면 `data-live`(추천·칩 영역만 갱신)나 `data-region`(특정 영역만 갱신)을 쓰고, `data-rerender`는 날짜·숫자·체크박스처럼 한글이 없는 칸에만 쓴다.
 - Supabase는 앱에서 온 요청의 `where` 없는 `delete`/`update`를 거절한다(pg_safeupdate). 로컬 Postgres에서는 통과하니, 전체를 지울 때도 `where true`를 붙인다. `test/schema.test.js`가 검사한다.
 - 백업: `_dump()`가 비밀번호·로그인·사진을 뺀 전체 데이터를 JSON으로 만든다. `backup_dump()`는 로그인 없이 누구나 부를 수 있다(학급이 이름 공개를 괜찮다고 정했다). jabong-backup 저장소의 GitHub Actions가 매일 이것을 받아 암호화 없이 올린다. `restore_backup`은 부총대만 되고, 되살리기 직전에 화면이 현재 상태 파일을 먼저 받게 한다. `src/backupcrypt.js`는 예전에 암호를 걸어 받은 파일을 열 때만 쓴다.
