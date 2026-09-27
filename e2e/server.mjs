@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import pg from 'pg';
 
-const TYPES = { '.js': 'text/javascript', '.css': 'text/css', '.html': 'text/html; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json' };
+const TYPES = { '.js': 'text/javascript', '.css': 'text/css', '.html': 'text/html; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json', '.png': 'image/png', '.webmanifest': 'application/manifest+json' };
 
 export function startServer({ port, dist, database }) {
   const pool = new pg.Pool({ database });

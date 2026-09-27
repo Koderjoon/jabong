@@ -40,7 +40,25 @@ const UI = {
   })(),
   exp: { range: 'month', from: '', to: '' }, fullBackup: false, purgeCut: '', purgeTyped: '',
   rosterText: '', rosterReplace: false, recover: false, newCode: null,
+  // 학생이 정해 둔 "내 번호" (이 기기에만 기억한다)
+  myNo: (() => {
+    try {
+      return Number(localStorage.getItem('jabong-myno')) || null;
+    } catch {
+      return null;
+    }
+  })(),
 };
+function setMyNo(no) {
+  UI.myNo = no || null;
+  try {
+    if (no) localStorage.setItem('jabong-myno', String(no));
+    else localStorage.removeItem('jabong-myno');
+  } catch {
+    // 저장소를 못 쓰면 이번에만 기억한다
+  }
+}
+const myStudent = () => (UI.myNo ? S.students.find((x) => x.active && x.no === UI.myNo) : null);
 
 const TABS = {
   student: [['board', '현황판'], ['excuse', '공결 신청']],
@@ -54,13 +72,36 @@ const STATUS = { pending: '대기', approved: '승인', rejected: '반려' };
 const pendingCount = () =>
   [S.requests, S.excuses, S.attRequests || []].reduce((n, l) => n + l.filter((x) => x.status === 'pending').length, 0);
 
-function toast(msg) {
+// 안내 문구. undo(작업 id)를 주면 "되돌리기" 버튼을 붙이고 조금 더 오래 보여 준다.
+function toast(msg, undo) {
   const t = document.getElementById('toast');
-  t.textContent = msg;
+  const span = document.createElement('span');
+  span.textContent = msg;
+  t.replaceChildren(span);
+  if (undo) {
+    const b = document.createElement('button');
+    b.dataset.act = 'undo-last';
+    b.dataset.id = undo;
+    b.textContent = '되돌리기';
+    t.append(b);
+  }
   t.hidden = false;
   clearTimeout(toast.t);
-  toast.t = setTimeout(() => (t.hidden = true), 2600);
+  toast.t = setTimeout(() => (t.hidden = true), undo ? 7000 : 2600);
   return true;
+}
+// 부총대가 방금 한 작업이면 되돌리기 버튼을 붙인다 (되돌리기는 "이 작업만 되돌리기"와 같고 기록이 남지 않는다)
+async function doneToast(msg) {
+  let undo = null;
+  if (isAdmin()) {
+    try {
+      const o = (await rpc('ops_list', { p_token: token(), p_limit: 1 }))[0];
+      if (o && o.actor === UI.user && o.undoable && !o.undone && !o.dropped) undo = o.id;
+    } catch {
+      // 되돌리기 버튼만 못 붙인다
+    }
+  }
+  return toast(msg, undo);
 }
 
 /* ---------- 서버 ---------- */
@@ -83,7 +124,7 @@ async function run(fn, args, msg) {
   const r = await rpc(fn, { p_token: token(), ...args });
   await refresh();
   render();
-  if (msg) toast(typeof msg === 'function' ? msg(r) : msg);
+  if (msg) await doneToast(typeof msg === 'function' ? msg(r) : msg);
   return r;
 }
 
@@ -126,10 +167,40 @@ function vBoard() {
   const q = UI.q.trim();
   if (q) list = list.filter((x) => String(x.s.no).startsWith(q) || (named && (x.s.name || '').includes(q)));
   if (UI.sort === 'bal') list.sort((a, b) => b.b - a.b || a.s.no - b.s.no);
+  const me = UI.role === 'student' ? myStudent() : null;
   return `<div><h1>자봉 현황</h1><p class="live"><span class="dot"></span>실시간 반영 · 마지막 변경 ${esc(S.updatedAt)}</p></div>
+  ${UI.role === 'student' && S.students.length ? vMyCard(me) : ''}
   <div class="toolbar"><input type="search" id="q" ${named ? '' : 'inputmode="numeric" '}placeholder="${named ? '번호·이름 검색' : '번호 검색'}" value="${esc(UI.q)}" data-bind="q" data-region="board-grid">
   <div class="seg"><button class="${UI.sort === 'no' ? 'on' : ''}" data-act="sort" data-v="no">번호순</button><button class="${UI.sort === 'bal' ? 'on' : ''}" data-act="sort" data-v="bal">자봉 많은 순</button></div></div>
-  <div class="grid${named ? ' named' : ''}" id="board-grid">${list.map(({ s, b }) => `<button class="tile" data-act="open" data-sid="${s.id}"><span class="no">${s.no}</span>${named ? `<span class="nm">${esc(s.name)}</span>` : ''}<span class="pt">자봉 ${b}</span></button>`).join('') || `<p class="empty">${S.students.length ? '찾는 학생이 없어요.' : '아직 명단이 없어요.'}</p>`}</div>`;
+  <div class="grid${named ? ' named' : ''}" id="board-grid">${list.map(({ s, b }) => `<button class="tile${me && me.id === s.id ? ' me' : ''}" data-act="open" data-sid="${s.id}"><span class="no">${s.no}</span>${named ? `<span class="nm">${esc(s.name)}</span>` : ''}<span class="pt">자봉 ${b}</span></button>`).join('') || `<p class="empty">${S.students.length ? '찾는 학생이 없어요.' : '아직 명단이 없어요.'}</p>`}</div>
+  ${vInstall()}`;
+}
+
+// 홈 화면에 앱으로 추가 (manifest.webmanifest). 안드로이드 크롬은 버튼, 아이폰은 Safari 공유 메뉴 안내.
+let installEvt = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  installEvt = e;
+  if (loaded) softRender();
+});
+const standalone = () => window.matchMedia?.('(display-mode: standalone)').matches || navigator.standalone === true;
+function vInstall() {
+  if (standalone()) return '';
+  if (installEvt) return '<button class="btn ghost small" data-act="install" style="align-self:center">홈 화면에 앱으로 추가</button>';
+  if (/iPhone|iPad|iPod/.test(navigator.userAgent)) return '<p class="hint" style="text-align:center">Safari 아래쪽 공유 버튼 → "홈 화면에 추가"를 누르면 앱처럼 쓸 수 있어요.</p>';
+  return '';
+}
+
+// 학생 화면 맨 위: 내 번호의 자봉과 최근 기록. 정하지 않았으면 정하는 칸.
+function vMyCard(me) {
+  if (!me)
+    return `<div class="card mycard"><div class="toolbar"><input id="myno" inputmode="numeric" placeholder="내 번호" style="width:110px" autocomplete="off"><button class="btn ghost small" data-act="myno-set">내 번호로 정하기</button></div>
+    <p class="hint" style="margin:0">이 폰에만 기억해요. 정해 두면 여기서 내 자봉과 최근 기록을 바로 보고, 공결 신청에도 번호가 미리 들어가요.</p></div>`;
+  const es = S.ledger.filter((e) => e.sid === me.id).reverse().sort((a, c) => c.date.localeCompare(a.date) || c.at.localeCompare(a.at)).slice(0, 3);
+  const b = bal(me.id);
+  return `<div class="card mycard"><div class="req-top"><b>내 번호 ${me.no}</b><span class="mybal">자봉 ${b}</span></div>
+  ${es.map((e) => `<div class="rec-row"><span class="note mono">${md(e.date)}</span><span class="${e.voided ? 'off' : ''}">${esc(e.item)}${e.voided ? ' · 무효' : ''}</span><span class="pts ${e.points > 0 ? 'p' : 'm'} ${e.voided ? 'off' : ''}">${sgn(e.points)}</span></div>`).join('') || '<p class="note" style="margin:0">아직 기록이 없어요.</p>'}
+  <div class="btns"><button class="btn ghost small" data-act="open" data-sid="${me.id}">전체 기록</button><button class="btn ghost small" data-act="to-excuse" data-no="${me.no}">공결 신청</button><button class="btn ghost small" data-act="myno-clear">번호 바꾸기</button></div></div>`;
 }
 
 function vDetail() {
@@ -153,7 +224,7 @@ function vDetail() {
   return `<button class="back" data-act="back">← 현황판</button>
   <div class="hero"><div><h1>${s.no}번${isStaff() && s.name ? ` <span class="sub" style="font-size:15px">${esc(s.name)}</span>` : ''}</h1><p class="sub">기록 ${es.filter(live).length}건${es.some((e) => e.voided) ? ` · 무효 ${es.filter((e) => e.voided).length}건` : ''}</p></div>
   <div style="text-align:right"><div class="sub">자봉</div><div class="big ${b > 0 ? 'p' : b < 0 ? 'm' : ''}">${b}</div></div></div>
-  ${UI.role === 'student' ? `<button class="btn ghost" data-act="to-excuse" data-no="${s.no}">이 번호로 공결 신청</button>` : ''}
+  ${UI.role === 'student' ? `<button class="btn ghost" data-act="to-excuse" data-no="${s.no}">이 번호로 공결 신청</button>${UI.myNo !== s.no ? `<button class="btn ghost small" data-act="myno-set" data-no="${s.no}" style="align-self:flex-start">이 번호를 내 번호로 정하기</button>` : ''}` : ''}
   ${admin ? `<button class="btn ghost" data-act="to-record" data-no="${s.no}">이 학생 기록 수정·무효 처리</button>` : ''}
   <div>${dates.map((d) => `<div class="day">${mdw(d)}</div><ul class="evs">${es.filter((e) => e.date === d).map(ev).join('')}</ul>`).join('') || '<p class="empty">기록이 없어요.</p>'}</div>`;
 }
@@ -960,7 +1031,7 @@ async function saveAttendance(asRequest) {
   delete UI.draft[pid];
   await refresh();
   render();
-  toast(`저장했어요 · 새 기록 ${n}건`);
+  await doneToast(`저장했어요 · 새 기록 ${n}건`);
 }
 
 function readMyPresets() {
@@ -1078,6 +1149,7 @@ const A = {
   },
   tab: (d) => {
     if (d.tab === 'history') UI.hist = { ...UI.hist, list: null, preview: null };
+    if (d.tab === 'excuse' && !UI.excForm.no && myStudent()) UI.excForm.no = String(UI.myNo);
     UI.tab = d.tab;
     UI.sid = null;
     window.scrollTo(0, 0);
@@ -1239,7 +1311,7 @@ const A = {
     UI.noticeText = null;
     await refresh();
     render();
-    return toast('수정했어요 · 이력에 남았어요');
+    return doneToast('수정했어요 · 이력에 남았어요');
   },
   'void-save': async (d) => {
     await rpc('void_entry', { p_token: token(), p_id: d.id, p_reason: val('vd-reason') });
@@ -1247,7 +1319,7 @@ const A = {
     UI.noticeText = null;
     await refresh();
     render();
-    return toast('무효 처리했어요 · 점수에서 빠졌어요');
+    return doneToast('무효 처리했어요 · 점수에서 빠졌어요');
   },
   'req-ok': async (d) => {
     await run('review_request', { p_id: d.id, p_approve: true, p_note: null }, (n) => `승인했어요 · ${n}명 반영`);
@@ -1427,6 +1499,36 @@ const A = {
     const data = await rpc(restore ? 'history_restore' : 'history_drop', { p_token: token(), p_op: id, p_preview: true });
     UI.hist.preview = { drop: id, restore, title: restore ? '다시 살리기' : '이 작업만 되돌리기', data };
     window.scrollTo(0, 0);
+  },
+  'myno-set': (d) => {
+    const no = Number(d.no || val('myno'));
+    if (!S.students.some((x) => x.active && x.no === no)) return toast('없는 번호예요');
+    setMyNo(no);
+    UI.sid = null;
+    UI.tab = 'board';
+    window.scrollTo(0, 0);
+    toast(`${no}번을 내 번호로 정했어요 · 이 폰에만 기억해요`);
+  },
+  install: async () => {
+    const e = installEvt;
+    installEvt = null;
+    if (e) {
+      e.prompt();
+      await e.userChoice;
+    }
+  },
+  'myno-clear': () => {
+    setMyNo(null);
+  },
+  'undo-last': async (d) => {
+    document.getElementById('toast').hidden = true;
+    await rpc('history_drop', { p_token: token(), p_op: Number(d.id), p_preview: false });
+    UI.draft = {};
+    UI.noticeText = null;
+    UI.hist = { ...UI.hist, list: null, preview: null };
+    await refresh();
+    render();
+    return toast('되돌렸어요 · 작업 내역에서 다시 살릴 수 있어요');
   },
   'hist-cancel': () => {
     UI.hist.preview = null;

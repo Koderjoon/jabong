@@ -93,7 +93,7 @@ after(async () => {
 });
 
 // ───────── 화면 도우미 ─────────
-async function open({ width = 390, height = 844, touch = false, beforeGoto } = {}) {
+async function open({ width = 390, height = 844, touch = false, beforeGoto, userAgent } = {}) {
   const ctx = await browser.newContext({
     viewport: { width, height },
     hasTouch: touch,
@@ -101,6 +101,7 @@ async function open({ width = 390, height = 844, touch = false, beforeGoto } = {
     locale: 'ko-KR',
     timezoneId: 'Asia/Seoul',
     permissions: ['clipboard-read', 'clipboard-write'],
+    ...(userAgent ? { userAgent } : {}),
   });
   // 인터넷 글꼴은 막는다 (테스트가 외부에 기대지 않게)
   await ctx.route(/fonts\.(googleapis|gstatic)\.com/, (r) => r.abort());
@@ -142,7 +143,7 @@ function ui(page) {
       await page.click(sel);
       await page.waitForSelector('#toast:not([hidden])');
       await page.waitForFunction(() => !document.body.style.cursor);
-      return (await page.textContent('#toast')).trim();
+      return (await page.textContent('#toast > span')).trim();
     },
     async tab(k) {
       await u.click(`#tabs [data-tab="${k}"]`);
@@ -422,6 +423,33 @@ test('기록: 수정(검사·이력)과 무효 처리', async () => {
   await A.page.fill('#recFilter', '');
 });
 
+test('되돌리기 버튼: 부총대가 한 작업 바로 뒤 안내에서 누르면 그 작업만 없던 일로 (작업 내역에서 다시 살릴 수 있음)', async () => {
+  const before = await balances();
+  await A.page.fill('#recForm-item', '되돌리기 연습');
+  await A.page.fill('#recForm-points', '3');
+  await A.page.type('#recForm-find', '8 ');
+  assert.equal(await A.toast('[data-act="rec-add"]'), '1명에게 기록했어요');
+  assert.equal(await A.text('#toast button'), '되돌리기');
+  assert.equal((await balances())['정우진'], before['정우진'] + 3);
+  await A.fits('되돌리기 안내');
+  await A.page.click('#toast [data-act="undo-last"]');
+  await A.page.waitForFunction(() => document.querySelector('#toast > span')?.textContent.startsWith('되돌렸어요'));
+  assert.equal(await A.text('#toast > span'), '되돌렸어요 · 작업 내역에서 다시 살릴 수 있어요');
+  assert.equal(await A.page.$('#toast button'), null);
+  assert.deepEqual(await balances(), before);
+  assert.ok((await one(`select dropped from ops where summary like '기록: 되돌리기 연습%'`)).dropped, '작업 내역에는 "이 작업만 되돌림"으로 남는다');
+  assert.equal((await one(`select count(*)::int as n from ops where summary like '%되돌%' and summary not like '기록: 되돌리기 연습%'`)).n, 0, '되돌리기 자체는 기록이 없다');
+  // 수정·무효 처리 안내에도 되돌리기가 붙는다
+  await A.click('#rec-list .rec-row:has-text("소치 실습") [data-act="edit"]');
+  await A.page.fill('#ed-detail', '임시');
+  await A.page.fill('#ed-reason', '연습');
+  assert.equal(await A.toast('[data-act="edit-save"]'), '수정했어요 · 이력에 남았어요');
+  await A.page.click('#toast [data-act="undo-last"]');
+  await A.page.waitForFunction(() => document.querySelector('#toast > span')?.textContent.startsWith('되돌렸어요'));
+  assert.equal((await one(`select detail from ledger where item = '소치 실습'`)).detail, '', '수정도 되돌아간다');
+  assert.equal((await one(`select count(*)::int as n from ledger_revisions`)).n, 1, '수정 이력도 함께 사라진다');
+});
+
 test('학생 상세(부총대): 수정 이력 펼치기, 무효 표시, 기록자 표시, 기록 탭으로 이동', async () => {
   await A.tab('board');
   await A.click('#board-grid .tile:has(.no:text-is("1"))');
@@ -676,6 +704,7 @@ test('총대단: 사진 붙인 요청, 숫자판으로 상점 요청, 요청 현
   await O.page.waitForSelector('img.thumb');
   await O.fits('요청 사진 첨부');
   assert.equal(await O.toast('[data-act="req-add"]'), '요청을 보냈어요');
+  assert.equal(await O.page.$('#toast button'), null, '총대단 안내에는 되돌리기가 없다 (작업 내역은 부총대만)');
   assert.equal(await O.page.$('img.thumb'), null);
   // 요청 사유: 내가 쓴 지난 사유
   await O.page.click('#reqForm-reason');
@@ -854,6 +883,40 @@ test('요청함: 공결 증빙 보기, 승인(출결이 공결로), 반려(사�
   assert.match(await S.text(), /반려 사유: 증빙 필요/);
   await S.page.fill('#exc-no', '3');
   assert.match(await S.text(), /승인/);
+});
+
+// ───────── 학생 "내 번호" ─────────
+test('학생 "내 번호": 정하기(없는 번호 안내), 내 카드·칸 강조, 새로고침해도 기억, 공결 신청에 미리, 상세에서 정하기, 바꾸기', async () => {
+  await S.tab('board');
+  assert.ok(await S.page.$('.mycard #myno'));
+  await S.page.fill('#myno', '99');
+  assert.equal(await S.toast('[data-act="myno-set"]'), '없는 번호예요');
+  await S.page.fill('#myno', '3');
+  assert.equal(await S.toast('[data-act="myno-set"]'), '3번을 내 번호로 정했어요 · 이 폰에만 기억해요');
+  const card = await S.text('.mycard');
+  assert.match(card, /내 번호 3/);
+  assert.match(card, new RegExp(`자봉 ${(await balances())['박하준']}`));
+  assert.match(card, /결석 · 무효/, '최근 기록 (공결 승인된 결석은 무효로)');
+  assert.equal(await S.page.$$eval('#board-grid .tile.me', (t) => t.map((x) => x.querySelector('.no').textContent).join()), '3');
+  await S.fits('내 번호 카드');
+  await S.reload();
+  assert.match(await S.text('.mycard'), /내 번호 3/, '새로고침해도 기억');
+  await S.tab('excuse');
+  assert.equal(await S.page.inputValue('#exc-no'), '3', '공결 신청에 번호가 미리 들어간다');
+  await S.tab('board');
+  await S.click('.mycard [data-act="open"]');
+  assert.match(await S.text(), /3번/);
+  await S.click('[data-act="back"]');
+  await S.click('.mycard [data-act="myno-clear"]');
+  assert.ok(await S.page.$('#myno'));
+  assert.equal(await S.page.$('#board-grid .tile.me'), null);
+  await S.click('#board-grid .tile:has(.no:text-is("4"))');
+  assert.equal(await S.toast('[data-act="myno-set"]'), '4번을 내 번호로 정했어요 · 이 폰에만 기억해요');
+  assert.match(await S.text('.mycard'), /내 번호 4/);
+  assert.equal(await S.page.evaluate(() => localStorage.getItem('jabong-myno')), '4');
+  await A.tab('board');
+  assert.equal(await A.page.$('.mycard'), null, '부총대 현황판에는 내 번호 카드가 없다');
+  await S.click('.mycard [data-act="myno-clear"]');
 });
 
 // ───────── 출석 요청: 저장된 교시·같은 교시 경고, 반려 안내 ─────────
@@ -1097,7 +1160,7 @@ test('백업: 받기 → 데이터 바꾸기 → 파일로 되살리기(미리�
   await A.tab('manage');
   await A.page.setInputFiles('[data-bkfile]', { name: 'x.json', mimeType: 'application/json', buffer: Buffer.from('{"foo":1}') });
   await A.page.waitForSelector('#toast:not([hidden])');
-  assert.equal((await A.text('#toast')).trim(), '자봉 장부 백업 파일이 아니에요');
+  assert.equal((await A.text('#toast > span')).trim(), '자봉 장부 백업 파일이 아니에요');
   await A.page.setInputFiles('[data-bkfile]', file);
   await A.page.waitForSelector('#bk-typed');
   const pv = await A.text('.card:has(#bk-typed)');
@@ -1177,6 +1240,41 @@ test('다른 기기의 변경: 화면으로 돌아오면 새로 불러오고, �
   await O.page.fill('#q', '');
 });
 
+test('홈 화면 앱: manifest·아이콘, 안드로이드 설치 버튼, 아이폰 안내', async () => {
+  const P = await open();
+  assert.equal(await P.page.getAttribute('link[rel="manifest"]', 'href'), '/manifest.webmanifest');
+  assert.equal(await P.page.getAttribute('link[rel="apple-touch-icon"]', 'href'), '/icon-180.png');
+  const get = (u) => P.page.request.get(`http://localhost:${PORT}${u}`);
+  const m = await (await get('/manifest.webmanifest')).json();
+  assert.equal(m.display, 'standalone');
+  assert.equal(m.short_name, '자봉');
+  assert.equal(m.start_url, '/');
+  assert.ok(m.icons.some((i) => i.purpose === 'maskable'));
+  for (const ic of [...m.icons.filter((i) => i.type === 'image/png'), { src: '/icon-180.png', sizes: '180x180' }]) {
+    const b = await (await get(ic.src)).body();
+    assert.equal(b.toString('latin1', 1, 4), 'PNG', ic.src);
+    assert.deepEqual([b.readUInt32BE(16), b.readUInt32BE(20)], ic.sizes.split('x').map(Number), `${ic.src} 크기`);
+  }
+  // 안드로이드 크롬: 설치할 수 있다고 알려 오면 버튼이 생기고, 누르면 설치 창
+  assert.equal(await P.page.$('[data-act="install"]'), null);
+  await P.page.evaluate(() => {
+    const e = new Event('beforeinstallprompt', { cancelable: true });
+    e.prompt = () => (window.__prompted = true);
+    e.userChoice = Promise.resolve({ outcome: 'accepted' });
+    window.dispatchEvent(e);
+  });
+  await P.page.waitForSelector('[data-act="install"]');
+  await P.fits('설치 버튼');
+  await P.click('[data-act="install"]');
+  assert.equal(await P.page.evaluate(() => window.__prompted), true);
+  assert.equal(await P.page.$('[data-act="install"]'), null);
+  await P.page.context().close();
+  // 아이폰 Safari: 공유 메뉴 안내
+  const I = await open({ userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1' });
+  assert.match(await I.text(), /공유 버튼 → "홈 화면에 추가"/);
+  await I.page.context().close();
+});
+
 test('서버에 못 닿으면 "불러오지 못했어요"와 다시 시도', async () => {
   const R = await open({ beforeGoto: (ctx) => ctx.route('**/rest/v1/rpc/public_state', (r) => r.abort()) });
   assert.match(await R.text(), /불러오지 못했어요/);
@@ -1196,7 +1294,7 @@ test('새로고침해도 로그인 유지, 서버에서 로그인이 지워지�
   await A.page.evaluate(() => (document.getElementById('toast').hidden = true));
   await A.page.click('#tabs [data-tab="history"]');
   await A.page.waitForSelector('#toast:not([hidden])');
-  assert.equal((await A.text('#toast')).trim(), '로그인이 끊겼어요. 다시 로그인해 주세요');
+  assert.equal((await A.text('#toast > span')).trim(), '로그인이 끊겼어요. 다시 로그인해 주세요');
   assert.deepEqual(await A.tabs(), ['현황판', '공결 신청']);
 });
 

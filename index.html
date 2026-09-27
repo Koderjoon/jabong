@@ -5,6 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#1d5d8a">
 <title>25학번 자봉 장부</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="자봉">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%231d5d8a'/><text x='16' y='22' font-size='16' text-anchor='middle' fill='white' font-family='sans-serif' font-weight='700'>자</text></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -195,7 +201,12 @@ details.card summary{cursor:pointer}
 .tabs button.on{color:var(--accent);font-weight:700}
 .tabs button.on::after{content:"";position:absolute;left:18%;right:18%;bottom:0;height:3px;background:var(--accent);border-radius:3px 3px 0 0}
 .badge{display:inline-block;min-width:17px;padding:0 5px;margin-left:3px;border-radius:999px;background:var(--pen);color:#fff;font-size:11px;line-height:17px;font-family:var(--mono)}
-.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(24px + env(safe-area-inset-bottom,0px));background:var(--ink);color:var(--bg);padding:9px 16px;border-radius:999px;font-size:13px;z-index:9;max-width:calc(100% - 32px)}
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(24px + env(safe-area-inset-bottom,0px));background:var(--ink);color:var(--bg);padding:9px 16px;border-radius:999px;font-size:13px;z-index:9;max-width:calc(100% - 32px);display:flex;align-items:center;gap:12px}
+.toast[hidden]{display:none}
+.toast button{border:0;background:transparent;color:var(--accent-soft);font-weight:700;font-size:13px;padding:2px 0;white-space:nowrap;text-decoration:underline;text-underline-offset:3px}
+.tile.me{border:2px solid var(--accent)}
+.mycard .rec-row{padding:6px 0}
+.mybal{font-family:var(--mono);font-size:20px;font-weight:600}
 .empty{color:var(--muted);font-size:14px;text-align:center;padding:24px 0}
 </style>
 <style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0}img{max-width:100%}[hidden]{display:none!important}</style>
