@@ -25,7 +25,7 @@ const blankForm = () => ({ date: TODAY, preset: '', item: '', points: 1, detail:
 const UI = {
   role: 'student', tab: 'board', sid: null, user: null, sort: 'no', q: '',
   attDate: TODAY, attPid: null, attView: 'list', draft: {}, newPeriod: '', attConfirm: false,
-  recForm: blankForm(), reqForm: blankForm(), excForm: { no: '', eid: '', reason: '', photo: '' },
+  recForm: blankForm(), reqForm: blankForm(), exForm: blankForm(), excForm: { no: '', eid: '', reason: '', photo: '' },
   recFilter: '', editId: null, voidId: null, openRev: {}, photos: {},
   noticeFrom: null, noticeTo: null, noticeText: null,
   doneLimit: 20,
@@ -133,6 +133,7 @@ function resetDrafts() {
   UI.draft = {};
   UI.recForm = blankForm();
   UI.reqForm = blankForm();
+  UI.exForm = blankForm();
   UI.attPid = null;
   UI.photos = {};
   UI.prOpen = null;
@@ -173,7 +174,7 @@ function vBoard() {
   ${UI.role === 'student' && S.students.length ? vMyCard(me) : ''}
   <div class="toolbar"><input type="search" id="q" ${named ? '' : 'inputmode="numeric" '}placeholder="${named ? '번호·이름 검색' : '번호 검색'}" value="${esc(UI.q)}" data-bind="q" data-region="board-grid">
   <div class="seg"><button class="${UI.sort === 'no' ? 'on' : ''}" data-act="sort" data-v="no">번호순</button><button class="${UI.sort === 'bal' ? 'on' : ''}" data-act="sort" data-v="bal">자봉 많은 순</button></div></div>
-  <div class="grid${named ? ' named' : ''}" id="board-grid">${list.map(({ s, b }) => `<button class="tile${me && me.id === s.id ? ' me' : ''}" data-act="open" data-sid="${s.id}"><span class="no">${s.no}</span>${named ? `<span class="nm">${esc(s.name)}</span>` : ''}<span class="pt">자봉 ${b}</span></button>`).join('') || `<p class="empty">${S.students.length ? '찾는 학생이 없어요.' : '아직 명단이 없어요.'}</p>`}</div>`;
+  <div class="grid${named ? ' named' : ''}" id="board-grid">${list.map(({ s, b }) => `<button class="tile${me && me.id === s.id ? ' me' : ''}" data-act="open" data-sid="${s.id}"><span class="no">${s.no}</span>${named ? `<span class="nm">${esc(s.name)}</span>` : ''}<span class="pt">자봉 ${b}</span>${s.exempt ? '<span class="ex">면제</span>' : ''}</button>`).join('') || `<p class="empty">${S.students.length ? '찾는 학생이 없어요.' : '아직 명단이 없어요.'}</p>`}</div>`;
 }
 
 // 홈 화면에 앱으로 추가 (manifest.webmanifest). 안드로이드 크롬은 버튼, 아이폰은 Safari 공유 메뉴 안내.
@@ -222,7 +223,7 @@ function vDetail() {
   </li>`;
   };
   return `<button class="back" data-act="back">← 현황판</button>
-  <div class="hero"><div><h1>${s.no}번${isStaff() && s.name ? ` <span class="sub" style="font-size:15px">${esc(s.name)}</span>` : ''}</h1><p class="sub">기록 ${es.filter(live).length}건${es.some((e) => e.voided) ? ` · 무효 ${es.filter((e) => e.voided).length}건` : ''}</p></div>
+  <div class="hero"><div><h1>${s.no}번${isStaff() && s.name ? ` <span class="sub" style="font-size:15px">${esc(s.name)}</span>` : ''}</h1><p class="sub">${s.exempt ? '<b>자봉 면제</b> · 상점만 받아요 · ' : ''}기록 ${es.filter(live).length}건${es.some((e) => e.voided) ? ` · 무효 ${es.filter((e) => e.voided).length}건` : ''}</p></div>
   <div style="text-align:right"><div class="sub">자봉</div><div class="big ${b > 0 ? 'p' : b < 0 ? 'm' : ''}">${b}</div></div></div>
   ${UI.role === 'student' ? `<button class="btn ghost" data-act="to-excuse" data-no="${s.no}">이 번호로 공결 신청</button>${UI.myNo !== s.no ? `<button class="btn ghost small" data-act="myno-set" data-no="${s.no}" style="align-self:flex-start">이 번호를 내 번호로 정하기</button>` : ''}` : ''}
   ${admin ? `<button class="btn ghost" data-act="to-record" data-no="${s.no}">이 학생 기록 수정·무효 처리</button>` : ''}
@@ -240,7 +241,7 @@ function liveParts(fk) {
     sugg: sg.length
       ? `<div class="sugg">${sg.map((s) => `<button data-act="pick" data-fk="${fk}" data-sid="${s.id}"><span class="mono">${s.no}</span> ${esc(s.name)}${sids.includes(s.id) ? ' ✓' : ''}</button>`).join('')}</div>`
       : fq ? '<p class="note">일치하는 학생이 없어요.</p>' : '',
-    chips: `${sids.map((id) => `<button class="chip" data-act="unpick" data-fk="${fk}" data-sid="${id}" aria-label="${noOf(id)}번 빼기">${noOf(id)} ${esc(stu(id).name)} ×</button>`).join('')}${bad.map((x) => `<span class="chip bad">${esc(x)} 없음</span>`).join('')}`,
+    chips: `${sids.map((id) => `<button class="chip" data-act="unpick" data-fk="${fk}" data-sid="${id}" aria-label="${noOf(id)}번 빼기">${noOf(id)} ${esc(stu(id).name)}${stu(id).exempt ? ' · 면제' : ''} ×</button>`).join('')}${bad.map((x) => `<span class="chip bad">${esc(x)} 없음</span>`).join('')}`,
     dup: dup.length ? `<div class="warn">같은 날짜·항목으로 이미 요청됐거나 기록된 번호: ${dup.join(', ')}</div>` : '',
     grid: UI.pickGrid
       ? `<div class="pickgrid">${active().map((s) => `<button class="${sids.includes(s.id) ? 'on' : ''}" data-act="gtoggle" data-fk="${fk}" data-sid="${s.id}" aria-pressed="${sids.includes(s.id)}"><b>${s.no}</b><span>${esc(s.name)}</span></button>`).join('')}</div>`
@@ -465,7 +466,7 @@ function vAttend() {
           }).join('')}</div>`
         : `<div class="calls">${active().map((s) => {
             const st = d[s.id] || 'present';
-            return `<div class="call ${st}"><span class="no">${s.no}</span><span class="nm">${esc(s.name || '이름 없음')}</span><div class="st4" role="group" aria-label="${s.no}번 출결">${Object.entries(ST).map(([k, [, l]]) => `<button class="${k} ${st === k ? 'on' : ''}" data-act="setst" data-sid="${s.id}" data-v="${k}">${l}</button>`).join('')}</div></div>`;
+            return `<div class="call ${st}"><span class="no">${s.no}</span><span class="nm">${esc(s.name || '이름 없음')}${s.exempt ? ' <span class="ex">면제</span>' : ''}</span><div class="st4" role="group" aria-label="${s.no}번 출결">${Object.entries(ST).map(([k, [, l]]) => `<button class="${k} ${st === k ? 'on' : ''}" data-act="setst" data-sid="${s.id}" data-v="${k}">${l}</button>`).join('')}</div></div>`;
           }).join('') || '<p class="empty">관리 탭에서 명단을 먼저 넣어 주세요.</p>'}</div>`) +
       `${pendingHere.length ? `<div class="warn">이 교시에 ${pendingHere.map((a) => esc(a.by)).join(', ')}의 출석 요청이 있어요. 요청함에서 확인하세요.</div>` : ''}
     ${mine?.status === 'rejected' ? `<div class="warn">지난 요청이 반려됐어요: ${esc(mine.note || '')}</div>` : ''}
@@ -638,6 +639,8 @@ function vManage() {
   <p class="hint" style="margin:0">부총대가 비밀번호를 잊었을 때 쓰는 비상 코드예요. 잃어버렸거나 다른 사람이 봤을 것 같으면 새로 만드세요. 이전 코드는 바로 못 쓰게 돼요.</p>
   <input type="password" id="rc-pw" placeholder="내 비밀번호 확인" autocomplete="current-password"><button class="btn ghost" data-act="rc-new">새 복구 코드 만들기</button></div>
 
+  ${vExempt()}
+
   ${vBackup()}
 
   ${vPurge()}`;
@@ -715,6 +718,18 @@ function vHistory() {
   <div class="card" style="gap:0">${list || '<p class="empty">아직 작업이 없어요.</p>'}
   ${!complete ? '<button class="btn ghost" data-act="hist-more" style="margin-top:10px">더 보기</button>' : ''}</div>
   <p class="hint">"뒤로 감" 줄은 앞으로 가기나 "이 시점으로"로 다시 적용할 수 있어요. 다만 뒤로 간 상태에서 새 작업(기록, 승인 등)을 하면 그 줄들은 사라져요. "이 작업만 되돌리기"는 그 작업 하나만 빼 두고, "다시 살리기"로 언제든 되살릴 수 있어요. 뒤의 작업이 같은 기록을 바꿨으면 할 수 없다고 알려줘요. 이동하기 전에 무엇이 바뀌는지 먼저 보여줘요. 보관 후 정리나 백업에서 되살리기 너머로는 갈 수 없어요.</p>`;
+}
+
+// 자봉 면제: 지정한 학생은 출석·기록·요청으로 들어오는 +점수가 쌓이지 않고 상점(−)만 받는다 (서버 _entry)
+function vExempt() {
+  const ex = active().filter((s) => s.exempt);
+  const P = liveParts('exForm');
+  return `<div class="card" id="exempt-card"><h2>자봉 면제</h2>
+  <p class="hint" style="margin:0">지정한 학생은 출석·직접 기록·요청 승인으로 들어오는 <b>자봉(+)이 쌓이지 않고 상점(−)만</b> 받아요. 지정하기 전에 쌓인 자봉은 그대로라, 필요하면 기록 탭에서 무효 처리하세요.</p>
+  ${ex.length ? `<div class="chips">${ex.map((s) => `<button class="chip" data-act="stu-exempt" data-sid="${s.id}" aria-label="${s.no}번 면제 풀기">${s.no} ${esc(s.name)} ×</button>`).join('')}</div><p class="hint" style="margin:0">칩을 누르면 면제가 풀려요.</p>` : '<p class="note" style="margin:0">지정한 학생이 없어요.</p>'}
+  <label class="fld"><span>면제로 지정할 학생</span><input id="exForm-find" type="search" value="${esc(UI.exForm.find)}" placeholder="이름이나 번호" autocomplete="off" enterkeyhint="done" data-bind="exForm.find" data-picker="exForm"></label>
+  <div id="exForm-sugg">${P.sugg}</div><div class="chips" id="exForm-chips">${P.chips}</div>
+  <button class="btn ghost" data-act="exempt-add">자봉 면제로 지정</button></div>`;
 }
 
 // 백업: 지금 받기, 백업에서 되살리기, 자동 백업 키
@@ -1058,7 +1073,7 @@ async function submitEntry(fk) {
     await run('create_request', { ...common, p_reason: f.reason.trim(), p_photo: f.photo || null }, '요청을 보냈어요');
     UI.reqForm = { ...blankForm(), date: f.date };
   } else {
-    await run('add_entries', common, `${sids.length}명에게 기록했어요`);
+    await run('add_entries', common, (n) => `${n}명에게 기록했어요${n < sids.length ? ` · 자봉 면제 ${sids.length - n}명은 빠졌어요` : ''}`);
     UI.recForm = { ...blankForm(), date: f.date };
     UI.noticeText = null;
   }
@@ -1410,6 +1425,22 @@ const A = {
       const no = S.students.some((x) => x.active && x.no === s.no) ? Math.max(0, ...active().map((x) => x.no)) + 1 : s.no;
       await run('roster_apply', { p_ops: [{ op: 'restore', id: s.id, no }], p_adjs: [], p_date: TODAY }, `${no}번으로 복귀했어요`);
     }
+    return true;
+  },
+  'exempt-add': async () => {
+    const inp = document.getElementById('exForm-find');
+    if (inp && inp.value.trim()) {
+      const { bad } = commitPicker(inp, true);
+      if (bad.length) return toast(`"${bad.join(', ')}"을(를) 목록에서 골라 주세요`);
+    }
+    const ids = parseNums(UI.exForm.nums).sids.filter((id) => !stu(id).exempt);
+    if (!ids.length) return toast('면제로 지정할 학생을 골라 주세요');
+    UI.exForm = blankForm();
+    await run('roster_apply', { p_ops: ids.map((id) => ({ op: 'exempt', id, on: true })), p_adjs: [], p_date: TODAY }, `${ids.map(noOf).join(', ')}번을 자봉 면제로 지정했어요`);
+    return true;
+  },
+  'stu-exempt': async (d) => {
+    await run('roster_apply', { p_ops: [{ op: 'exempt', id: d.sid, on: false }], p_adjs: [], p_date: TODAY }, `${noOf(d.sid)}번 자봉 면제를 풀었어요`);
     return true;
   },
   'nos-save': async () => {

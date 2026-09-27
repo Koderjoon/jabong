@@ -1312,6 +1312,44 @@ test('홈 화면 앱: manifest·아이콘, 안드로이드 설치 버튼, 아이
   await I.page.context().close();
 });
 
+test('자봉 면제: 관리에서 지정·해제, 면제 학생은 자봉이 빠지고 상점만, 현황판·기록·출석에 "면제" 표시', async () => {
+  await A.tab('manage');
+  assert.match(await A.text('#exempt-card'), /지정한 학생이 없어요/);
+  assert.equal(await A.toast('[data-act="exempt-add"]'), '면제로 지정할 학생을 골라 주세요');
+  await A.page.fill('#exForm-find', '서지');
+  await A.click('#exForm-sugg [data-act="pick"]');
+  assert.equal(await A.toast('[data-act="exempt-add"]'), '6번을 자봉 면제로 지정했어요');
+  assert.match(await A.text('#exempt-card .chips'), /6 서지호 ×/);
+  assert.ok((await one(`select exempt from students where name = '서지호'`)).exempt);
+  await A.fits('자봉 면제 카드');
+  const before = await balances();
+  await A.tab('record');
+  await A.page.fill('#recForm-item', '면제 확인');
+  await A.page.fill('#recForm-points', '1');
+  await A.page.type('#recForm-find', '6 8 ');
+  assert.match(await A.text('#recForm-chips'), /6 서지호 · 면제/);
+  assert.equal(await A.toast('[data-act="rec-add"]'), '1명에게 기록했어요 · 자봉 면제 1명은 빠졌어요');
+  await A.page.fill('#recForm-item', '면제 상점');
+  await A.page.fill('#recForm-points', '-1');
+  await A.page.type('#recForm-find', '6 ');
+  assert.equal(await A.toast('[data-act="rec-add"]'), '1명에게 기록했어요');
+  const after = await balances();
+  assert.equal(after['서지호'], before['서지호'] - 1, '면제 학생은 상점만');
+  assert.equal(after['정우진'], before['정우진'] + 1);
+  await A.tab('board');
+  assert.equal(await A.text('#board-grid .tile:has(.no:text-is("6")) .ex'), '면제');
+  await A.click('#board-grid .tile:has(.no:text-is("6"))');
+  assert.match(await A.text(), /자봉 면제 · 상점만 받아요/);
+  await A.tab('attend');
+  assert.match(await A.text(`.call:has(.no:text-is("6"))`), /면제/);
+  await S.reload();
+  assert.equal(await S.text('#board-grid .tile:has(.no:text-is("6")) .ex'), '면제', '학생 화면에도 면제 표시');
+  await A.tab('manage');
+  assert.equal(await A.toast('#exempt-card [data-act="stu-exempt"]'), '6번 자봉 면제를 풀었어요');
+  assert.match(await A.text('#exempt-card'), /지정한 학생이 없어요/);
+  assert.ok(!(await one(`select exempt from students where name = '서지호'`)).exempt);
+});
+
 test('서버에 못 닿으면 "불러오지 못했어요"와 다시 시도', async () => {
   const R = await open({ beforeGoto: (ctx) => ctx.route('**/rest/v1/rpc/public_state', (r) => r.abort()) });
   assert.match(await R.text(), /불러오지 못했어요/);

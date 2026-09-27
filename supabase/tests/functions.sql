@@ -202,6 +202,30 @@ select pg_temp.ok((select active and no = 6 from students where id = :'s4') and 
 set role anon;
 select roster_apply(:'t', format('[{"op":"remove","id":"%s"}]', :'s8')::jsonb, '[]', '2026-03-02');
 select pg_temp.ok((select count(*) from json_array_elements(public_state() -> 'students') s where (s ->> 'active')::boolean) = 6, '재학 6명 (제외 1명)');
+-- 자봉 면제: +점수는 출석·직접 기록·요청 승인 모두 기록 안 함, 상점(−)은 받음, 명단 점수 맞추기는 예외
+select roster_apply(:'t', format('[{"op":"exempt","id":"%s","on":true}]', :'s4')::jsonb, '[]', '2026-03-02');
+set role postgres;
+select pg_temp.ok((select exempt from students where id = :'s4') and (select summary from ops order by id desc limit 1) = '명단: 자봉 면제 1', '자봉 면제 지정');
+select pg_temp.bal(:'s4') as b4 \gset
+set role anon;
+select pg_temp.ok((select (s ->> 'exempt')::boolean from json_array_elements(public_state() -> 'students') s where s ->> 'id' = :'s4'), '면제는 공개 상태에도 보인다');
+select pg_temp.ok(add_entries(:'t', '2026-03-02', array[:'s4', :'s1']::uuid[], '면제 확인', '', 2) = 1, '두 명 중 면제 학생은 빼고 기록');
+select pg_temp.expect_msg(format('select add_entries(%L, %L, array[%L]::uuid[], %L, %L, 1)', :'t', '2026-03-02', :'s4', 'x', ''), '고른 학생이 모두 자봉 면제라%', '면제 학생만 고르면 안내');
+select pg_temp.ok(add_entries(:'t', '2026-03-02', array[:'s4']::uuid[], '면제 상점', '', -1) = 1, '면제 학생도 상점은 받음');
+select ensure_period(:'t', '2026-03-02', '면제 교시', false) as pe \gset
+select pg_temp.ok(save_attendance(:'t', :'pe', format('{"%s":"absent","%s":"late"}', :'s4', :'s2')::jsonb) = 1, '출석: 면제 학생 결석은 기록 안 함');
+select create_request(:'ot', '2026-03-02', array[:'s4', :'s2']::uuid[], '면제 요청', '', 1, '', null) as rqx \gset
+select pg_temp.ok(review_request(:'t', :'rqx', true, null) = 1, '요청 승인: 면제 학생은 빼고');
+select roster_apply(:'t', '[]', '[{"name":"라","to":10}]', '2026-03-02');
+set role postgres;
+select pg_temp.ok(pg_temp.bal(:'s4') = 10 and (select status from attendance where period_id = :'pe' and student_id = :'s4') = 'absent'
+  and not exists (select 1 from ledger where student_id = :'s4' and points > 0 and src in ('att', 'manual', 'request')), '면제: +기록 없음, 출결 표시는 남음, 명단 점수 맞추기는 들어감');
+set role anon;
+select roster_apply(:'t', format('[{"op":"exempt","id":"%s","on":false}]', :'s4')::jsonb, '[{"name":"라","to":0}]', '2026-03-02');
+select pg_temp.ok(add_entries(:'t', '2026-03-02', array[:'s4']::uuid[], '면제 해제 뒤', '', 1) = 1, '면제를 풀면 다시 기록');
+select roster_apply(:'t', '[]', '[{"name":"라","to":0}]', '2026-03-02');
+set role postgres;
+select pg_temp.ok(not (select exempt from students where id = :'s4') and (select summary from ops where summary like '명단:%면제 해제%') like '명단: 면제 해제 1%', '면제 해제');
 \echo 4. 명단 통과
 
 -- ───────── 5. 자주 쓰는 항목 ─────────
@@ -334,7 +358,7 @@ select photo_id as ph_req from requests where id = :'rq2' \gset
 set role anon;
 select pg_temp.ok(get_photo(:'ot', :'ph_req') = 'data:image/jpeg;base64,/9j/AAAA' and get_photo(:'t', :'ph_req') is not null, '요청 사진은 총대단도 봄');
 select pg_temp.ok(get_photo(:'ot', gen_random_uuid()) is null, '없는 사진');
-select pg_temp.ok(json_array_length(private_state(:'ot') -> 'requests') = 3, '총대단은 모든 요청을 봄');
+select pg_temp.ok(json_array_length(private_state(:'ot') -> 'requests') = 4, '총대단은 모든 요청을 봄 (면제 확인 요청 포함)');
 select pg_temp.ok(review_request(:'t', :'rq1', true, null) = 2, '요청 승인 → 학생 수만큼 기록');
 select pg_temp.expect_msg(format('select review_request(%L, %L, true, null)', :'t', :'rq1'), '이미 처리된 요청이에요', '두 번 승인');
 select pg_temp.expect_msg(format('select review_request(%L, %L, false, %L)', :'t', :'rq2', ''), '반려 사유를 입력하세요', '반려 사유 없음');
@@ -488,6 +512,11 @@ select pg_temp.expect_msg(format('select restore_backup(%L, %L)', :'t', '{"forma
 select pg_temp.expect_msg(format('select restore_backup(%L, %L)', :'t', '{"format":"jabong-backup"}'), '자봉 장부 백업 파일이 아니에요', '표 없는 파일');
 select add_entries(:'t', '2026-03-07', array[:'s1', :'s2', :'s3']::uuid[], '망가짐', '', 5);
 select roster_apply(:'t', '[{"op":"add","name":"새학생","no":9}]', '[]', '2026-03-07');
+-- 자봉 면제 칸이 생기기 전 백업도 되살릴 수 있다
+select restore_backup(:'t', jsonb_set(:'dump'::jsonb, '{tables,students}', (select jsonb_agg(x - 'exempt') from jsonb_array_elements(:'dump'::jsonb -> 'tables' -> 'students') x)));
+set role postgres;
+select pg_temp.ok(not exists (select 1 from students where exempt), '옛 백업은 면제 없음으로');
+set role anon;
 select restore_backup(:'t', :'dump'::jsonb)::json as rs \gset
 set role postgres;
 select pg_temp.ok(pg_temp.sig_all() = :'sig_before', '되살리면 모든 표가 백업과 똑같음');

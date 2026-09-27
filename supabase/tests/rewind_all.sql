@@ -85,6 +85,7 @@ select pg_temp.snap();
 select roster_apply(:'t', format('[{"op":"restore","id":"%s","no":7},{"op":"add","name":"마","no":8}]', :'s4')::jsonb, '[{"name":"마","to":3}]', '2026-04-05');
 select pg_temp.snap();
 select add_entries(:'t', '2026-04-06', array[:'s4']::uuid[], '실습', '', -0.5); select pg_temp.snap();
+select roster_apply(:'t', format('[{"op":"exempt","id":"%s","on":true}]', :'s2')::jsonb, '[]', '2026-04-06'); select pg_temp.snap();
 select save_attendance(:'t', :'p2', format('{"%s":"late"}', :'s2')::jsonb); select pg_temp.snap();
 
 select pg_temp.ok((select count(*) from sigs) = (select count(*) from ops) + 1, '작업마다 시점 하나 (+ 맨 처음)');
@@ -174,9 +175,9 @@ begin
   select array_agg(op order by op desc) into ids from (select op from drops where result = 'ok' order by op desc limit 4) d;
   foreach x in array ids loop perform history_drop(tok, x, false); end loop;
   s_all := pg_temp.sig();
-  perform history_move(tok, ids[4] - 1, false);
+  perform history_move(tok, 0, false);
   perform history_move(tok, (select max(id) from ops), false);
-  perform pg_temp.ok(pg_temp.sig() = s_all, '여러 개 빼 둔 채 뒤로 갔다 오기');
+  perform pg_temp.ok(pg_temp.sig() = s_all, '여러 개 빼 둔 채 맨 처음에 갔다 오기');
   foreach x in array ids loop perform history_restore(tok, x, false); end loop;
   perform pg_temp.ok(pg_temp.sig() = s_end, '모두 다시 살리기');
 end $$;

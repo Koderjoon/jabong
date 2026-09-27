@@ -24,6 +24,8 @@ create table if not exists students (
 );
 -- 재학 중인 학생끼리만 번호가 겹치면 안 된다 (제외된 학생의 옛 번호는 재사용 가능)
 create unique index if not exists students_no_active on students (no) where active;
+-- 자봉 면제 (총대단 중 일부): 출석·직접 기록·요청으로 들어오는 +점수는 기록하지 않고, 상점(−)만 받는다
+alter table students add column if not exists exempt boolean not null default false;
 
 -- 자주 쓰는 항목. 직책(owner)마다 따로 두는 "내 항목"이다. 공용 항목은 없다.
 create table if not exists presets (
@@ -363,6 +365,8 @@ create or replace function _entry(p_date date, p_sid uuid, p_item text, p_detail
 returns uuid language plpgsql security definer set search_path = public as $$
 declare nid uuid;
 begin
+  -- 자봉 면제 학생에게는 +점수를 기록하지 않는다 (명단 붙여넣기의 점수 맞추기·이월은 예외). 기록 안 하면 null.
+  if p_points > 0 and p_src in ('att', 'manual', 'request') and (select exempt from students where id = p_sid) then return null; end if;
   insert into ledger (date, student_id, item, detail, points, src, period_id, request_id)
   values (p_date, p_sid, p_item, coalesce(p_detail, ''), p_points, p_src, p_period, p_request)
   returning id into nid;
@@ -441,8 +445,8 @@ create or replace function _state(p_private boolean) returns json
 language sql stable security definer set search_path = public as $$
   select json_build_object(
     'students', (select coalesce(json_agg(case when p_private
-        then json_build_object('id', id, 'no', no, 'name', name, 'active', active)
-        else json_build_object('id', id, 'no', no, 'active', active) end order by active desc, no), '[]')
+        then json_build_object('id', id, 'no', no, 'name', name, 'active', active, 'exempt', exempt)
+        else json_build_object('id', id, 'no', no, 'active', active, 'exempt', exempt) end order by active desc, no), '[]')
       from students),
     'presets', (select coalesce(json_agg(json_build_object('id', id, 'name', name, 'points', points, 'owner', owner) order by sort, name), '[]') from presets),
     'periods', (select coalesce(json_agg(json_build_object('id', id, 'date', date, 'label', label, 'morning', morning) order by date, morning desc, label), '[]') from periods),
@@ -661,7 +665,7 @@ begin
       pts := case want_item when '지각' then 1 else 2 end;
       nid := _entry(per.date, st.id, want_item, per.label, pts, 'att', p_period, null, who,
         p_requested_by, case when p_requested_by is not null then who end);
-      n := n + 1;
+      if nid is not null then n := n + 1; end if;
     end if;
   end loop;
   return n;
@@ -710,16 +714,17 @@ end $$;
 
 create or replace function add_entries(p_token uuid, p_date date, p_sids uuid[], p_item text, p_detail text, p_points numeric) returns int
 language plpgsql security definer set search_path = public as $$
-declare who text := _session(p_token, true); sid uuid; n int := 0;
+declare who text := _session(p_token, true); sid uuid; n int := 0; m int := 0;
 begin
   perform _check_items(p_item, p_points);
   perform _op(who, 'add_entries', format('기록: %s %s%s · %s번', trim(p_item), _pt(p_points),
     case when coalesce(trim(p_detail), '') <> '' then ' (' || trim(p_detail) || ')' else '' end, _nums(p_sids)));
   foreach sid in array p_sids loop
-    perform _entry(p_date, sid, trim(p_item), trim(p_detail), p_points, 'manual', null, null, who);
-    n := n + 1;
+    m := m + 1;
+    if _entry(p_date, sid, trim(p_item), trim(p_detail), p_points, 'manual', null, null, who) is not null then n := n + 1; end if;
   end loop;
-  if n = 0 then raise exception '학생을 골라 주세요'; end if;
+  if m = 0 then raise exception '학생을 골라 주세요'; end if;
+  if n = 0 then raise exception '고른 학생이 모두 자봉 면제라 기록할 것이 없어요'; end if;
   return n;
 end $$;
 
@@ -762,8 +767,7 @@ begin
   if p_approve then
     foreach sid in array r.student_ids loop
       if exists (select 1 from students where id = sid) then
-        perform _entry(r.date, sid, r.item, r.detail, r.points, 'request', null, r.id, who, r.requested_by, who);
-        n := n + 1;
+        if _entry(r.date, sid, r.item, r.detail, r.points, 'request', null, r.id, who, r.requested_by, who) is not null then n := n + 1; end if;
       end if;
     end loop;
     update requests set status = 'approved', reviewed_by = who, reviewed_at = now() where id = p_id;
@@ -800,7 +804,7 @@ begin
 end $$;
 
 -- 명단 변경을 한 번에 적용한다.
--- p_ops: [{op:'add',name,no} | {op:'renum'|'restore',id,no} | {op:'remove',id} | {op:'rename',id,name}]
+-- p_ops: [{op:'add',name,no} | {op:'renum'|'restore',id,no} | {op:'remove',id} | {op:'rename',id,name} | {op:'exempt',id,on}]
 -- p_adjs: [{name, to}]  — 해당 학생의 자봉이 to가 되도록 차이만큼 기록을 더한다
 create or replace function roster_apply(p_token uuid, p_ops jsonb, p_adjs jsonb, p_date date) returns int
 language plpgsql security definer set search_path = public as $$
@@ -812,6 +816,8 @@ begin
       nullif(format('복귀 %s', count(*) filter (where x ->> 'op' = 'restore')), '복귀 0'),
       nullif(format('제외 %s', count(*) filter (where x ->> 'op' = 'remove')), '제외 0'),
       nullif(format('이름 %s', count(*) filter (where x ->> 'op' = 'rename')), '이름 0'),
+      nullif(format('자봉 면제 %s', count(*) filter (where x ->> 'op' = 'exempt' and (x ->> 'on')::boolean)), '자봉 면제 0'),
+      nullif(format('면제 해제 %s', count(*) filter (where x ->> 'op' = 'exempt' and not (x ->> 'on')::boolean)), '면제 해제 0'),
       nullif(format('자봉 조정 %s', jsonb_array_length(coalesce(p_adjs, '[]'))), '자봉 조정 0')), ''), '변경 없음')
     from jsonb_array_elements(coalesce(p_ops, '[]')) x));
   -- 번호를 바꿀 학생은 잠시 명단에서 빼 두어야 번호를 서로 맞바꿀 수 있다
@@ -822,6 +828,7 @@ begin
       when 'add' then insert into students (no, name) values ((o ->> 'no')::int, coalesce(o ->> 'name', ''));
       when 'renum', 'restore' then update students set no = (o ->> 'no')::int, active = true where id = (o ->> 'id')::uuid;
       when 'rename' then update students set name = coalesce(o ->> 'name', '') where id = (o ->> 'id')::uuid;
+      when 'exempt' then update students set exempt = coalesce((o ->> 'on')::boolean, false) where id = (o ->> 'id')::uuid;
       when 'remove' then null;
       else raise exception '알 수 없는 명단 작업이에요';
     end case;
@@ -1071,7 +1078,8 @@ begin
   delete from periods where true;
   delete from presets where true;
   delete from students where true;
-  insert into students select * from jsonb_populate_recordset(null::students, t -> 'students');
+  -- 자봉 면제 칸이 생기기 전 백업에는 exempt가 없으니 false로 채운다
+  insert into students select (jsonb_populate_record(null::students, '{"exempt": false}'::jsonb || e)).* from jsonb_array_elements(t -> 'students') e;
   insert into presets select * from jsonb_populate_recordset(null::presets, t -> 'presets');
   insert into periods select * from jsonb_populate_recordset(null::periods, t -> 'periods');
   insert into attendance select * from jsonb_populate_recordset(null::attendance, t -> 'attendance');
