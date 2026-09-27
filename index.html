@@ -201,7 +201,7 @@ details.card summary{cursor:pointer}
 .tabs button.on{color:var(--accent);font-weight:700}
 .tabs button.on::after{content:"";position:absolute;left:18%;right:18%;bottom:0;height:3px;background:var(--accent);border-radius:3px 3px 0 0}
 .badge{display:inline-block;min-width:17px;padding:0 5px;margin-left:3px;border-radius:999px;background:var(--pen);color:#fff;font-size:11px;line-height:17px;font-family:var(--mono)}
-.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(24px + env(safe-area-inset-bottom,0px));background:var(--ink);color:var(--bg);padding:9px 16px;border-radius:999px;font-size:13px;z-index:9;max-width:calc(100% - 32px);display:flex;align-items:center;gap:12px}
+.toast{position:fixed;left:16px;right:16px;margin-inline:auto;width:fit-content;bottom:calc(24px + env(safe-area-inset-bottom,0px));background:var(--ink);color:var(--bg);padding:9px 16px;border-radius:999px;font-size:13px;z-index:9;display:flex;align-items:center;gap:12px}
 .toast[hidden]{display:none}
 .toast button{border:0;background:transparent;color:var(--accent-soft);font-weight:700;font-size:13px;padding:2px 0;white-space:nowrap;text-decoration:underline;text-underline-offset:3px}
 .tile.me{border:2px solid var(--accent)}
