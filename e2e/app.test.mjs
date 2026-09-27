@@ -617,9 +617,9 @@ test('공지: 문구 만들기·고치기·복사, 기간 버튼', async () => {
   await A.fits('공지 탭');
   const text = await A.page.inputValue('#notice-text');
   assert.ok(text.startsWith(`😿 ${md(TODAY)} 자봉, 상점 공지하겠습니다.`), text);
-  assert.match(text, /결석: 3\(\+2\)/);
-  assert.match(text, /소치 실습: 4 \(\+1\.5\)/);
-  assert.doesNotMatch(text, /실습 준비 미흡: 1/, '무효 처리한 기록은 공지에 없다');
+  assert.match(text, /\[아침 출석\]\n결석\(\+2\): 3/, '출석은 교시별, 점수는 항상');
+  assert.match(text, /소치 실습\(\+1\.5\): 4/);
+  assert.match(text, /실습 준비 미흡\(\+2\)\n1\. 전원 안끔: 3$/m, '무효 처리한 1번 기록은 빠지고 3번만');
   assert.equal(await A.toast('[data-act="copy"]'), '복사했어요. 카톡 공지방에 붙여넣으세요');
   assert.equal(await A.clipboard(), text);
   await A.page.fill('#notice-text', text + '\n추가 안내');

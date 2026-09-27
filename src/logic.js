@@ -60,43 +60,54 @@ export function dupNums(S, f) {
     .map((id) => noOf(S, id));
 }
 
-// 카톡 공지 문구. 기존에 손으로 쓰던 형식을 그대로 따른다.
+// 카톡 공지 문구. 기존에 손으로 쓰던 형식을 따른다.
 //   하루: "😿 9/22 자봉, 상점 공지하겠습니다." / 여러 날: 머리말 + 날짜별 소제목
-//   지각은 번호만(2회 이상이면 (+2)), 결석은 항상 (+2), 나머지는 항목·점수별로 묶고 세부내용이 있으면 번호를 매긴다.
+//   출석으로 생긴 지각·결석은 교시마다 따로 "[교시]" 아래에, 나머지는 항목·점수별로 (세부내용이 있으면 번호를 매긴다).
+//   점수는 항상 적고, 합치지 않는다 (같은 날 두 교시 지각이면 두 교시에 각각 나온다).
 export function genNotice(S, from, to) {
   const es = S.ledger.filter((e) => live(e) && !['import', 'carry'].includes(e.src) && e.date >= from && e.date <= to);
   const dates = [...new Set(es.map((e) => e.date))].sort();
   if (!dates.length) return '해당 기간에 기록이 없어요.';
   const multi = dates.length > 1;
   const no = (id) => noOf(S, id);
+  const nums = (l) => l.map((e) => no(e.sid)).sort((a, b) => a - b);
+  const pOrder = new Map((S.periods || []).map((p, i) => [p.id, i]));
   const out = [multi ? '😿자봉, 상점 공지하겠습니다.' : `😿 ${md(dates[0])} 자봉, 상점 공지하겠습니다.`];
-  const nums = (l) => [...new Set(l.map((e) => no(e.sid)))].sort((a, b) => a - b);
   dates.forEach((d) => {
     const de = es.filter((e) => e.date === d);
     const blk = [];
-    const attLine = (name, always) => {
-      const m = new Map();
-      de.filter((e) => e.item === name).forEach((e) => m.set(e.sid, (m.get(e.sid) || 0) + Number(e.points)));
-      if (!m.size) return;
-      blk.push(
-        `${name}: ` +
-          [...m]
-            .sort((a, b) => no(a[0]) - no(b[0]))
-            .map(([sid, p]) => (always || p !== 1 ? `${no(sid)}(${sgn(p)})` : `${no(sid)}`))
-            .join(' '),
-      );
-    };
-    attLine('지각', false);
-    attLine('결석', true);
+    // 출석: 교시별 (서버의 교시 순서: 아침 출석 먼저)
+    const att = de.filter((e) => e.src === 'att');
+    const pers = new Map();
+    att.forEach((e) => {
+      const k = e.pid || e.detail;
+      if (!pers.has(k)) pers.set(k, { label: e.detail || '출석', order: pOrder.get(e.pid) ?? 1e9, es: [] });
+      pers.get(k).es.push(e);
+    });
+    [...pers.values()]
+      .sort((a, b) => a.order - b.order || a.label.localeCompare(b.label))
+      .forEach((p) => {
+        blk.push(`[${p.label}]`);
+        ['지각', '결석'].forEach((item) => {
+          const byPts = new Map();
+          p.es.filter((e) => e.item === item).forEach((e) => {
+            const k = Number(e.points);
+            if (!byPts.has(k)) byPts.set(k, []);
+            byPts.get(k).push(e);
+          });
+          byPts.forEach((l, pts) => blk.push(`${item}(${sgn(pts)}): ${nums(l).join(', ')}`));
+        });
+      });
+    // 나머지: 항목·점수별
     const groups = new Map();
-    de.filter((e) => e.item !== '지각' && e.item !== '결석').forEach((e) => {
+    de.filter((e) => e.src !== 'att').forEach((e) => {
       const k = e.item + '|' + e.points;
       if (!groups.has(k)) groups.set(k, { item: e.item, points: Number(e.points), es: [] });
       groups.get(k).es.push(e);
     });
     groups.forEach((g) => {
       blk.push('');
-      if (!g.es.some((e) => e.detail)) blk.push(`${g.item}: ${nums(g.es).join(', ')} (${sgn(g.points)})`);
+      if (!g.es.some((e) => e.detail)) blk.push(`${g.item}(${sgn(g.points)}): ${nums(g.es).join(', ')}`);
       else {
         blk.push(`${g.item}(${sgn(g.points)})`);
         const dm = new Map();
@@ -109,11 +120,9 @@ export function genNotice(S, from, to) {
         dm.forEach((l, k) => blk.push(`${i++}. ${k}: ${nums(l).join(', ')}`));
       }
     });
+    if (blk[0] === '') blk.shift();
     if (multi) out.push('', mdw(d), ...blk);
-    else {
-      if (blk[0] === '') blk.shift();
-      out.push(...blk);
-    }
+    else out.push(...blk);
   });
   return out.join('\n');
 }
