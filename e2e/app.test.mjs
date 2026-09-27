@@ -1158,6 +1158,7 @@ test('백업: 받기 → 데이터 바꾸기 → 파일로 되살리기(미리�
   await A.page.type('#recForm-find', '1 2 ');
   await A.toast('[data-act="rec-add"]');
   await A.tab('manage');
+  await A.page.evaluate(() => (document.getElementById('toast').hidden = true));
   await A.page.setInputFiles('[data-bkfile]', { name: 'x.json', mimeType: 'application/json', buffer: Buffer.from('{"foo":1}') });
   await A.page.waitForSelector('#toast:not([hidden])');
   assert.equal((await A.text('#toast > span')).trim(), '자봉 장부 백업 파일이 아니에요');
