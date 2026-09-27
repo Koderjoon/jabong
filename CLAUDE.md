@@ -16,7 +16,7 @@
 - **브라우저는 테이블에 직접 접근하지 않는다.** 모든 읽기·쓰기는 `security definer` 함수(RPC)로 한다. 새 함수를 만들면 파일 끝의 `grant execute` 목록에 넣어야 브라우저에서 부를 수 있다. `_`로 시작하는 함수와 `init_app`은 브라우저에 열지 않는다.
 - **공개 범위**: `public_state()`는 번호와 자봉 내역만 준다. 학생 이름, 기록·요청·승인·수정한 사람은 `private_state()`(로그인)에만 넣는다. 화면에서는 로그인한 총대단 전체(부총대 포함)가 현황판·학생 상세에서 이름을 보고, 기록·요청·승인한 사람은 부총대만 본다(`isStaff`/`isAdmin`). 기록자 정보는 `ledger`가 아니라 `ledger_private`에 둔다. 내보내기 엑셀에도 이름과 요청자를 넣지 않는다.
 - **기록은 지우지 않는다.** 수정은 `ledger_revisions`, 무효 처리는 `voided_at`/`void_reason`. 예외는 `purge()` 하나이고, 이때도 학생별 "이월" 기록으로 점수를 보존한다.
-- 자봉 면제(`students.exempt`, 관리 탭 "자봉 면제" 카드, `roster_apply`의 `{op:'exempt',id,on}`): `_entry`가 면제 학생의 +점수(출석·직접 기록·요청)를 기록하지 않고 null을 돌려준다. 명단 붙여넣기의 점수 맞추기(import)와 이월(carry)은 예외. 기록 수를 세는 곳은 `_entry`가 null이면 세지 않는다. 지정 전 자봉은 그대로다.
+- 자봉 면제(`students.exempt`, 관리 탭 "자봉 면제" 카드, `roster_apply`의 `{op:'exempt',id,on}`): `_entry`가 면제 학생의 +점수(출석·직접 기록·요청)를 기록하지 않고 null을 돌려준다. 명단 붙여넣기의 점수 맞추기(import)와 이월(carry)은 예외. 기록 수를 세는 곳은 `_entry`가 null이면 세지 않는다. 지정 전 자봉은 그대로다. "면제" 표시(현황판·상세)와 현황판 "자봉 많은 순" 정렬은 `isStaff()`일 때만 — 학생 화면은 번호순, 면제 표시 없음.
 - 점수 부호: 자봉 `+`, 상점 `-`. 화면의 "자봉"은 무효가 아닌 기록의 합이다. 음수 허용.
 - 관리자(`is_admin`)는 부총대 한 명이다. 총대는 총대단이다.
 - 출석은 부총대가 `save_attendance`로 바로 저장한다. `can_attend`인 총대단(총대, 실습부장 1·2, 스키마에 고정)은 `request_attendance`로 요청을 보내고, 부총대가 `review_attendance`로 승인하면 `_apply_attendance`가 반영한다. 이때 기록의 `requested_by`/`approved_by`가 남는다.

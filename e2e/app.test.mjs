@@ -901,6 +901,7 @@ test('학생 현황판: 번호만(이름 없음), 번호 검색, 상세(수정 �
   const v = await S.text();
   for (const name of ['김민서', '이도윤', '서지호']) assert.doesNotMatch(v, new RegExp(name));
   assert.equal(await S.page.getAttribute('#q', 'inputmode'), 'numeric');
+  assert.equal(await S.page.$('[data-act="sort"]'), null, '학생 화면은 번호순만(자봉 많은 순 없음)');
   await S.page.fill('#q', '1');
   assert.deepEqual(await S.page.$$eval('#board-grid .tile .no', (t) => t.map((x) => x.textContent)), ['1']);
   await S.page.fill('#q', '김');
@@ -1379,7 +1380,7 @@ test('홈 화면 앱: manifest·아이콘, 안드로이드 설치 버튼, 아이
   await I.page.context().close();
 });
 
-test('자봉 면제: 관리에서 지정·해제, 면제 학생은 자봉이 빠지고 상점만, 현황판·기록·출석에 "면제" 표시', async () => {
+test('자봉 면제: 관리에서 지정·해제, 면제 학생은 자봉이 빠지고 상점만, 총대단 현황판·기록·출석에만 "면제" 표시', async () => {
   await A.tab('manage');
   assert.match(await A.text('#exempt-card'), /지정한 학생이 없어요/);
   assert.equal(await A.toast('[data-act="exempt-add"]'), '면제로 지정할 학생을 골라 주세요');
@@ -1410,7 +1411,11 @@ test('자봉 면제: 관리에서 지정·해제, 면제 학생은 자봉이 빠
   await A.tab('attend');
   assert.match(await A.text(`.call:has(.no:text-is("6"))`), /면제/);
   await S.reload();
-  assert.equal(await S.text('#board-grid .tile:has(.no:text-is("6")) .ex'), '면제', '학생 화면에도 면제 표시');
+  await S.page.waitForSelector('#board-grid .tile:has(.no:text-is("6"))');
+  assert.equal(await S.page.$('#board-grid .ex'), null, '학생 현황판에는 면제를 보이지 않는다');
+  await S.click('#board-grid .tile:has(.no:text-is("6"))');
+  assert.doesNotMatch(await S.text('.hero'), /면제/, '학생 상세에도 보이지 않는다');
+  await S.click('[data-act="back"]');
   await A.tab('manage');
   assert.equal(await A.toast('#exempt-card [data-act="stu-exempt"]'), '6번 자봉 면제를 풀었어요');
   assert.match(await A.text('#exempt-card'), /지정한 학생이 없어요/);
