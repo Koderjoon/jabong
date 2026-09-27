@@ -135,7 +135,7 @@ function resetDrafts() {
   UI.reqForm = blankForm();
   UI.attPid = null;
   UI.photos = {};
-  UI.myPresetsOpen = false;
+  UI.prOpen = null;
   UI.rosterOpen = false;
   UI.pwOpen = false;
   UI.hist = { list: null, limit: 50, preview: null, loading: false };
@@ -299,26 +299,35 @@ function closePtsPops(except) {
 }
 
 const myPresets = () => S.presets.filter((p) => UI.user && p.owner === UI.user);
-function presetOptions(sel) {
-  return myPresets().map((p) => `<option value="${p.id}" ${sel === p.id ? 'selected' : ''}>${esc(p.name)} (${sgn(p.points)})</option>`).join('');
+// 항목명 칸 오른쪽 "불러오기": 내 자주 쓰는 항목을 고르고, 지금 적은 항목을 추가·삭제한다 (직책마다 따로, 공용 없음)
+function presetPop(fk) {
+  const f = UI[fk];
+  const item = (f.item || '').trim();
+  return `${myPresets().map((p) => `<div class="pr-row"><button type="button" class="pr-use" data-act="pr-use" data-fk="${fk}" data-id="${p.id}">${esc(p.name)} <b class="${p.points > 0 ? 'p' : 'm'}">${sgn(p.points)}</b></button><button type="button" class="pr-del" data-act="pr-del" data-fk="${fk}" data-id="${p.id}" aria-label="${esc(p.name)} 삭제">×</button></div>`).join('') || '<p class="note" style="margin:0">아직 없어요. 항목명과 점수를 적고 아래 버튼을 누르면 여기 들어가요.</p>'}
+  <button type="button" class="pr-add" data-act="pr-add" data-fk="${fk}">＋ 자주 쓰는 항목에 추가${item ? `: ${esc(item)} ${sgn(Number(f.points))}` : ''}</button>`;
 }
-
-// 자주 쓰는 항목은 직책마다 따로다 (공용 항목 없음). 총대단은 요청하기, 부총대는 관리 탭에 나온다.
-function myPresetsCard() {
-  return `<details class="card" ${UI.myPresetsOpen ? 'open' : ''}><summary data-act="mypresets-toggle"><b>내 자주 쓰는 항목 (${myPresets().length})</b></summary>
-  <p class="hint" style="margin:0">여기서 만든 항목은 나(${esc(UI.user)})의 "항목 불러오기" 목록에만 나와요. 고친 뒤 "내 항목 저장"을 눌러야 반영돼요.</p>
-  ${myPresets().map((p) => `<div class="mrow"><input class="grow my-pr-name" data-id="${p.id}" value="${esc(p.name)}" style="width:auto" placeholder="항목명"><input type="number" class="my-pr-pts" data-id="${p.id}" value="${p.points}" aria-label="점수"><button class="btn ghost small" data-act="mypreset-del" data-id="${p.id}">삭제</button></div>`).join('') || '<p class="note">아직 없어요.</p>'}
-  <div class="btns"><button class="btn ghost small" data-act="mypreset-add">항목 추가</button><button class="btn small" data-act="mypresets-save">내 항목 저장</button></div></details>`;
+function openPresetPop(fk) {
+  const pop = document.getElementById(fk + '-prpop');
+  if (!pop) return;
+  pop.innerHTML = presetPop(fk);
+  pop.hidden = false;
+  document.querySelector(`[data-act="pr-open"][data-fk="${fk}"]`)?.setAttribute('aria-expanded', 'true');
+}
+function closePresetPops() {
+  UI.prOpen = null;
+  document.querySelectorAll('.prpop').forEach((el) => (el.hidden = true));
+  document.querySelectorAll('[data-act="pr-open"]').forEach((b) => b.setAttribute('aria-expanded', 'false'));
 }
 
 function entryFields(fk) {
   const f = UI[fk];
   const P = liveParts(fk);
-  return `<div class="row2"><label class="fld grow"><span>날짜</span><input type="date" id="${fk}-date" value="${esc(f.date)}" data-bind="${fk}.date" data-rerender="1"></label>
-  <label class="fld grow"><span>항목 불러오기</span><select id="${fk}-preset" data-bind="${fk}.preset" data-rerender="1"><option value="">직접 입력</option>${presetOptions(f.preset)}</select></label></div>
-  <div class="row2"><label class="fld grow"><span>항목명</span><input id="${fk}-item" value="${esc(f.item)}" placeholder="예: 실습실 뒷정리 미흡" autocomplete="off" data-bind="${fk}.item" data-live="${fk}" data-suggest="item" data-fk="${fk}"></label>
-  <label class="fld pts-fld"><span>점수</span>${pointsField(fk)}</label></div>
-  <p class="hint">+는 자봉, −는 상점이에요. 점수는 칸에 직접 적거나 ▾를 눌러 고르세요.</p>
+  return `<div class="fld"><label for="${fk}-item">항목명</label><div class="itembox"><input id="${fk}-item" value="${esc(f.item)}" placeholder="예: 실습실 뒷정리 미흡" autocomplete="off" data-bind="${fk}.item" data-live="${fk}" data-suggest="item" data-fk="${fk}">
+  <button type="button" class="itemdrop" data-act="pr-open" data-fk="${fk}" aria-expanded="${UI.prOpen === fk}">불러오기</button>
+  <div class="prpop" id="${fk}-prpop" ${UI.prOpen === fk ? '' : 'hidden'}>${UI.prOpen === fk ? presetPop(fk) : ''}</div></div></div>
+  <div class="row2"><label class="fld pts-fld"><span>점수</span>${pointsField(fk)}</label>
+  <label class="fld grow"><span>날짜</span><input type="date" id="${fk}-date" value="${esc(f.date)}" data-bind="${fk}.date" data-rerender="1"></label></div>
+  <p class="hint">+는 자봉, −는 상점이에요. 항목명 칸을 누르면 최근·자주 쓴 항목이, "불러오기"를 누르면 내 자주 쓰는 항목이 떠요.</p>
   <label class="fld"><span>세부내용 (선택)</span><input id="${fk}-detail" value="${esc(f.detail)}" placeholder="예: 전원 안끔" autocomplete="off" data-bind="${fk}.detail" data-suggest="detail" data-fk="${fk}"></label>
   <label class="fld"><span>학생</span><input id="${fk}-find" type="search" value="${esc(f.find)}" placeholder="이름이나 번호 (예: 김민, 56 59)" autocomplete="off" enterkeyhint="done" data-bind="${fk}.find" data-picker="${fk}"></label>
   <p class="hint">이름 일부를 치고 목록에서 고르거나, 번호를 띄어 쓰며 연달아 적으세요.</p>
@@ -349,7 +358,7 @@ function vRequest() {
   <label class="fld"><span>사유 (선택)</span><textarea id="reqForm-reason" data-bind="reqForm.reason" data-suggest="reqReason" placeholder="필요하면 적어주세요">${esc(f.reason)}</textarea></label>
   ${photoField('reqForm', f.photo)}
   <button class="btn" data-act="req-add">요청 보내기</button></div>
-  ${myPresetsCard()}`;
+`;
 }
 
 function reqCard(r, admin) {
@@ -610,7 +619,6 @@ function vManage() {
   <div class="mlist">${all.map((s) => `<div class="mrow"><input type="number" class="no-in" data-sid="${s.id}" value="${s.no}" aria-label="번호" ${s.active ? '' : 'disabled'}><input class="grow name-in" data-sid="${s.id}" value="${esc(s.name)}" placeholder="이름" aria-label="이름" style="width:auto;min-width:0" ${s.active ? '' : 'disabled'}><span class="note">${s.active ? `자봉 ${bal(s.id)}` : '제외됨'}</span><button class="btn ghost small" data-act="stu-toggle" data-sid="${s.id}">${s.active ? '제외' : '복귀'}</button></div>`).join('')}</div>
   <button class="btn" data-act="nos-save">명단 저장</button></details>
 
-  ${myPresetsCard()}
 
   <div class="card"><h2>비밀번호</h2>
   <p class="hint" style="margin:0">인수인계할 때는 다음 사람에게 지금 비밀번호와 복구 코드를 알려주고, 그 사람이 로그인해서 자기 비밀번호로 바꾸면 끝이에요.</p>
@@ -877,14 +885,6 @@ document.addEventListener('input', (ev) => {
   const b = el.dataset?.bind;
   if (!b) return;
   setPath(b, el.type === 'checkbox' ? el.checked : el.value);
-  if (b.endsWith('.preset')) {
-    const fk = b.split('.')[0];
-    const p = S.presets.find((x) => x.id === el.value);
-    if (p) {
-      UI[fk].item = p.name;
-      UI[fk].points = p.points;
-    }
-  }
   if (b === 'noticeFrom' || b === 'noticeTo') UI.noticeText = null;
   if (el.dataset.picker) return ev.isComposing ? updateLive(el.dataset.picker) : commitPicker(el, false);
   if (el.dataset.live) return updateLive(el.dataset.live);
@@ -982,6 +982,7 @@ function showSug(el) {
   box.innerHTML = groups.map((g) => `<div class="sug-g">${g.g ? `<span class="sug-l">${g.g}</span>` : ''}${g.items.join('')}</div>`).join('');
 }
 document.addEventListener('focusin', (ev) => {
+  if (ev.target.dataset?.suggest === 'item' && UI.prOpen) closePresetPops();
   if (ev.target.dataset?.suggest) showSug(ev.target);
 });
 document.addEventListener('focusout', (ev) => {
@@ -1032,17 +1033,6 @@ async function saveAttendance(asRequest) {
   await refresh();
   render();
   await doneToast(`저장했어요 · 새 기록 ${n}건`);
-}
-
-function readMyPresets() {
-  document.querySelectorAll('.my-pr-name').forEach((i) => {
-    const p = S.presets.find((x) => x.id === i.dataset.id);
-    if (p) p.name = i.value;
-  });
-  document.querySelectorAll('.my-pr-pts').forEach((i) => {
-    const p = S.presets.find((x) => x.id === i.dataset.id);
-    if (p) p.points = Number(i.value);
-  });
 }
 
 async function submitEntry(fk) {
@@ -1553,27 +1543,47 @@ const A = {
     UI.rosterOpen = !UI.rosterOpen;
     return true;
   },
-  'mypresets-toggle': () => {
-    UI.myPresetsOpen = !UI.myPresetsOpen;
+  'pr-open': (d) => {
+    const open = UI.prOpen === d.fk;
+    closePtsPops();
+    closePresetPops();
+    hideSug();
+    if (!open) {
+      UI.prOpen = d.fk;
+      openPresetPop(d.fk);
+    }
     return true;
   },
-  // 저장 전 편집 중인 값을 잃지 않게, 추가·삭제할 때 입력칸의 값을 먼저 읽어 둔다
-  'mypreset-add': () => {
-    readMyPresets();
-    S.presets.push({ id: 'new' + Date.now(), name: '', points: 1, owner: UI.user });
-    UI.myPresetsOpen = true;
+  'pr-use': (d) => {
+    const p = S.presets.find((x) => x.id === d.id);
+    if (!p) return true;
+    const f = UI[d.fk];
+    f.item = p.name;
+    f.points = p.points;
+    document.getElementById(d.fk + '-item').value = p.name;
+    document.getElementById(d.fk + '-points').value = p.points;
+    closePresetPops();
+    updateLive(d.fk);
+    return true;
   },
-  'mypreset-del': (d) => {
-    readMyPresets();
-    S.presets = S.presets.filter((p) => p.id !== d.id);
-    UI.myPresetsOpen = true;
+  // 지금 적은 항목명·점수를 내 자주 쓰는 항목에 넣는다 (자주 쓰는 항목 점수는 정수)
+  'pr-add': async (d) => {
+    const f = UI[d.fk];
+    const name = (f.item || '').trim();
+    const pts = Number(f.points);
+    if (!name) return toast('항목명을 먼저 적어 주세요');
+    if (!Number.isInteger(pts) || pts === 0) return toast('자주 쓰는 항목 점수는 0이 아닌 정수여야 해요');
+    if (myPresets().some((p) => p.name === name && p.points === pts)) return toast('이미 있는 항목이에요');
+    const list = [...myPresets().map((p) => ({ name: p.name, points: p.points })), { name, points: pts }];
+    UI.prOpen = d.fk;
+    await run('my_presets_save', { p_list: list }, `자주 쓰는 항목에 넣었어요: ${name} ${sgn(pts)}`);
+    return true;
   },
-  'mypresets-save': async () => {
-    readMyPresets();
-    const list = myPresets().filter((p) => p.name.trim());
-    if (list.some((p) => !Number.isInteger(p.points) || p.points === 0)) return toast('점수는 0이 아닌 정수여야 해요');
-    UI.myPresetsOpen = true;
-    await run('my_presets_save', { p_list: list.map((p) => ({ name: p.name.trim(), points: p.points })) }, '내 항목을 저장했어요');
+  'pr-del': async (d) => {
+    const gone = S.presets.find((p) => p.id === d.id);
+    const list = myPresets().filter((p) => p.id !== d.id).map((p) => ({ name: p.name, points: p.points }));
+    UI.prOpen = d.fk;
+    await run('my_presets_save', { p_list: list }, `자주 쓰는 항목에서 뺐어요: ${gone?.name || ''}`);
     return true;
   },
 };
@@ -1582,6 +1592,7 @@ let busy = false;
 document.addEventListener('click', async (ev) => {
   // 점수 숫자판 밖을 누르면 닫는다
   if (!ev.target.closest('.ptsbox')) closePtsPops();
+  if (UI.prOpen && !ev.target.closest('.itembox')) closePresetPops();
   const el = ev.target.closest('[data-act]');
   if (!el || busy) return;
   const act = el.dataset.act;

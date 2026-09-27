@@ -338,7 +338,12 @@ test('기록: 입력 검사 안내', async () => {
 });
 
 test('기록: 항목 불러오기, 점수 숫자판, 학생 고르기(추천·번호·Enter·전체 명단·빼기), 저장', async () => {
-  await A.page.selectOption('#recForm-preset', { label: '매점 (-1)' });
+  // 불러오기: 내 자주 쓰는 항목 (부총대 기본 6개)
+  await A.click('[data-act="pr-open"][data-fk="recForm"]');
+  assert.deepEqual(await A.page.$$eval('#recForm-prpop .pr-use', (b) => b.map((x) => x.textContent)), ['지각 +1', '결석 +2', '실습실 뒷정리 미흡 +1', '실습 +1', '소치 실습 +1', '매점 -1']);
+  await A.fits('불러오기 창');
+  await A.click('#recForm-prpop .pr-use:has-text("매점")');
+  assert.ok(await A.page.isHidden('#recForm-prpop'));
   assert.equal(await A.page.inputValue('#recForm-item'), '매점');
   assert.equal(await A.page.inputValue('#recForm-points'), '-1');
   await A.page.fill('#recForm-item', '실습 준비 미흡');
@@ -675,27 +680,43 @@ test('총대단 로그인: 탭, 비밀번호 바꾸기(검사·성공·다시 �
   assert.deepEqual(await O.tabs(), ['요청하기', '요청 현황', '현황판']);
 });
 
-test('총대단: 내 자주 쓰는 항목 추가·검사·삭제·저장', async () => {
-  await O.page.click('summary:has-text("내 자주 쓰는 항목")');
-  assert.match(await O.text('details:has([data-act="mypreset-add"])'), /아직 없어요/);
-  await O.click('[data-act="mypreset-add"]');
-  await O.page.fill('.my-pr-name >> nth=-1', '청소 불참');
-  await O.page.fill('.my-pr-pts >> nth=-1', '2');
-  await O.click('[data-act="mypreset-add"]');
-  assert.equal(await O.page.inputValue('.my-pr-name >> nth=0'), '청소 불참', '항목을 더 추가해도 적던 값은 남는다');
-  await O.page.fill('.my-pr-name >> nth=-1', '반값');
-  await O.page.fill('.my-pr-pts >> nth=-1', '1.5');
-  assert.equal(await O.toast('[data-act="mypresets-save"]'), '점수는 0이 아닌 정수여야 해요');
-  await O.click('details:has([data-act="mypreset-add"]) [data-act="mypreset-del"] >> nth=-1');
-  assert.equal(await O.page.$$eval('.my-pr-name', (x) => x.length), 1);
-  assert.equal(await O.toast('[data-act="mypresets-save"]'), '내 항목을 저장했어요');
-  assert.deepEqual(await O.page.$$eval('#reqForm-preset option', (o) => o.map((x) => x.textContent)), ['직접 입력', '청소 불참 (+2)']);
+test('총대단: 항목명 칸의 불러오기 — 지금 적은 항목 추가(검사), 고르기, 빼기, 바깥 누르면 닫힘', async () => {
+  const pop = '#reqForm-prpop';
+  await O.click('[data-act="pr-open"][data-fk="reqForm"]');
+  assert.match(await O.text(pop), /아직 없어요/);
+  assert.equal(await O.toast(`${pop} [data-act="pr-add"]`), '항목명을 먼저 적어 주세요');
+  await O.page.fill('#reqForm-item', '청소 불참');
+  assert.ok(await O.page.isHidden(pop), '항목명 칸을 누르면 불러오기 창은 닫힌다');
+  await O.page.fill('#reqForm-points', '2');
+  await O.click('[data-act="pr-open"][data-fk="reqForm"]');
+  assert.match(await O.text(`${pop} [data-act="pr-add"]`), /청소 불참 \+2/);
+  assert.equal(await O.toast(`${pop} [data-act="pr-add"]`), '자주 쓰는 항목에 넣었어요: 청소 불참 +2');
+  assert.ok(await O.page.isVisible(pop), '넣은 뒤에도 창이 열려 있다');
+  assert.equal(await O.toast(`${pop} [data-act="pr-add"]`), '이미 있는 항목이에요');
+  await O.page.fill('#reqForm-item', '반값');
+  await O.page.fill('#reqForm-points', '1.5');
+  await O.click('[data-act="pr-open"][data-fk="reqForm"]');
+  assert.equal(await O.toast(`${pop} [data-act="pr-add"]`), '자주 쓰는 항목 점수는 0이 아닌 정수여야 해요');
+  await O.page.fill('#reqForm-item', '임시');
+  await O.page.fill('#reqForm-points', '1');
+  await O.click('[data-act="pr-open"][data-fk="reqForm"]');
+  await O.toast(`${pop} [data-act="pr-add"]`);
+  assert.deepEqual(await O.page.$$eval(`${pop} .pr-use`, (b) => b.map((x) => x.textContent)), ['청소 불참 +2', '임시 +1']);
+  assert.equal(await O.toast(`${pop} .pr-row:has-text("임시") [data-act="pr-del"]`), '자주 쓰는 항목에서 뺐어요: 임시');
+  assert.deepEqual(await O.page.$$eval(`${pop} .pr-use`, (b) => b.map((x) => x.textContent)), ['청소 불참 +2']);
+  await O.page.click('h1');
+  assert.ok(await O.page.isHidden(pop), '바깥을 누르면 닫힌다');
   assert.equal((await one(`select count(*)::int as n from presets where owner = '학습부장'`)).n, 1);
   assert.equal((await one(`select count(*)::int as n from presets where owner = '부총대'`)).n, 6, '다른 직책 항목은 그대로');
+  await O.page.fill('#reqForm-item', '');
+  await O.page.fill('#reqForm-points', '1');
 });
 
 test('총대단: 사진 붙인 요청, 숫자판으로 상점 요청, 요청 현황, 현황판 이름', async () => {
-  await O.page.selectOption('#reqForm-preset', { label: '청소 불참 (+2)' });
+  await O.click('[data-act="pr-open"][data-fk="reqForm"]');
+  await O.click('#reqForm-prpop .pr-use:has-text("청소 불참")');
+  assert.equal(await O.page.inputValue('#reqForm-item'), '청소 불참');
+  assert.equal(await O.page.inputValue('#reqForm-points'), '2');
   await O.page.fill('#reqForm-find', '최서');
   await O.click('#reqForm-sugg [data-act="pick"]');
   await O.page.type('#reqForm-find', '9 ');
@@ -1320,15 +1341,21 @@ test('좁은 폰(320px): 모든 역할의 모든 탭이 가로로 넘치지 않�
   }
   await N.tab('manage');
   await N.page.click('summary:has-text("명단 하나씩 고치기")');
-  await N.page.click('summary:has-text("내 자주 쓰는 항목")');
   await N.fits('320 관리 펼침');
   await N.tab('record');
   await N.click('[data-act="pickgrid"]');
   await N.click('[data-act="pts-open"][data-fk="recForm"]');
   await N.fits('320 기록 전체 명단·숫자판');
+  await N.page.evaluate(() => window.scrollTo(0, 0));
+  assert.ok(await N.page.$eval('#recForm-item', (el) => {
+    const r = el.getBoundingClientRect();
+    return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) === el && r.width - 84 > 120;
+  }), '좁은 폰에서도 항목명 칸 가운데는 칸이고, 글자 칸이 넉넉하다 (불러오기 버튼에 가리지 않게)');
   await N.page.click('#recForm-item');
   assert.ok(await N.page.$('#sugbox'));
   await N.fits('320 항목 추천');
+  await N.click('[data-act="pr-open"][data-fk="recForm"]');
+  await N.fits('320 불러오기 창');
   await N.page.context().close();
 });
 
