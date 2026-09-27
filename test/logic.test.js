@@ -258,3 +258,47 @@ test('입력 추천 · 사유: 앱이 붙인 사유는 빼고, 요청 사유는 
   assert.deepEqual(v('reqReason', '학습부장'), ['최근:청소 안 함']);
   assert.deepEqual(suggestTexts(reasonEvents(S, 'voidReason'), '착오'), [], '이미 적은 값과 같으면 띄우지 않는다');
 });
+
+test('명단 붙여넣기: 엑셀(탭)에서는 띄어 쓴 이름도 그대로, 전각 숫자·엑셀 빼기 기호·.5도 읽는다', () => {
+  const S = state();
+  S.students = [{ id: 'k', no: 1, name: '김 민서', active: true }, { id: 'l', no: 2, name: '이도윤', active: true }];
+  S.ledger = [{ id: 'e', sid: 'k', date: '2026-09-01', points: 4, src: 'import', item: '기존 누적' }];
+  const p = planRoster(S, '1\t김 민서\t4\n2\t이도윤', true);
+  assert.deepEqual([p.changes, p.adjs, p.errors, p.same], [[], [], [], 2], '띄어 쓴 이름을 잘라 새 학생으로 보지 않는다');
+  const q = planRoster(S, '１\t김 민서\t−3\n2\t이도윤\t.5', false);
+  assert.deepEqual(q.errors, []);
+  assert.deepEqual(q.adjs.map((a) => [a.name, a.to]), [['김 민서', -3], ['이도윤', 0.5]]);
+  // 손으로 친 줄은 띄어쓰기로 나눈다
+  assert.deepEqual(planRoster(S, '3 박하준 2', false).changes.map((c) => [c.kind, c.name, c.no]), [['add', '박하준', 3]]);
+});
+
+test('명단 붙여넣기: 자봉 칸이 숫자가 아니면 조용히 넘어가지 않고 알린다', () => {
+  const S = state();
+  const p = planRoster(S, '1\t학생1\t3점', false);
+  assert.match(p.errors[0], /자봉 칸의 "3점"은\(는\) 숫자로만/);
+  assert.deepEqual(p.adjs, []);
+});
+
+test('공지 문구: 출석 기록을 다른 항목으로 고쳐도 그 교시에 나오고, 10교시는 2교시 뒤', () => {
+  const S = state();
+  S.periods.push({ id: 'p10', date: '2026-09-22', label: '10교시', morning: false }, { id: 'p2', date: '2026-09-22', label: '2교시', morning: false });
+  S.add('2026-09-22', '지각', '10교시', 1, [2], { src: 'att', pid: 'p10' });
+  S.add('2026-09-22', '지각', '2교시', 1, [1], { src: 'att', pid: 'p2' });
+  S.add('2026-09-22', '조퇴', '2교시', 1, [3], { src: 'att', pid: 'p2' });
+  assert.equal(genNotice(S, '2026-09-22', '2026-09-22'), '😿 9/22 자봉, 상점 공지하겠습니다.\n[2교시]\n지각(+1): 1\n조퇴(+1): 3\n[10교시]\n지각(+1): 2');
+  const T = state();
+  ['10교시', '1교시', '2교시'].forEach((l) => T.periods.push({ date: '2026-09-21', label: l }));
+  assert.deepEqual(suggestPeriods(T, '2026-09-28', '').map((x) => x.v), ['1교시', '2교시', '10교시']);
+});
+
+test('내보내기 요약: 제외된 학생도 기간에 기록이 있으면 요약에 (날짜별 내역과 맞게)', () => {
+  const S = state();
+  S.students[11].active = false;
+  S.add('2026-09-22', '실습', '', 2, [12]);
+  const { summary, rows } = exportSheets(S, '2026-09-01', '2026-09-30');
+  assert.ok(rows.some((r) => r.no === 12));
+  const r = summary.find((x) => String(x.no).startsWith('12'));
+  assert.deepEqual(r, { no: '12 (제외)', start: 0, change: 2, end: 2 });
+  assert.equal(summary.at(-1).no, '12 (제외)', '재학생 뒤에');
+  assert.equal(summary.length, 70);
+});

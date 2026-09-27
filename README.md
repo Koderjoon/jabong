@@ -98,7 +98,7 @@ npm run build
 |---|---|---|
 | `npm test` | 계산 로직 (공지 문구, 명단 붙여넣기, 내보내기) | 없음 |
 | `npm run test:db` | 모든 서버 함수: 권한·입력 검사·동작, 작업 내역 이동·되돌리기, 백업·정리 | Postgres 16 |
-| `npm run test:e2e` | 실제 화면을 Chromium으로 열고 학생·총대단·부총대의 모든 버튼을 누른다 | Postgres 16, Chromium |
+| `npm run test:e2e` | 실제 화면을 Chromium으로 열고 학생·총대단·부총대의 모든 버튼을 누른다. 동시에 들어오는 요청(로그인 잠금, 같은 교시 추가)도 | Postgres 16, Chromium |
 
 ```bash
 # Postgres 접속 정보 (예시)
@@ -111,6 +111,7 @@ npm run test:e2e
 - DB 테스트(`supabase/tests/`)는 테스트마다 새 DB를 만들고 `schema.sql`을 두 번 실행한 뒤 돌린다. 함수는 브라우저와 같은 `anon` 역할로 부른다.
   - `flow.sql`: 처음부터 끝까지 한 번 쓰는 흐름
   - `functions.sql`: 서버 함수 29개 전부 (노출·권한, 입력 검사 문구, 동작, 로그인 잠금, 복구 코드, 사진 정리, 백업·정리)
+  - `scale.sql`: 한 학기 분량(학생 70명, 작업 약 800개)에서 맨 처음 ↔ 맨 끝 이동이 3초 안에
   - `rewind.sql`, `rewind_all.sql`: 뒤로가기·앞으로 가기·이 작업만 되돌리기. 데이터를 바꾸는 모든 함수를 부른 뒤 모든 시점으로 오가며 데이터가 그 시점과 똑같은지 확인한다
 - 브라우저 테스트(`e2e/`)는 가짜 Supabase(`e2e/server.mjs`, 로컬 Postgres 함수를 부른다)로 인터넷 없이 돈다. 폰 크기(390px, 320px) 화면이 가로로 넘치지 않는지와 화면 오류가 없는지도 본다. Realtime(다른 기기의 변경이 바로 보이는 것)은 흉내 내지 않는다. 시스템에 따로 설치된 Chromium을 쓰려면 `CHROMIUM_PATH`에 실행 파일 경로를 준다.
 

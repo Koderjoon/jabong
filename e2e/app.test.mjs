@@ -535,6 +535,22 @@ test('출석(부총대): 아침 출석 체크·저장, 정정, 전원 출석 확
   assert.equal(await A.toast('[data-act="add-period"]'), '교시를 추가했어요');
   assert.deepEqual(await seg(), ['아침 출석 ·저장됨', '1교시 구강해부학']);
   assert.match(await A.text('[data-act="pick-period"].on'), /1교시 구강해부학/);
+  // 이미 있는 교시를 또 추가하면 새로 만들지 않고 고르기만 (되돌리기 버튼도 없다: 방금 한 작업이 없으니)
+  await A.click('[data-act="pick-period"]:has-text("아침 출석")');
+  await A.page.fill('#newPeriod', '1교시 구강해부학');
+  assert.equal(await A.toast('[data-act="add-period"]'), '이미 있는 교시예요 · 그 교시를 골랐어요');
+  assert.equal(await A.page.$('#toast button'), null);
+  assert.match(await A.text('[data-act="pick-period"].on'), /1교시 구강해부학/);
+  // 다른 기기가 방금 같은 교시를 만든 경우(이 화면은 아직 모름): 오류 없이 그 교시를 고르고, 엉뚱한 되돌리기 버튼이 없다
+  await db.query(`select ensure_period($1, $2, '5교시', false)`, [await A.token(), TODAY]);
+  await A.page.fill('#newPeriod', '5교시');
+  assert.equal(await A.toast('[data-act="add-period"]'), '교시를 추가했어요');
+  assert.equal(await A.page.$('#toast button'), null);
+  assert.match(await A.text('[data-act="pick-period"].on'), /5교시/);
+  // 뒤 테스트에 영향이 없게 그 교시 추가를 "이 작업만 되돌리기"로 뺀다
+  await db.query(`select history_drop($1, (select max(id) from ops where summary like '교시 추가:%5교시'), false)`, [await A.token()]);
+  await A.reload();
+  await A.tab('attend');
   await A.click('[data-act="pick-period"]:has-text("아침 출석")');
   assert.match(await A.text('[data-act="pick-period"].on'), /아침 출석/);
   // 다른 날짜에는 아직 저장 안 된 아침 출석만
@@ -799,6 +815,41 @@ test('총대: 출석 탭(아침 출석 없음), 교시 추가, 출석 요청·�
   await C.fits('총대 출석');
 });
 
+// ───────── 다른 기기의 출석 저장이 총대 화면에, 공지 문구에 바로 ─────────
+test('출석: 총대가 손대지 않은 교시는 부총대가 저장한 값을 따라가고, 공지 문구도 새로 만든다 (되돌리기로 원래대로)', async () => {
+  await A.tab('notice');
+  await A.click('[data-act="notice-preset"][data-v="one"]');
+  assert.doesNotMatch(await A.page.inputValue('#notice-text'), /\[1교시 구강해부학\]/);
+  await C.reload();
+  await C.click('[data-act="pick-period"]:has-text("1교시 구강해부학")');
+  const jw = await sid('정우진');
+  assert.ok(await C.page.$(`.call.present:has([data-sid="${jw}"])`));
+  await A.tab('attend');
+  await A.click('[data-act="pick-period"]:has-text("1교시 구강해부학")');
+  await A.click(`[data-act="setst"][data-sid="${jw}"][data-v="late"]`);
+  assert.match(await A.toast('[data-act="att-save"]'), /저장했어요 · 새 기록 1건/);
+  // 총대 화면: 화면으로 돌아오면(새로 불러오기) 부총대가 저장한 지각이 보인다
+  await C.page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await C.page.waitForSelector(`.call.late:has([data-sid="${jw}"])`);
+  assert.match(await C.text('.att-foot'), /부총대가 저장한 교시예요/);
+  // 공지 문구에도 바로
+  await A.tab('notice');
+  assert.match(await A.page.inputValue('#notice-text'), /\[1교시 구강해부학\]\n지각\(\+1\): 8/);
+  // 되돌려서 뒤 테스트의 점수를 그대로 둔다
+  await A.tab('attend');
+  await A.click('[data-act="pick-period"]:has-text("1교시 구강해부학")');
+  await A.click(`[data-act="setst"][data-sid="${jw}"][data-v="present"]`);
+  await A.toast('[data-act="att-save"]');
+  await C.page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await C.page.waitForSelector(`.call.present:has([data-sid="${jw}"])`);
+  // 총대가 손댄 초안은 새로 불러와도 그대로
+  await C.click(`[data-act="setst"][data-sid="${jw}"][data-v="absent"]`);
+  await C.page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await C.page.waitForTimeout(400);
+  assert.ok(await C.page.$(`.call.absent:has([data-sid="${jw}"])`), '고친 초안은 지킨다');
+  await C.click(`[data-act="setst"][data-sid="${jw}"][data-v="present"]`);
+});
+
 // ───────── 요청함 (부총대) ─────────
 test('요청함: 알림 숫자, 출석 요청 승인, 사진 보기, 요청 승인·반려(사유 필수), 처리한 내역', async () => {
   await A.reload();
@@ -817,6 +868,11 @@ test('요청함: 알림 숫자, 출석 요청 승인, 사진 보기, 요청 승�
   assert.equal(await A.toast(`${reqCard('매점 도움')} [data-act="req-no"]`), '반려 사유를 입력하세요');
   const id = await A.page.getAttribute(`${reqCard('매점 도움')} [data-act="req-no"]`, 'data-id');
   await A.page.fill(`#note-${id}`, '중복');
+  // 적어 둔 반려 사유는 다른 기기의 변경으로 화면을 다시 그려도 남는다
+  await A.page.click('h1');
+  await A.page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await A.page.waitForTimeout(400);
+  assert.equal(await A.page.inputValue(`#note-${id}`), '중복');
   assert.equal(await A.toast(`${reqCard('매점 도움')} [data-act="req-no"]`), '반려했어요');
   assert.equal(await A.page.$('#tabs [data-tab="inbox"] .badge'), null);
   const done = await A.text();
@@ -1197,6 +1253,17 @@ test('백업: 받기 → 데이터 바꾸기 → 파일로 되살리기(미리�
   await A.page.setInputFiles('[data-bkfile]', { name: 'x.json', mimeType: 'application/json', buffer: Buffer.from('{"foo":1}') });
   await A.page.waitForSelector('#toast:not([hidden])');
   assert.equal((await A.text('#toast > span')).trim(), '자봉 장부 백업 파일이 아니에요');
+  // 표가 빠진 파일, HTML이 든 파일
+  await A.page.evaluate(() => (document.getElementById('toast').hidden = true));
+  await A.page.setInputFiles('[data-bkfile]', { name: 'y.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({ format: 'jabong-backup', tables: { students: [] } })) });
+  await A.page.waitForSelector('#toast:not([hidden])');
+  assert.equal((await A.text('#toast > span')).trim(), '자봉 장부 백업 파일이 아니에요');
+  const evil = { format: 'jabong-backup', createdAt: '<b>x</b>', tables: { students: [{ id: 'z', no: '<img src=x onerror="window.__bk=1">', name: '<i>n</i>', active: true }], ledger: [] } };
+  await A.page.setInputFiles('[data-bkfile]', { name: 'z.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(evil)) });
+  await A.page.waitForSelector('#bk-typed');
+  await A.page.waitForTimeout(200);
+  assert.equal(await A.page.evaluate(() => window.__bk), undefined, '백업 파일 속 HTML은 글자로만');
+  assert.equal(await A.page.$('#view img, #view i, #view .card b b'), null);
   await A.page.setInputFiles('[data-bkfile]', file);
   await A.page.waitForSelector('#bk-typed');
   const pv = await A.text('.card:has(#bk-typed)');

@@ -24,7 +24,7 @@ const token = () => getSession()?.token;
 const blankForm = () => ({ date: TODAY, preset: '', item: '', points: 1, detail: '', nums: '', find: '', reason: '', photo: '' });
 const UI = {
   role: 'student', tab: 'board', sid: null, user: null, sort: 'no', q: '',
-  attDate: TODAY, attPid: null, attView: 'list', draft: {}, newPeriod: '', attConfirm: false,
+  attDate: TODAY, attPid: null, attView: 'list', draft: {}, touched: {}, newPeriod: '', attConfirm: false,
   recForm: blankForm(), reqForm: blankForm(), exForm: blankForm(), excForm: { no: '', eid: '', reason: '', photo: '' },
   recFilter: '', editId: null, voidId: null, openRev: {}, photos: {},
   noticeFrom: null, noticeTo: null, noticeText: null,
@@ -90,17 +90,11 @@ function toast(msg, undo) {
   toast.t = setTimeout(() => (t.hidden = true), undo ? 7000 : 2600);
   return true;
 }
-// 부총대가 방금 한 작업이면 되돌리기 버튼을 붙인다 (되돌리기는 "이 작업만 되돌리기"와 같고 기록이 남지 않는다)
-async function doneToast(msg) {
-  let undo = null;
-  if (isAdmin()) {
-    try {
-      const o = (await rpc('ops_list', { p_token: token(), p_limit: 1 }))[0];
-      if (o && o.actor === UI.user && o.undoable && !o.undone && !o.dropped) undo = o.id;
-    } catch {
-      // 되돌리기 버튼만 못 붙인다
-    }
-  }
+// 부총대가 방금 한 작업이면 되돌리기 버튼을 붙인다 (되돌리기는 "이 작업만 되돌리기"와 같고 기록이 남지 않는다).
+// before는 요청 전의 맨 위 작업 id. 요청이 새 작업을 만들지 않았으면(예: 이미 있는 교시 추가) 붙이지 않는다.
+function doneToast(msg, before) {
+  const o = S.lastOp;
+  const undo = isAdmin() && o && o.id !== before && o.actor === UI.user && o.undoable && !o.undone && !o.dropped ? o.id : null;
   return toast(msg, undo);
 }
 
@@ -121,16 +115,19 @@ async function refresh() {
 
 // 서버 함수를 부르고, 성공하면 최신 상태를 다시 받아 화면을 그린다
 async function run(fn, args, msg) {
+  const before = S.lastOp?.id ?? null;
   const r = await rpc(fn, { p_token: token(), ...args });
   await refresh();
   render();
-  if (msg) await doneToast(typeof msg === 'function' ? msg(r) : msg);
+  // 부총대가 데이터를 바꿨으면 공지 문구도 새로 만든다
+  if (isAdmin()) UI.noticeText = null;
+  if (msg) doneToast(typeof msg === 'function' ? msg(r) : msg, before);
   return r;
 }
 
 // 사람이 바뀌면 입력 중이던 내용(출석 초안, 폼)을 비운다
 function resetDrafts() {
-  UI.draft = {};
+  clearDrafts();
   UI.recForm = blankForm();
   UI.reqForm = blankForm();
   UI.exForm = blankForm();
@@ -430,12 +427,16 @@ function periodsOf(date) {
 // 내가 보낸 출석 요청 중 가장 최근 것 (총대단). 서버가 보낸 시각순 목록의 마지막이다
 // (화면용 시각은 분 단위라, 같은 분에 다시 보낸 요청을 시각 글자로 비교하면 예전 것을 고를 수 있다)
 const myAttReq = (pid) => (S.attRequests || []).filter((a) => a.pid === pid && a.by === UI.user).at(-1);
+// 초안은 사람이 고친 뒤(UI.touched)에만 붙잡아 둔다. 손대지 않은 초안은 다른 기기에서 저장·요청한 값을 따라간다.
 function attDraft(pid) {
-  if (!UI.draft[pid]) {
-    const mine = !isAdmin() && myAttReq(pid);
-    UI.draft[pid] = { ...((mine && mine.status === 'pending' ? mine.statuses : S.att[pid]) || {}) };
-  }
+  const mine = !isAdmin() && myAttReq(pid);
+  const src = (mine && mine.status === 'pending' ? mine.statuses : S.att[pid]) || {};
+  if (!UI.draft[pid] || (!UI.touched[pid] && !sameAtt(UI.draft[pid], src))) UI.draft[pid] = { ...src };
   return UI.draft[pid];
+}
+function clearDrafts() {
+  UI.draft = {};
+  UI.touched = {};
 }
 const ST = { present: ['✓', '출석'], late: ['지', '지각'], absent: ['결', '결석'], excused: ['공', '공결'] };
 // 출결 초안과 저장된 출결이 같은지 (학생 순서와 무관하게)
@@ -555,7 +556,11 @@ function vDone() {
 const lastDate = () => [...new Set(S.ledger.filter((e) => !['import', 'carry'].includes(e.src)).map((e) => e.date))].sort().pop() || TODAY;
 
 function vNotice() {
-  if (!UI.noticeFrom) UI.noticeFrom = UI.noticeTo = lastDate();
+  // 날짜를 직접 고르지 않았으면 새 기록이 생긴 날로 따라간다 (탭을 켜 둔 채 하루가 지나도)
+  if (!UI.noticeFrom || (UI.noticeAuto && UI.noticeAuto !== lastDate())) {
+    UI.noticeFrom = UI.noticeTo = UI.noticeAuto = lastDate();
+    UI.noticeText = null;
+  }
   if (UI.noticeText == null) UI.noticeText = L.genNotice(S, UI.noticeFrom, UI.noticeTo);
   return `<div><h1>공지 문구</h1><p class="sub">하루를 고르면 날짜가 들어간 머리말, 여러 날을 고르면 날짜별 소제목으로 만들어져요. 복사하기 전에 직접 고칠 수 있어요.</p></div>
   <div class="toolbar"><input type="date" id="nf" value="${UI.noticeFrom}" data-bind="noticeFrom" style="width:auto"><span class="note">~</span><input type="date" id="nt" value="${UI.noticeTo}" data-bind="noticeTo" style="width:auto"><button class="btn ghost small" data-act="notice-gen">문구 만들기</button></div>
@@ -749,8 +754,8 @@ function vBackup() {
     preview = `<div class="card" style="background:var(--sunk);border-color:transparent">
     <b>${esc(b.dump.createdAt)} 백업</b>
     <div class="note">백업: 학생 ${bs.length}명 · 기록 ${t.ledger.length}건 &nbsp;/&nbsp; 지금: 학생 ${active().length}명 · 기록 ${S.ledger.length}건</div>
-    ${diffs.length ? `<div class="note">점수가 달라지는 학생 ${diffs.length}명</div><div class="mlist" style="max-height:180px">${diffs.map((d) => `<div class="mrow"><span class="mono">${d.x.no}</span><span class="grow">${esc(d.x.name)}</span><span class="mono note">지금 ${d.cur ?? '없음'} → ${d.then}</span></div>`).join('')}</div>` : '<div class="note">학생별 자봉 점수는 지금과 같아요.</div>'}
-    ${gone.length ? `<div class="warn">백업 뒤에 추가된 학생 ${gone.length}명(${gone.map((x) => x.no).join(', ')}번)은 사라져요.</div>` : ''}
+    ${diffs.length ? `<div class="note">점수가 달라지는 학생 ${diffs.length}명</div><div class="mlist" style="max-height:180px">${diffs.map((d) => `<div class="mrow"><span class="mono">${esc(d.x.no)}</span><span class="grow">${esc(d.x.name)}</span><span class="mono note">지금 ${esc(d.cur ?? '없음')} → ${esc(d.then)}</span></div>`).join('')}</div>` : '<div class="note">학생별 자봉 점수는 지금과 같아요.</div>'}
+    ${gone.length ? `<div class="warn">백업 뒤에 추가된 학생 ${gone.length}명(${gone.map((x) => esc(x.no)).join(', ')}번)은 사라져요.</div>` : ''}
     <div class="warn">되살리면 이 백업 뒤에 생긴 기록·요청·출석이 모두 사라져요. 되살리기 직전 상태는 파일로 먼저 받아 둬요.</div>
     <input id="bk-typed" placeholder="확인하려면 '되살리기'라고 입력" value="${esc(b.typed)}" data-bind="bk.typed" data-region="bk-go">
     <div id="bk-go"><button class="btn danger" data-act="bk-restore" ${b.typed.trim() === '되살리기' ? '' : 'disabled'}>이 백업으로 되살리기</button></div></div>`;
@@ -850,10 +855,23 @@ function render() {
 
 // 다른 사람이 데이터를 바꿔서 다시 그려야 할 때, 입력 중이면 입력이 끝날 때까지 미룬다
 let pendingRender = false;
+let pointerDown = false;
+document.addEventListener('pointerdown', () => (pointerDown = true), true);
+['pointerup', 'pointercancel'].forEach((t) => document.addEventListener(t, () => setTimeout(() => (pointerDown = false), 0), true));
 function softRender() {
   const a = document.activeElement;
-  if (a && a.closest('#view') && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) pendingRender = true;
-  else render();
+  if (a && a.closest('#view') && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return (pendingRender = true);
+  // 버튼을 누르는 중에 다시 그리면 그 누름(click)이 사라진다. 손을 뗀 뒤에 그린다.
+  if (pointerDown) return setTimeout(softRender, 50);
+  // 반려 사유·수정 사유처럼 상태에 묶이지 않은 칸의 글자는 다시 그려도 남긴다
+  const kept = [...document.querySelectorAll('#view input[id]:not([data-bind]):not([type=file]):not([type=checkbox]), #view textarea[id]:not([data-bind])')]
+    .filter((el) => el.value)
+    .map((el) => [el.id, el.value]);
+  render();
+  kept.forEach(([id, v]) => {
+    const el = document.getElementById(id);
+    if (el && !el.value) el.value = v;
+  });
 }
 document.addEventListener('focusout', () => {
   if (pendingRender) {
@@ -905,7 +923,10 @@ document.addEventListener('input', (ev) => {
   const b = el.dataset?.bind;
   if (!b) return;
   setPath(b, el.type === 'checkbox' ? el.checked : el.value);
-  if (b === 'noticeFrom' || b === 'noticeTo') UI.noticeText = null;
+  if (b === 'noticeFrom' || b === 'noticeTo') {
+    UI.noticeText = null;
+    UI.noticeAuto = null;
+  }
   if (el.dataset.picker) return ev.isComposing ? updateLive(el.dataset.picker) : commitPicker(el, false);
   if (el.dataset.live) return updateLive(el.dataset.live);
   if (el.dataset.region) return updateRegion(el.dataset.region);
@@ -930,7 +951,7 @@ document.addEventListener('change', (ev) => {
     f.text().then((txt) => {
       try {
         const data = JSON.parse(txt);
-        if (data.format === 'jabong-backup' && data.tables) UI.bk = { ...UI.bk, file: data, fileName: f.name, dump: data, typed: '' };
+        if (data.format === 'jabong-backup' && Array.isArray(data.tables?.students) && Array.isArray(data.tables?.ledger)) UI.bk = { ...UI.bk, file: data, fileName: f.name, dump: data, typed: '' };
         else if (data.format === 'jabong-backup-encrypted') UI.bk = { ...UI.bk, file: data, fileName: f.name, dump: null, typed: '' };
         else throw new Error();
       } catch {
@@ -1040,6 +1061,7 @@ async function saveAttendance(asRequest) {
     const per = periodsOf(UI.attDate).find((p) => p.id === pid);
     const real = await rpc('ensure_period', { p_token: token(), p_date: per.date, p_label: per.label, p_morning: per.morning });
     UI.draft[real] = draft;
+    UI.touched[real] = UI.touched[pid];
     delete UI.draft[pid];
     UI.attPid = pid = real;
   }
@@ -1048,11 +1070,14 @@ async function saveAttendance(asRequest) {
     return;
   }
   // 저장이 끝나면 초안을 지운 뒤에 다시 그린다 (먼저 그리면 방금 저장한 초안이 "변경 사항 있음"으로 보인다)
+  const before = S.lastOp?.id ?? null;
   const n = await rpc('save_attendance', { p_token: token(), p_period: pid, p_statuses: draft });
   delete UI.draft[pid];
+  delete UI.touched[pid];
+  UI.noticeText = null;
   await refresh();
   render();
-  await doneToast(`저장했어요 · 새 기록 ${n}건`);
+  doneToast(`저장했어요 · 새 기록 ${n}건`, before);
 }
 
 async function submitEntry(fk) {
@@ -1249,11 +1274,13 @@ const A = {
   },
   setst: (d) => {
     const dr = attDraft(UI.attPid);
+    UI.touched[UI.attPid] = true;
     if (d.v === 'present') delete dr[d.sid];
     else dr[d.sid] = d.v;
   },
   cyc: (d) => {
     const dr = attDraft(UI.attPid);
+    UI.touched[UI.attPid] = true;
     const order = ['present', 'late', 'absent', 'excused'];
     const n = order[(order.indexOf(dr[d.sid] || 'present') + 1) % 4];
     if (n === 'present') delete dr[d.sid];
@@ -1264,6 +1291,7 @@ const A = {
   },
   'att-clear-yes': () => {
     UI.draft[UI.attPid] = {};
+    UI.touched[UI.attPid] = true;
     UI.attConfirm = false;
     toast('전원 출석으로 되돌렸어요 · 저장해야 반영돼요');
   },
@@ -1276,11 +1304,21 @@ const A = {
   'add-period': async () => {
     const l = UI.newPeriod.trim();
     if (!l) return toast('교시 이름을 입력하세요');
-    const id = await run('ensure_period', { p_date: UI.attDate, p_label: l, p_morning: false }, '교시를 추가했어요');
+    // 이미 있는 교시면 새로 만들지 않고 그 교시를 고른다 (부총대에게는 아침 출석도 늘 있다)
+    const same = periodsOf(UI.attDate).find((p) => p.label === l) || S.periods.find((p) => p.date === UI.attDate && p.label === l);
+    if (same && !String(same.id).startsWith('v:')) {
+      UI.attPid = same.id;
+      UI.newPeriod = '';
+      render();
+      return toast('이미 있는 교시예요 · 그 교시를 골랐어요');
+    }
+    // 교시 추가에는 되돌리기 버튼을 붙이지 않는다: 다른 기기가 방금 같은 교시를 만들었으면 새 작업이 없어서 엉뚱한 작업을 가리킬 수 있다
+    const id = await rpc('ensure_period', { p_token: token(), p_date: UI.attDate, p_label: l, p_morning: false });
     UI.attPid = id;
     UI.newPeriod = '';
+    await refresh();
     render();
-    return true;
+    return toast('교시를 추가했어요');
   },
   'att-save': async () => {
     await saveAttendance(false);
@@ -1292,7 +1330,7 @@ const A = {
   },
   'att-ok': async (d) => {
     await run('review_attendance', { p_id: d.id, p_approve: true, p_note: null }, (n) => `출석을 저장했어요 · 새 기록 ${n}건`);
-    UI.draft = {};
+    clearDrafts();
     UI.noticeText = null;
     return true;
   },
@@ -1316,20 +1354,22 @@ const A = {
   'edit-save': async (d) => {
     const pts = Number(val('ed-points'));
     if (!L.isHalfStep(pts) || pts === 0) return toast('점수는 0이 아닌 0.5점 단위로 적어 주세요');
+    const before = S.lastOp?.id ?? null;
     await rpc('edit_entry', { p_token: token(), p_id: d.id, p_date: val('ed-date'), p_item: val('ed-item'), p_detail: val('ed-detail'), p_points: pts, p_reason: val('ed-reason') });
     UI.editId = null;
     UI.noticeText = null;
     await refresh();
     render();
-    return doneToast('수정했어요 · 이력에 남았어요');
+    return doneToast('수정했어요 · 이력에 남았어요', before);
   },
   'void-save': async (d) => {
+    const before = S.lastOp?.id ?? null;
     await rpc('void_entry', { p_token: token(), p_id: d.id, p_reason: val('vd-reason') });
     UI.voidId = null;
     UI.noticeText = null;
     await refresh();
     render();
-    return doneToast('무효 처리했어요 · 점수에서 빠졌어요');
+    return doneToast('무효 처리했어요 · 점수에서 빠졌어요', before);
   },
   'req-ok': async (d) => {
     await run('review_request', { p_id: d.id, p_approve: true, p_note: null }, (n) => `승인했어요 · ${n}명 반영`);
@@ -1342,7 +1382,7 @@ const A = {
   },
   'exc-ok': async (d) => {
     await run('review_excuse', { p_id: d.id, p_approve: true, p_note: null }, '공결을 승인했어요 · 해당 자봉이 무효 처리됐어요');
-    UI.draft = {};
+    clearDrafts();
     UI.noticeText = null;
     return true;
   },
@@ -1375,6 +1415,8 @@ const A = {
       t.setDate(t.getDate() - 6);
       UI.noticeFrom = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
     } else UI.noticeFrom = last;
+    // "최근 하루"는 새 기록이 생기면 그날로 따라간다
+    UI.noticeAuto = d.v === 'one' ? last : null;
     UI.noticeText = null;
   },
   copy: async () => {
@@ -1407,7 +1449,7 @@ const A = {
     UI.fullBackup = false;
     UI.noticeText = null;
     UI.noticeFrom = null;
-    UI.draft = {};
+    clearDrafts();
     await refresh();
     render();
     return toast(`기록 ${r.old}건을 이월 ${r.carry}건으로 정리했어요`);
@@ -1498,7 +1540,9 @@ const A = {
     return toast('백업 파일을 받았어요');
   },
   'bk-open': async () => {
-    UI.bk.dump = await decryptBackup(UI.bk.file, UI.bk.pw);
+    const dump = await decryptBackup(UI.bk.file, UI.bk.pw);
+    if (!Array.isArray(dump?.tables?.students) || !Array.isArray(dump?.tables?.ledger)) return toast('자봉 장부 백업 파일이 아니에요');
+    UI.bk.dump = dump;
     UI.bk.typed = '';
   },
   'bk-restore': async () => {
@@ -1506,7 +1550,7 @@ const A = {
     await downloadBackup('jabong-되살리기전-');
     const r = await rpc('restore_backup', { p_token: token(), p_data: UI.bk.dump });
     UI.bk = { pw: '', file: null, fileName: '', dump: null, typed: '' };
-    UI.draft = {};
+    clearDrafts();
     UI.noticeText = null;
     await refresh();
     render();
@@ -1549,7 +1593,7 @@ const A = {
   'undo-last': async (d) => {
     document.getElementById('toast').hidden = true;
     await rpc('history_drop', { p_token: token(), p_op: Number(d.id), p_preview: false });
-    UI.draft = {};
+    clearDrafts();
     UI.noticeText = null;
     UI.hist = { ...UI.hist, list: null, preview: null };
     await refresh();
@@ -1564,7 +1608,7 @@ const A = {
     if (p.drop) await rpc(p.restore ? 'history_restore' : 'history_drop', { p_token: token(), p_op: p.drop, p_preview: false });
     else await rpc('history_move', { p_token: token(), p_target: p.target, p_preview: false });
     UI.hist.preview = null;
-    UI.draft = {};
+    clearDrafts();
     UI.noticeText = null;
     await Promise.all([refresh(), loadHistory()]);
     render();

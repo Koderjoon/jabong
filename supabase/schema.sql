@@ -188,6 +188,10 @@ create table if not exists op_changes (
   after jsonb
 );
 create index if not exists op_changes_op on op_changes (op_id);
+-- 학생 표에 칸(exempt)이 생기기 전의 작업 기록은 그 칸이 없어서 지금 행과 비교가 어긋난다. 기본값으로 채운다.
+update op_changes set before = case when before is not null and not before ? 'exempt' then before || '{"exempt": false}' else before end,
+  after = case when after is not null and not after ? 'exempt' then after || '{"exempt": false}' else after end
+where tbl = 'students' and ((before is not null and not before ? 'exempt') or (after is not null and not after ? 'exempt'));
 
 -- 직책별 계정. role이 곧 화면에 보이는 이름이다.
 create table if not exists accounts (
@@ -449,7 +453,8 @@ language sql stable security definer set search_path = public as $$
         else json_build_object('id', id, 'no', no, 'active', active, 'exempt', exempt) end order by active desc, no), '[]')
       from students),
     'presets', (select coalesce(json_agg(json_build_object('id', id, 'name', name, 'points', points, 'owner', owner) order by sort, name), '[]') from presets),
-    'periods', (select coalesce(json_agg(json_build_object('id', id, 'date', date, 'label', label, 'morning', morning) order by date, morning desc, label), '[]') from periods),
+    'periods', (select coalesce(json_agg(json_build_object('id', id, 'date', date, 'label', label, 'morning', morning, 'savedAt', _kst(saved_at))
+      order by date, morning desc, nullif(substring(label from '^[0-9]+'), '')::int nulls last, label), '[]') from periods),
     'att', (select coalesce(json_object_agg(p.id, (select coalesce(json_object_agg(a.student_id, a.status), '{}') from attendance a where a.period_id = p.id)), '{}')
       from periods p where p.saved_at is not null),
     'ledger', (select coalesce(json_agg(json_build_object(
@@ -482,6 +487,9 @@ language sql stable security definer set search_path = public as $$
         'note', a.review_note, 'reviewer', a.reviewed_by, 'at', _kst(a.created_at), 'reviewedAt', _kst(a.reviewed_at)
       ) order by a.created_at), '[]') from attendance_requests a) else '[]'::json end,
     'accounts', (select json_agg(json_build_object('role', role, 'admin', is_admin, 'attend', is_admin or can_attend) order by sort) from accounts),
+    -- 맨 위 작업 (부총대 화면의 "되돌리기" 버튼이 방금 한 작업인지 알아보는 데 쓴다)
+    'lastOp', case when p_private then (select json_build_object('id', id, 'actor', actor, 'undoable', undoable, 'undone', undone, 'dropped', dropped)
+      from ops where kind <> 'scratch' order by id desc limit 1) end,
     'updatedAt', (select _kst(updated_at) from app_version where id = 1)
   )
 $$;
@@ -517,14 +525,15 @@ create or replace function login(p_role text, p_pw text) returns json
 language plpgsql security definer set search_path = public, extensions as $$
 declare a accounts; t uuid;
 begin
-  select * into a from accounts where role = p_role;
+  -- 동시에 들어온 시도도 하나씩 처리한다 (안 그러면 한꺼번에 보내 잠금을 피할 수 있다)
+  select * into a from accounts where role = p_role for update;
   if not found or a.pw_hash is null then return json_build_object('error', '직책을 확인하세요'); end if;
   if a.locked_until > now() then
     return json_build_object('error', format('비밀번호를 여러 번 틀려서 잠겼어요. %s분 뒤에 다시 해보세요', ceil(extract(epoch from a.locked_until - now()) / 60)));
   end if;
   if a.pw_hash <> crypt(coalesce(p_pw, ''), a.pw_hash) then
     update accounts set fails = case when fails + 1 >= 5 then 0 else fails + 1 end,
-      locked_until = case when fails + 1 >= 5 then now() + interval '10 minutes' end
+      locked_until = case when fails + 1 >= 5 then now() + interval '10 minutes' else locked_until end
     where role = p_role;
     return json_build_object('error', '비밀번호가 맞지 않아요');
   end if;
@@ -538,11 +547,11 @@ create or replace function recover(p_code text, p_role text, p_new text) returns
 language plpgsql security definer set search_path = public, extensions as $$
 declare s settings; code text; t uuid;
 begin
-  select * into s from settings where id = 1;
+  select * into s from settings where id = 1 for update;
   if s.recovery_locked_until > now() then return json_build_object('error', '복구 코드를 여러 번 틀렸어요. 10분 뒤에 다시 해보세요'); end if;
   if s.recovery_hash is null or s.recovery_hash <> crypt(_norm_code(p_code), s.recovery_hash) then
     update settings set recovery_fails = case when recovery_fails + 1 >= 5 then 0 else recovery_fails + 1 end,
-      recovery_locked_until = case when recovery_fails + 1 >= 5 then now() + interval '10 minutes' end where id = 1;
+      recovery_locked_until = case when recovery_fails + 1 >= 5 then now() + interval '10 minutes' else recovery_locked_until end where id = 1;
     return json_build_object('error', '복구 코드가 맞지 않아요');
   end if;
   if not exists (select 1 from accounts where role = p_role and is_admin) then return json_build_object('error', '복구 코드로는 부총대 비밀번호만 새로 정할 수 있어요'); end if;
@@ -550,6 +559,8 @@ begin
   code := _new_code();
   update settings set recovery_hash = crypt(_norm_code(code), gen_salt('bf')), recovery_fails = 0, recovery_locked_until = null where id = 1;
   update accounts set pw_hash = crypt(p_new, gen_salt('bf')), fails = 0, locked_until = null where role = p_role;
+  -- 비밀번호가 새 것이 됐으니 다른 기기의 로그인은 끊는다 (새어 나간 비밀번호로 들어온 사람도)
+  delete from sessions where role = p_role;
   insert into sessions (role, expires_at) values (p_role, now() + interval '30 days') returning token into t;
   return json_build_object('token', t, 'role', p_role, 'admin', true, 'code', code);
 end $$;
@@ -596,6 +607,8 @@ begin
   if h <> crypt(coalesce(p_cur, ''), h) then raise exception '현재 비밀번호가 맞지 않아요'; end if;
   if length(coalesce(p_new, '')) < 4 then raise exception '새 비밀번호는 4자 이상이어야 해요'; end if;
   update accounts set pw_hash = crypt(p_new, gen_salt('bf')) where role = who;
+  -- 이 기기 말고 다른 기기의 로그인은 끊는다
+  delete from sessions where role = who and token <> p_token;
 end $$;
 
 -- ───────────────────────── 부총대 전용 ─────────────────────────
@@ -631,7 +644,10 @@ begin
   select id into pid from periods where date = p_date and label = trim(p_label);
   if pid is null then
     perform _op(who, 'ensure_period', format('교시 추가: %s %s', to_char(p_date, 'FMMM/FMDD'), trim(p_label)));
-    insert into periods (date, label, morning) values (p_date, trim(p_label), coalesce(p_morning, false)) returning id into pid;
+    -- 두 사람이 같은 교시를 동시에 추가해도 오류 없이 같은 교시로
+    insert into periods (date, label, morning) values (p_date, trim(p_label), coalesce(p_morning, false))
+    on conflict (date, label) do nothing returning id into pid;
+    if pid is null then select id into pid from periods where date = p_date and label = trim(p_label); end if;
   end if;
   return pid;
 end $$;
@@ -642,10 +658,12 @@ create or replace function _apply_attendance(p_period uuid, p_statuses jsonb, p_
 language plpgsql security definer set search_path = public as $$
 declare
   who text := p_by;
-  per periods; st record; want text; want_item text; cur ledger; pts int; n int := 0; nid uuid;
+  per periods; st record; want text; want_item text; cur ledger; pts int; n int := 0; nid uuid; old jsonb;
 begin
   select * into per from periods where id = p_period;
   if not found then raise exception '교시를 찾을 수 없어요'; end if;
+  -- 전에 저장한 출결 (같은 출결인데 기록이 없으면 그때 면제였거나 부총대가 무효 처리한 것이라 다시 만들지 않는다)
+  select coalesce(jsonb_object_agg(student_id, status), '{}') into old from attendance where period_id = p_period;
   update periods set saved_at = now() where id = p_period;
   delete from attendance where period_id = p_period;
   insert into attendance (period_id, student_id, status)
@@ -660,7 +678,7 @@ begin
     if cur.id is not null and cur.item is distinct from want_item then
       perform _void(cur.id, case when want = 'excused' then '공결 처리' else '출석 정정' end, who);
     end if;
-    if want_item is not null and (cur.id is null or cur.item <> want_item) then
+    if want_item is not null and (cur.id is null or cur.item <> want_item) and (cur.id is not null or old ->> st.id::text is distinct from want) then
       -- 출석 점수는 지각 +1, 결석 +2로 고정한다
       pts := case want_item when '지각' then 1 else 2 end;
       nid := _entry(per.date, st.id, want_item, per.label, pts, 'att', p_period, null, who,
@@ -701,6 +719,10 @@ declare who text := _session(p_token, true); r attendance_requests; n int := 0;
 begin
   select * into r from attendance_requests where id = p_id for update;
   if not found or r.status <> 'pending' then raise exception '이미 처리된 요청이에요'; end if;
+  -- 요청 뒤에 그 교시가 저장·공결 처리됐으면, 옛 내용으로 덮어쓰지 않게 승인하지 않는다
+  if p_approve and (select saved_at from periods where id = r.period_id) > r.created_at then
+    raise exception '요청을 보낸 뒤에 이 교시의 출석이 바뀌었어요. 반려하고 다시 보내 달라고 하거나, 출석 탭에서 직접 고치세요';
+  end if;
   perform _op(who, 'review_attendance', format('출석 요청 %s: %s의 %s (%s)', case when p_approve then '승인' else '반려' end, r.requested_by, _per(r.period_id), _attn(r.statuses)));
   if p_approve then
     n := _apply_attendance(r.period_id, r.statuses, who, r.requested_by);
@@ -791,7 +813,7 @@ begin
     if e.id is not null and e.voided_at is null then
       perform _void(e.id, case when x.reason <> '' then format('공결 승인 (%s)', x.reason) else '공결 승인' end, who);
       if e.period_id is not null then
-        update periods set saved_at = coalesce(saved_at, now()) where id = e.period_id;
+        update periods set saved_at = now() where id = e.period_id;
         insert into attendance (period_id, student_id, status) values (e.period_id, x.student_id, 'excused')
         on conflict (period_id, student_id) do update set status = 'excused';
       end if;
@@ -835,6 +857,7 @@ begin
     n := n + 1;
   end loop;
   for a in select * from jsonb_array_elements(coalesce(p_adjs, '[]')) loop
+    if (select count(*) from students where active and name = a ->> 'name') > 1 then raise exception '같은 이름의 학생이 여러 명이에요: % (이름을 구분해 주세요)', a ->> 'name'; end if;
     select id into sid from students where active and name = a ->> 'name';
     if sid is null then raise exception '학생을 찾을 수 없어요: %', a ->> 'name'; end if;
     select coalesce(sum(points), 0), count(*) = 0 into cur, fresh from ledger where student_id = sid and voided_at is null;
@@ -898,12 +921,16 @@ drop function if exists _undo_one(bigint, bigint);
 drop function if exists _set_undone(bigint, bigint, bigint);
 create or replace function _apply_op(p_op bigint, p_back boolean, p_scratch bigint) returns void
 language plpgsql security definer set search_path = public as $$
-declare c op_changes; cur jsonb; want jsonb; cols text; mark bigint; bad boolean := false; o ops; act char(1);
+declare c op_changes; cur jsonb; want jsonb; cols text; kc text; kw text; mark bigint; bad boolean := false; o ops; act char(1);
 begin
   select * into o from ops where id = p_op;
   select coalesce(max(id), 0) into mark from op_changes;
+  begin
   for c in select * from op_changes where op_id = p_op order by case when p_back then -id else id end loop
-    execute format('select to_jsonb(t) from %I t where to_jsonb(t) @> $1', c.tbl) into cur using c.row_key;
+    -- 기본키로 찾는다 (to_jsonb(t) @> 로 찾으면 표 전체를 훑어서, 한 학기 분량을 오가면 수 초가 걸린다)
+    kc := case c.tbl when 'attendance' then 'period_id, student_id' when 'ledger_private' then 'ledger_id' else 'id' end;
+    kw := format('(%2$s) = (select %2$s from jsonb_populate_record(null::%1$I, $1))', c.tbl, kc);
+    execute format('select to_jsonb(t) from %I t where ', c.tbl) || kw into cur using c.row_key;
     -- 뒤로 갈 때: 넣은 것은 지우고(I→D), 지운 것은 넣고(D→I), 바꾼 것은 전으로. 앞으로 갈 때는 그대로.
     act := case when not p_back then c.action when c.action = 'I' then 'D' when c.action = 'D' then 'I' else 'U' end;
     if act = 'I' then
@@ -916,15 +943,19 @@ begin
     elsif act = 'D' then
       if cur is null then continue; end if;
       if cur <> (case when p_back then c.after else c.before end) then bad := true; exit; end if;
-      execute format('delete from %I t where to_jsonb(t) @> $1', c.tbl) using c.row_key;
+      execute format('delete from %I t where ', c.tbl) || kw using c.row_key;
     else
       if cur is distinct from (case when p_back then c.after else c.before end) then bad := true; exit; end if;
-      select string_agg(quote_ident(column_name), ',' order by ordinal_position) into cols
-      from information_schema.columns where table_schema = 'public' and table_name = c.tbl;
-      execute format('update %1$I t set (%2$s) = (select %2$s from jsonb_populate_record(null::%1$I, $1)) where to_jsonb(t) @> $2', c.tbl, cols)
+      select string_agg(quote_ident(attname), ',' order by attnum) into cols
+      from pg_attribute where attrelid = format('public.%I', c.tbl)::regclass and attnum > 0 and not attisdropped;
+      execute format('update %1$I t set (%2$s) = (select %2$s from jsonb_populate_record(null::%1$I, $1)) where ', c.tbl, cols)
+        || replace(kw, '$1', '$2')
         using case when p_back then c.before else c.after end, c.row_key;
     end if;
   end loop;
+  exception when foreign_key_violation or unique_violation then
+    raise exception '"%" 작업이 기대는 다른 작업이 빠져 있거나(이 작업만 되돌림) 같은 것이 새로 생겨서 이동할 수 없어요. 빼 둔 작업을 먼저 다시 살려 보세요', o.summary using errcode = 'P0002';
+  end;
   if not bad and exists (
       select 1 from op_changes u where u.id > mark and u.op_id = p_scratch
         and not exists (select 1 from op_changes x where x.op_id = p_op and x.tbl = u.tbl and x.row_key = u.row_key)) then
@@ -1101,6 +1132,10 @@ create or replace function purge(p_token uuid, p_cut date) returns json
 language plpgsql security definer set search_path = public as $$
 declare who text := _session(p_token, true); old_n int; carry_n int := 0; r record;
 begin
+  if exists (select 1 from excuses x join ledger l on l.id = x.ledger_id where x.status = 'pending' and l.date <= p_cut)
+     or exists (select 1 from attendance_requests a join periods p on p.id = a.period_id where a.status = 'pending' and p.date <= p_cut) then
+    raise exception '정리할 기간에 아직 처리하지 않은 공결 신청이나 출석 요청이 있어요. 요청함에서 먼저 처리하세요';
+  end if;
   -- 정리하면 그 전 작업은 되돌릴 수 없으니 작업 로그를 비운다
   delete from ops where true;
   perform _op(who, 'purge', format('보관 후 정리 (%s까지)', to_char(p_cut, 'FMMM/FMDD')), false);

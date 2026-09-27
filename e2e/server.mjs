@@ -28,6 +28,8 @@ export function startServer({ port, dist, database }) {
       try {
         await client.query('begin');
         await client.query('set local role anon');
+        // Supabase는 앱(anon)의 요청을 약 3초에 끊는다
+        await client.query("set local statement_timeout = '3s'");
         const r = await client.query(`select public.${m[1]}(${keys.map((k, i) => `${k} => $${i + 1}`).join(', ')}) as r`, vals);
         await client.query('commit');
         res.writeHead(200, { ...cors, 'Content-Type': 'application/json' });

@@ -8,7 +8,7 @@ export PGOPTIONS="-c client_min_messages=warning"
 psql -q -v ON_ERROR_STOP=1 -d postgres -c "do \$\$ begin
   if not exists (select 1 from pg_roles where rolname = 'anon') then create role anon nologin; end if;
   if not exists (select 1 from pg_roles where rolname = 'authenticated') then create role authenticated nologin; end if; end \$\$"
-for t in flow rewind functions rewind_all; do
+for t in flow rewind functions rewind_all scale; do
   db="jabong_test_$t"
   echo "── $t.sql"
   psql -q -d postgres -c "drop database if exists $db with (force)" -c "create database $db" >/dev/null

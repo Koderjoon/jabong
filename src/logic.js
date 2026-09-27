@@ -60,6 +60,10 @@ export function dupNums(S, f) {
     .map((id) => noOf(S, id));
 }
 
+// 교시 이름 순서: "2교시"가 "10교시"보다 먼저 (숫자는 숫자로 비교)
+export const periodCmp = (a, b) => a.localeCompare(b, 'ko', { numeric: true });
+const ATT_ORDER = { 지각: 0, 결석: 1 };
+
 // 카톡 공지 문구. 기존에 손으로 쓰던 형식을 따른다.
 //   하루: "😿 9/22 자봉, 상점 공지하겠습니다." / 여러 날: 머리말 + 날짜별 소제목
 //   출석으로 생긴 지각·결석은 교시마다 따로 "[교시]" 아래에, 나머지는 항목·점수별로 (세부내용이 있으면 번호를 매긴다).
@@ -71,7 +75,6 @@ export function genNotice(S, from, to) {
   const multi = dates.length > 1;
   const no = (id) => noOf(S, id);
   const nums = (l) => l.map((e) => no(e.sid)).sort((a, b) => a - b);
-  const pOrder = new Map((S.periods || []).map((p, i) => [p.id, i]));
   const out = [multi ? '😿자봉, 상점 공지하겠습니다.' : `😿 ${md(dates[0])} 자봉, 상점 공지하겠습니다.`];
   dates.forEach((d) => {
     const de = es.filter((e) => e.date === d);
@@ -81,14 +84,17 @@ export function genNotice(S, from, to) {
     const pers = new Map();
     att.forEach((e) => {
       const k = e.pid || e.detail;
-      if (!pers.has(k)) pers.set(k, { label: e.detail || '출석', order: pOrder.get(e.pid) ?? 1e9, es: [] });
+      const per = (S.periods || []).find((p) => p.id === e.pid);
+      if (!pers.has(k)) pers.set(k, { label: per?.label || e.detail || '출석', morning: per?.morning ? 1 : 0, es: [] });
       pers.get(k).es.push(e);
     });
     [...pers.values()]
-      .sort((a, b) => a.order - b.order || a.label.localeCompare(b.label))
+      .sort((a, b) => b.morning - a.morning || periodCmp(a.label, b.label))
       .forEach((p) => {
         blk.push(`[${p.label}]`);
-        ['지각', '결석'].forEach((item) => {
+        // 지각·결석 먼저, 그 밖의 항목(출석 기록을 고쳐 바뀐 항목)도 빠짐없이
+        const items = [...new Set(p.es.map((e) => e.item))].sort((a, b) => (ATT_ORDER[a] ?? 9) - (ATT_ORDER[b] ?? 9) || a.localeCompare(b, 'ko'));
+        items.forEach((item) => {
           const byPts = new Map();
           p.es.filter((e) => e.item === item).forEach((e) => {
             const k = Number(e.points);
@@ -132,20 +138,27 @@ export function genNotice(S, from, to) {
 export function planRoster(S, text, replace) {
   const rows = [];
   const errors = [];
-  text.split('\n').forEach((line, i) => {
-    const cells = line
-      .split(/[\t,]+|\s+/)
-      .map((c) => c.trim())
-      .filter(Boolean);
+  text.split('\n').forEach((raw, i) => {
+    // 전각 숫자(１), 엑셀의 빼기 기호(−) 같은 것을 보통 글자로
+    const line = raw.normalize('NFKC').replace(/[\u2212\u2012-\u2015]/g, '-');
+    // 엑셀에서 복사하면 칸이 탭으로 나뉜다. 그때는 탭으로만 나눠야 "김 민서"처럼 띄어 쓴 이름이 그대로다
+    const cells = (line.includes('\t') ? line.split('\t') : line.split(/[,]+|\s+/)).map((c) => c.trim()).filter(Boolean);
     if (!cells.length) return;
-    const NUM = /^[+-]?\d+(\.\d+)?$/;
+    const NUM = /^[+-]?(\d+(\.\d+)?|\.\d+)$/;
     const ni = cells.findIndex((c) => /^\d+$/.test(c));
     const num = cells[ni];
-    const name = cells.find((c) => !NUM.test(c));
-    const score = cells.find((c, j) => j !== ni && NUM.test(c));
+    const nameIdx = cells.findIndex((c, j) => j !== ni && !NUM.test(c));
+    const name = cells[nameIdx];
+    const rest = cells.filter((c, j) => j !== ni && j !== nameIdx);
+    const score = rest.find((c) => NUM.test(c));
     if (!num && /번호|이름|성명/.test(line)) return;
     if (!num || !name) {
       errors.push(`${i + 1}번째 줄 "${line.trim()}": 번호와 이름이 모두 있어야 해요`);
+      return;
+    }
+    const odd = rest.find((c) => !NUM.test(c));
+    if (odd) {
+      errors.push(`${i + 1}번째 줄 "${line.trim()}": 자봉 칸의 "${odd}"은(는) 숫자로만 적어 주세요`);
       return;
     }
     if (score != null && !isHalfStep(Number(score))) {
@@ -248,12 +261,17 @@ export const fmtVal = (k, v) => (k === 'points' ? sgn(Number(v)) : k === 'date' 
 // 내보내기 파일의 세 시트. 이름과 기록·요청한 사람은 넣지 않는다.
 export function exportSheets(S, from, to) {
   const no = (id) => noOf(S, id);
-  const summary = active(S).map((st) => {
-    const l = S.ledger.filter((x) => x.sid === st.id && live(x));
-    const start = l.filter((x) => x.date < from).reduce((a, x) => a + Number(x.points), 0);
-    const ch = l.filter((x) => x.date >= from && x.date <= to).reduce((a, x) => a + Number(x.points), 0);
-    return { no: st.no, start, change: ch, end: start + ch };
-  });
+  // 제외된 학생도 기록이 있으면 요약에 넣는다 (날짜별 내역·정리 뒤 이월과 맞도록). 재학생 먼저, 번호순.
+  const withRec = new Set(S.ledger.map((x) => x.sid));
+  const summary = S.students
+    .filter((st) => st.active || withRec.has(st.id))
+    .sort((a, b) => b.active - a.active || a.no - b.no)
+    .map((st) => {
+      const l = S.ledger.filter((x) => x.sid === st.id && live(x));
+      const start = l.filter((x) => x.date < from).reduce((a, x) => a + Number(x.points), 0);
+      const ch = l.filter((x) => x.date >= from && x.date <= to).reduce((a, x) => a + Number(x.points), 0);
+      return { no: st.active ? st.no : `${st.no} (제외)`, start, change: ch, end: start + ch };
+    });
   const rows = S.ledger
     .filter((x) => x.date >= from && x.date <= to)
     .sort((a, b) => a.date.localeCompare(b.date) || no(a.sid) - no(b.sid))
@@ -371,7 +389,7 @@ export function suggestPeriods(S, date, typed) {
     .filter((p) => !p.morning && !taken.has(p.label))
     .map((p) => ({ v: p.label, at: p.date, mine: new Date(p.date + 'T00:00:00').getDay() === dow }))
     // 같은 날짜의 교시는 1교시, 2교시… 순으로 보이게 (같은 시각이면 목록 뒤쪽이 앞에 오므로 이름을 거꾸로 놓는다)
-    .sort((a, b) => a.at.localeCompare(b.at) || b.v.localeCompare(a.v));
+    .sort((a, b) => a.at.localeCompare(b.at) || periodCmp(b.v, a.v));
   return rank(ev, typed, [['같은 요일', 'mine', 4], ['최근', 'recent', 3], ['자주', 'freq', 3]], (s) => s.v === (typed || '').trim());
 }
 

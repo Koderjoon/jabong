@@ -127,7 +127,9 @@ set role postgres; select pg_temp.ok((select expires_at > now() + interval '29 d
 set role anon;
 select pg_temp.expect_msg(format('select change_pw(%L, %L, %L)', :'ot', 'wrong', 'abcd'), '현재 비밀번호가 맞지 않아요', '현재 비밀번호 틀림');
 select pg_temp.expect_msg(format('select change_pw(%L, %L, %L)', :'ot', '1234', 'ab'), '새 비밀번호는 4자 이상%', '새 비밀번호 짧음');
+select (login('학습부장', '1234')::json ->> 'token') as ot_other \gset
 select change_pw(:'ot', '1234', '5678');
+select pg_temp.expect(format('select private_state(%L)', :'ot_other'), '28000', '비밀번호를 바꾸면 다른 기기의 로그인은 끊김');
 select pg_temp.ok(login('학습부장', '1234')::json ->> 'error' is not null and login('학습부장', '5678')::json ->> 'token' is not null, '총대단이 자기 비밀번호를 바꿈');
 select pg_temp.ok(private_state(:'ot') is not null, '비밀번호를 바꿔도 지금 로그인은 유지');
 select pg_temp.expect_msg(format('select reset_pw(%L, %L, %L)', :'t', '학습부장', 'ab'), '새 비밀번호는 4자 이상%', '재설정 비밀번호 짧음');
@@ -154,8 +156,11 @@ select recover('AAAA-AAAA-AAAA', '부총대', 'abcd'), recover('AAAA-AAAA-AAAA',
 select pg_temp.ok(recover(:'code3', '부총대', '1234')::json ->> 'error' like '%여러 번 틀렸어요%', '복구 코드 5번 틀리면 잠김');
 set role postgres; update settings set recovery_locked_until = now() - interval '1 second' where id = 1;
 set role anon;
-select pg_temp.ok(recover(:'code3', '부총대', '1234')::json ->> 'token' is not null, '잠김이 풀리면 복구됨');
-select pg_temp.ok(private_state(:'t') is not null, '복구해도 다른 기기의 부총대 로그인은 유지');
+select recover(:'code3', '부총대', '1234')::json ->> 'token' as t_new \gset
+select pg_temp.ok(:'t_new' <> '', '잠김이 풀리면 복구됨');
+select pg_temp.expect(format('select private_state(%L)', :'t'), '28000', '복구하면 다른 기기의 부총대 로그인은 끊김 (새어 나간 비밀번호 대비)');
+select :'t_new' as t \gset
+select pg_temp.ok(private_state(:'t') is not null, '복구한 기기는 로그인');
 \echo 3. 비밀번호·복구 코드 통과
 
 -- ───────── 4. 명단 ─────────
@@ -301,7 +306,10 @@ select pg_temp.expect_msg(format('select review_attendance(%L, %L, true, null)',
 set role postgres;
 select pg_temp.ok((select lp.created_by = '부총대' and lp.requested_by = '실습부장 2' and lp.approved_by = '부총대' from ledger l join ledger_private lp on lp.ledger_id = l.id where l.period_id = :'p2' and l.student_id = :'s4'), '승인된 출석의 요청자·승인자');
 set role anon;
-select pg_temp.ok(review_attendance(:'t', :'r3', true, null) = 1, '저장된 교시에 다른 요청 승인');
+-- 요청 뒤에 교시가 저장됐으면(다른 요청 승인) 옛 내용으로 덮어쓰지 않게 승인 거절, 다시 보내면 승인
+select pg_temp.expect_msg(format('select review_attendance(%L, %L, true, null)', :'t', :'r3'), '요청을 보낸 뒤에 이 교시의 출석이 바뀌었어요%', '요청 뒤 저장된 교시의 옛 요청');
+select pg_temp.ok(request_attendance(:'ct', :'p2', format('{"%s":"late"}', :'s1')::jsonb) = :'r3', '다시 보내기');
+select pg_temp.ok(review_attendance(:'t', :'r3', true, null) = 1, '다시 보낸 요청은 승인');
 set role postgres;
 select pg_temp.ok((select void_reason from ledger where period_id = :'p2' and student_id = :'s4') = '출석 정정'
   and exists (select 1 from ledger where period_id = :'p2' and student_id = :'s1' and voided_at is null), '나중 요청 내용으로 바뀜');
@@ -554,5 +562,62 @@ set role postgres;
 select pg_temp.ok((select string_agg(id || ':' || pg_temp.bal(id), ',' order by id) from students) = :'bals'
   and not exists (select 1 from ledger where src = 'carry' group by student_id having count(*) > 1), '같은 날짜로 다시 정리해도 학생마다 이월 한 줄');
 \echo 14. 보관 후 정리 통과
+
+-- ───────── 15. 검토에서 찾은 문제들 (다시 생기지 않게) ─────────
+set role anon;
+select (login('부총대', '1234')::json ->> 'token') as t \gset
+select roster_apply(:'t', '[{"op":"add","name":"하","no":20},{"op":"add","name":"거","no":21}]', '[]', '2026-05-01');
+set role postgres;
+select id as h from students where name = '하' \gset
+select id as g from students where name = '거' \gset
+select max(id) as op_add from ops \gset
+set role anon;
+-- 면제였던 학생: 면제를 푼 뒤 옛 교시를 다시 저장해도 면제 기간의 자봉이 생기지 않는다
+select roster_apply(:'t', format('[{"op":"exempt","id":"%s","on":true}]', :'h')::jsonb, '[]', '2026-05-01');
+select ensure_period(:'t', '2026-05-02', '1교시', false) as pp \gset
+select save_attendance(:'t', :'pp', format('{"%s":"absent"}', :'h')::jsonb);
+select roster_apply(:'t', format('[{"op":"exempt","id":"%s","on":false}]', :'h')::jsonb, '[]', '2026-05-01');
+select pg_temp.ok(save_attendance(:'t', :'pp', format('{"%s":"absent","%s":"late"}', :'h', :'g')::jsonb) = 1, '면제를 풀고 다시 저장: 다른 학생만 새 기록');
+set role postgres;
+select pg_temp.ok(not exists (select 1 from ledger where student_id = :'h' and period_id = :'pp'), '면제 기간 결석은 계속 기록 없음');
+select id as gl from ledger where student_id = :'g' and period_id = :'pp' \gset
+set role anon;
+-- 부총대가 직접 무효 처리한 출석 기록은 교시를 다시 저장해도 되살아나지 않는다
+select void_entry(:'t', :'gl', '착오');
+select pg_temp.ok(save_attendance(:'t', :'pp', format('{"%s":"absent","%s":"late"}', :'h', :'g')::jsonb) = 0, '무효 처리한 지각은 다시 저장해도 그대로');
+-- 출결을 바꾸면 그때는 새 기록
+select pg_temp.ok(save_attendance(:'t', :'pp', format('{"%s":"absent","%s":"absent"}', :'h', :'g')::jsonb) = 1, '출결이 바뀐 학생만 새 기록 (그대로인 학생은 없음)');
+-- 동명이인 자봉 조정은 한국어로 막는다
+select roster_apply(:'t', '[{"op":"add","name":"하","no":22}]', '[]', '2026-05-01');
+select pg_temp.expect_msg(format('select roster_apply(%L, %L, %L, %L)', :'t', '[]', '[{"name":"하","to":3}]', '2026-05-01'), '같은 이름의 학생이 여러 명이에요%', '동명이인 조정');
+-- 되돌림 뒤 다시 적용이 막히면 영어 외래키·중복 오류 대신 한국어 안내 (P0002)
+select add_entries(:'t', '2026-05-03', array[:'g']::uuid[], '실습', '', 1);
+set role postgres; select max(id) as op_rec from ops \gset
+set role anon;
+select history_move(:'t', :op_add, false);
+select history_drop(:'t', :op_add, false);
+select pg_temp.expect(format('select history_move(%L, %s, false)', :'t', :op_rec), 'P0002', '빠진 작업에 기대는 작업으로 앞으로 가기');
+select pg_temp.expect_msg(format('select history_move(%L, %s, false)', :'t', :op_rec), '%이동할 수 없어요%', '한국어 안내');
+select history_restore(:'t', :op_add, false);
+select history_move(:'t', :op_rec, false);
+-- 교시 추가를 되돌린 뒤 같은 교시를 다시 추가하고, 되돌린 것을 살리면: 영어 중복 오류 대신 한국어 안내
+select ensure_period(:'t', '2026-05-09', '9교시', false);
+set role postgres; select max(id) as op_per from ops \gset
+set role anon;
+select history_drop(:'t', :op_per, false);
+select ensure_period(:'t', '2026-05-09', '9교시', false);
+select pg_temp.expect(format('select history_restore(%L, %s, false)', :'t', :op_per), 'P0002', '같은 교시가 새로 생겼으면 다시 살리기 멈춤');
+select pg_temp.expect_msg(format('select history_restore(%L, %s, false)', :'t', :op_per), '%수 없어요%', '다시 살리기 멈춤 안내는 한국어');
+-- 정리할 기간에 처리 안 한 공결 신청이 있으면 멈춘다
+select create_excuse(:'g', (select id from json_to_recordset(private_state(:'t') -> 'ledger') as x(id uuid, sid uuid, item text, voided json) where sid = :'g' and item = '결석' and voided is null limit 1), '', null) as px \gset
+select pg_temp.expect_msg(format('select purge(%L, %L)', :'t', '2026-05-31'), '정리할 기간에 아직 처리하지 않은 공결 신청이나 출석 요청이 있어요%', '대기 중 공결이 있으면 정리 안 함');
+select review_excuse(:'t', :'px', false, '확인');
+-- 학생 표에 칸이 생기기 전의 작업 기록도 schema.sql을 다시 실행하면 뒤로 갈 수 있다
+set role postgres;
+update op_changes set before = before - 'exempt', after = after - 'exempt' where tbl = 'students';
+select pg_temp.expect(format('select history_move(%L, %s, true)', :'t', :op_add - 1), 'P0002', '칸이 빠진 옛 기록은 비교가 어긋남');
+\ir ../schema.sql
+select pg_temp.ok(history_move(:'t', :op_add - 1, true) is not null, 'schema.sql을 다시 실행하면 옛 기록도 뒤로 갈 수 있음');
+\echo 15. 검토에서 찾은 문제 통과
 
 \echo 모든 서버 함수 테스트 통과
