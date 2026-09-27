@@ -276,3 +276,103 @@ export function exportSheets(S, from, to) {
   revisions.sort((a, b) => a.at.localeCompare(b.at));
   return { summary, rows, revisions };
 }
+
+// ───────── 입력 추천 ─────────
+// 항목명·세부내용·교시·사유 칸을 누르면 띄우는 "최근·자주 쓴 값". 따로 저장하지 않고 지난 기록에서 뽑는다
+// (그래서 어느 기기에서든 같고, 작업 내역으로 되돌리면 추천도 함께 돌아간다).
+// events: [{ v: 값, pts?: 점수, at: 시각 문자열, mine: 우선할 것인지 }] → [{ v, pts?, g: 묶음 이름 }]
+// 시각은 분 단위라 같은 분이 흔하다. 그때는 목록에서 뒤에 있는 것(서버가 오래된 순으로 준다)을 더 최근으로 본다.
+function tally(events) {
+  const m = new Map();
+  events.forEach((e, i) => {
+    const v = (e.v || '').trim();
+    if (!v) return;
+    const k = v + '\u0000' + (e.pts ?? '');
+    const s = m.get(k) || { v, pts: e.pts, n: 0, last: '', seq: -1, mineLast: '', mseq: -1 };
+    s.n++;
+    if (e.at >= s.last) [s.last, s.seq] = [e.at, i];
+    if (e.mine && e.at >= s.mineLast) [s.mineLast, s.mseq] = [e.at, i];
+    m.set(k, s);
+  });
+  return [...m.values()];
+}
+const byLast = (a, b) => b.last.localeCompare(a.last) || b.seq - a.seq;
+const byCount = (a, b) => b.n - a.n || byLast(a, b);
+
+// 입력 중이면 그 글자가 들어간 값을 자주 쓴 순으로, 비어 있으면 묶음(groups)대로 보여 준다.
+// groups: [[이름, 'mine'|'recent'|'freq', 개수]]. 'mine'은 mine인 것 중 최근 순, 'freq'는 두 번 이상 쓴 것.
+function rank(events, typed, groups, same = () => false) {
+  const stats = tally(events);
+  const t = (typed || '').trim();
+  if (t) return stats.filter((s) => s.v.includes(t) && !same(s)).sort(byCount).slice(0, 8).map((s) => ({ v: s.v, pts: s.pts, g: '' }));
+  const used = new Set();
+  const out = [];
+  groups.forEach(([label, how, n]) => {
+    let l = stats.filter((s) => !used.has(s));
+    if (how === 'mine') l = l.filter((s) => s.mineLast).sort((a, b) => b.mineLast.localeCompare(a.mineLast) || b.mseq - a.mseq);
+    else if (how === 'recent') l = l.sort(byLast);
+    else l = l.filter((s) => s.n >= 2).sort(byCount);
+    l.slice(0, n).forEach((s) => {
+      used.add(s);
+      out.push({ v: s.v, pts: s.pts, g: label });
+    });
+  });
+  return out;
+}
+
+// 직접 기록·요청으로 들어온 항목. 한 번에 여러 학생에게 적은 것은 한 번으로 센다. 무효 처리한 것(대개 잘못 적은 것)은 뺀다.
+function entryEvents(S, me) {
+  const seen = new Set();
+  const ev = [];
+  S.ledger.forEach((e) => {
+    if (e.voided || !['manual', 'request'].includes(e.src)) return;
+    const k = [e.item, e.detail, e.points, e.at, e.by].join('|');
+    if (seen.has(k)) return;
+    seen.add(k);
+    ev.push({ item: e.item, detail: e.detail, pts: Number(e.points), at: e.at, mine: Boolean(me) && e.by === me });
+  });
+  // 승인된 요청은 위의 기록에 이미 있다
+  (S.requests || [])
+    .filter((r) => r.status !== 'approved')
+    .forEach((r) => ev.push({ item: r.item, detail: r.detail, pts: Number(r.points), at: r.at, mine: Boolean(me) && r.by === me }));
+  return ev;
+}
+
+// 항목명: 항목과 점수를 함께 추천한다 (누르면 둘 다 들어간다). 최근은 내가 쓴 것 먼저, 없으면 반 전체.
+export function suggestItems(S, me, typed, curPoints) {
+  const ev = entryEvents(S, me).map((e) => ({ v: e.item, pts: e.pts, at: e.at, mine: e.mine }));
+  const mine = ev.some((e) => e.mine);
+  return rank(ev, typed, [['최근', mine ? 'mine' : 'recent', 4], ['자주', 'freq', 4]], (s) => s.v === (typed || '').trim() && s.pts === Number(curPoints));
+}
+
+// 세부내용: 적어 둔 항목명과 같은 항목에서 쓴 세부내용을 먼저 (없으면 전체)
+export function suggestDetails(S, me, item, typed) {
+  const ev = entryEvents(S, me).filter((e) => e.detail).map((e) => ({ v: e.detail, at: e.at, mine: e.mine, item: e.item }));
+  const it = (item || '').trim();
+  const same = ev.filter((e) => e.item === it);
+  const mine = (same.length ? same : ev).some((e) => e.mine);
+  return rank(same.length ? same : ev, typed, [['최근', mine ? 'mine' : 'recent', 4], ['자주', 'freq', 4]], (s) => s.v === (typed || '').trim());
+}
+
+// 교시: 시간표는 주마다 되풀이되니 같은 요일에 쓴 교시를 먼저. 그 날짜에 이미 있는 교시는 뺀다.
+export function suggestPeriods(S, date, typed) {
+  const taken = new Set(S.periods.filter((p) => p.date === date).map((p) => p.label));
+  const dow = new Date(date + 'T00:00:00').getDay();
+  const ev = S.periods
+    .filter((p) => !p.morning && !taken.has(p.label))
+    .map((p) => ({ v: p.label, at: p.date, mine: new Date(p.date + 'T00:00:00').getDay() === dow }));
+  return rank(ev, typed, [['같은 요일', 'mine', 4], ['최근', 'recent', 3], ['자주', 'freq', 3]], (s) => s.v === (typed || '').trim());
+}
+
+// 사유 칸들: 지난 사유에서. 출석 정정·공결 처리처럼 앱이 붙인 사유는 뺀다.
+const AUTO_VOID = /^(출석 정정|공결 처리|공결 승인)/;
+export function reasonEvents(S, kind, me) {
+  if (kind === 'editReason') return S.ledger.flatMap((e) => (e.revs || []).map((r) => ({ v: r.reason, at: r.at })));
+  if (kind === 'voidReason') return S.ledger.filter((e) => e.voided && !AUTO_VOID.test(e.voided.reason || '')).map((e) => ({ v: e.voided.reason, at: e.voided.at }));
+  if (kind === 'note') return [...(S.requests || []), ...(S.excuses || []), ...(S.attRequests || [])].filter((x) => x.note).map((x) => ({ v: x.note, at: x.reviewedAt || x.at }));
+  if (kind === 'reqReason') return (S.requests || []).filter((r) => r.reason && r.by === me).map((r) => ({ v: r.reason, at: r.at }));
+  return [];
+}
+export function suggestTexts(events, typed) {
+  return rank(events, typed, [['최근', 'recent', 3], ['자주', 'freq', 3]], (s) => s.v === (typed || '').trim());
+}

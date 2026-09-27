@@ -511,6 +511,73 @@ test('출석(부총대): 아침 출석 체크·저장, 정정, 전원 출석 확
   assert.equal(await A.page.inputValue('#attDate'), TODAY);
 });
 
+// ───────── 입력 추천 ─────────
+const sugChips = (u) => u.page.$$eval('#sugbox button', (b) => b.map((x) => x.textContent));
+test('입력 추천(부총대): 항목명은 점수와 함께, 세부내용은 같은 항목에서, 교시는 같은 요일, 수정·무효 사유', async () => {
+  await A.tab('record');
+  await A.page.click('#recForm-item');
+  let c = await sugChips(A);
+  assert.match(await A.text('#sugbox'), /^최근/);
+  assert.deepEqual(c.slice(0, 2), ['소치 실습 +1.5', '실습 준비 미흡 +2'], '최근에 적은 것부터');
+  await A.fits('항목 추천');
+  await A.click('#sugbox button:has-text("소치 실습")');
+  assert.equal(await A.page.inputValue('#recForm-item'), '소치 실습');
+  assert.equal(await A.page.inputValue('#recForm-points'), '1.5', '점수도 함께 들어간다');
+  // 화면을 다시 그려도 그대로 (보이는 칸만이 아니라 저장에 쓰는 값도 바뀌었는지)
+  await A.click('[data-act="pickgrid"]');
+  await A.click('[data-act="pickgrid"]');
+  assert.equal(await A.page.inputValue('#recForm-item'), '소치 실습');
+  assert.equal(await A.page.inputValue('#recForm-points'), '1.5');
+  assert.equal(await A.page.$('#sugbox'), null, '고르면 닫힌다');
+  // 치는 중이면 그 글자가 들어간 것만
+  await A.page.fill('#recForm-item', '');
+  await A.page.type('#recForm-item', '미흡');
+  assert.deepEqual(await sugChips(A), ['실습 준비 미흡 +2']);
+  await A.click('#sugbox button');
+  assert.equal(await A.page.inputValue('#recForm-points'), '2');
+  // 세부내용: 같은 항목에서 쓴 것
+  await A.page.click('#recForm-detail');
+  assert.deepEqual(await sugChips(A), ['전원 안끔']);
+  await A.click('#sugbox button');
+  assert.equal(await A.page.inputValue('#recForm-detail'), '전원 안끔');
+  // Esc로 닫고, 칸을 다시 누르면 다시 열린다
+  await A.page.fill('#recForm-detail', '');
+  assert.ok(await A.page.$('#sugbox'));
+  await A.page.keyboard.press('Escape');
+  assert.equal(await A.page.$('#sugbox'), null);
+  await A.page.click('#recForm-detail');
+  assert.ok(await A.page.$('#sugbox'));
+  await A.page.click('h1');
+  assert.equal(await A.page.$('#sugbox'), null, '칸을 떠나면 닫힌다');
+  await A.page.fill('#recForm-item', '');
+  await A.page.fill('#recForm-points', '1');
+  // 수정·무효 사유: 지난 사유
+  await A.click('#rec-list .rec-row:has-text("소치 실습") [data-act="edit"]');
+  await A.page.click('#ed-reason');
+  assert.deepEqual(await sugChips(A), ['오기']);
+  await A.click('#sugbox button');
+  assert.equal(await A.page.inputValue('#ed-reason'), '오기');
+  await A.click('[data-act="edit-cancel"]');
+  await A.click('#rec-list .rec-row:has-text("소치 실습") [data-act="void"]');
+  await A.page.click('#vd-reason');
+  assert.deepEqual(await sugChips(A), ['착오']);
+  await A.click('[data-act="edit-cancel"]');
+  // 교시: 다음 주 같은 요일에는 오늘 만든 교시를 먼저, 이미 있는 교시는 빼고
+  await A.tab('attend');
+  const next = new Date(Date.parse(TODAY) + 7 * 864e5).toISOString().slice(0, 10);
+  await A.page.fill('#attDate', next);
+  await A.page.click('#newPeriod');
+  assert.match(await A.text('#sugbox'), /^같은 요일/);
+  assert.deepEqual(await sugChips(A), ['1교시 구강해부학']);
+  await A.click('#sugbox button');
+  assert.equal(await A.page.inputValue('#newPeriod'), '1교시 구강해부학');
+  await A.page.fill('#newPeriod', '');
+  await A.page.fill('#attDate', TODAY);
+  await A.page.click('#newPeriod');
+  assert.equal(await A.page.$('#sugbox'), null, '오늘은 이미 있는 교시라 추천할 것이 없다');
+  await A.page.click('h1');
+});
+
 // ───────── 공지·내보내기 ─────────
 test('공지: 문구 만들기·고치기·복사, 기간 버튼', async () => {
   await A.tab('notice');
@@ -610,6 +677,14 @@ test('총대단: 사진 붙인 요청, 숫자판으로 상점 요청, 요청 현
   await O.fits('요청 사진 첨부');
   assert.equal(await O.toast('[data-act="req-add"]'), '요청을 보냈어요');
   assert.equal(await O.page.$('img.thumb'), null);
+  // 요청 사유: 내가 쓴 지난 사유
+  await O.page.click('#reqForm-reason');
+  assert.deepEqual(await sugChips(O), ['청소 시간에 없음']);
+  await O.page.keyboard.press('Escape');
+  assert.equal(await O.page.inputValue('#reqForm-reason'), '');
+  // 항목명: 총대단은 내가 요청한 것이 최근
+  await O.page.click('#reqForm-item');
+  assert.equal((await sugChips(O))[0], '청소 불참 +2');
   await O.page.fill('#reqForm-item', '매점 도움');
   await O.click('[data-act="pts-open"][data-fk="reqForm"]');
   await O.click('#reqForm-ptspop [data-v="-1"]');
@@ -764,6 +839,8 @@ test('요청함: 공결 증빙 보기, 승인(출결이 공결로), 반려(사�
   assert.match(await A.text(card(1)), /증빙 사진 없음/);
   assert.equal(await A.toast(`${card(3)} [data-act="exc-ok"]`), '공결을 승인했어요 · 해당 자봉이 무효 처리됐어요');
   const id = await A.page.getAttribute(`${card(1)} [data-act="exc-no"]`, 'data-id');
+  await A.page.click(`#note-${id}`);
+  assert.ok((await sugChips(A)).includes('중복'), '반려 사유도 지난 사유를 추천');
   await A.page.fill(`#note-${id}`, '증빙 필요');
   assert.equal(await A.toast(`${card(1)} [data-act="exc-no"]`), '반려했어요');
   assert.equal((await balances())['박하준'], 2, '결석 +2만 무효');
@@ -991,6 +1068,15 @@ test('폰: 한글을 치던 중 추천 이름을 한 번 탭하면 바로 선택
   assert.equal(await T.page.inputValue('#reqForm-find'), '');
   await T.page.tap('#reqForm-chips [data-act="unpick"]');
   assert.equal(await T.page.$$eval('#reqForm-chips .chip', (c) => c.length), 0);
+  // 항목 추천도 조합 중에 한 번 탭으로 (항목과 점수가 함께)
+  await T.page.tap('#reqForm-item');
+  await cdp.send('Input.imeSetComposition', { text: '청', selectionStart: 1, selectionEnd: 1 });
+  await T.page.waitForSelector('#sugbox button:has-text("청소 불참")');
+  await T.page.tap('#sugbox button:has-text("청소 불참")');
+  await T.page.waitForTimeout(200);
+  assert.equal(await T.page.inputValue('#reqForm-item'), '청소 불참');
+  assert.equal(await T.page.inputValue('#reqForm-points'), '2');
+  assert.equal(await T.page.$('#sugbox'), null);
   await T.page.context().close();
 });
 
@@ -1140,6 +1226,9 @@ test('좁은 폰(320px): 모든 역할의 모든 탭이 가로로 넘치지 않�
   await N.click('[data-act="pickgrid"]');
   await N.click('[data-act="pts-open"][data-fk="recForm"]');
   await N.fits('320 기록 전체 명단·숫자판');
+  await N.page.click('#recForm-item');
+  assert.ok(await N.page.$('#sugbox'));
+  await N.fits('320 항목 추천');
   await N.page.context().close();
 });
 

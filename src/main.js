@@ -245,10 +245,10 @@ function entryFields(fk) {
   const P = liveParts(fk);
   return `<div class="row2"><label class="fld grow"><span>날짜</span><input type="date" id="${fk}-date" value="${esc(f.date)}" data-bind="${fk}.date" data-rerender="1"></label>
   <label class="fld grow"><span>항목 불러오기</span><select id="${fk}-preset" data-bind="${fk}.preset" data-rerender="1"><option value="">직접 입력</option>${presetOptions(f.preset)}</select></label></div>
-  <div class="row2"><label class="fld grow"><span>항목명</span><input id="${fk}-item" value="${esc(f.item)}" placeholder="예: 실습실 뒷정리 미흡" data-bind="${fk}.item" data-live="${fk}"></label>
+  <div class="row2"><label class="fld grow"><span>항목명</span><input id="${fk}-item" value="${esc(f.item)}" placeholder="예: 실습실 뒷정리 미흡" autocomplete="off" data-bind="${fk}.item" data-live="${fk}" data-suggest="item" data-fk="${fk}"></label>
   <label class="fld pts-fld"><span>점수</span>${pointsField(fk)}</label></div>
   <p class="hint">+는 자봉, −는 상점이에요. 점수는 칸에 직접 적거나 ▾를 눌러 고르세요.</p>
-  <label class="fld"><span>세부내용 (선택)</span><input id="${fk}-detail" value="${esc(f.detail)}" placeholder="예: 전원 안끔" data-bind="${fk}.detail"></label>
+  <label class="fld"><span>세부내용 (선택)</span><input id="${fk}-detail" value="${esc(f.detail)}" placeholder="예: 전원 안끔" autocomplete="off" data-bind="${fk}.detail" data-suggest="detail" data-fk="${fk}"></label>
   <label class="fld"><span>학생</span><input id="${fk}-find" type="search" value="${esc(f.find)}" placeholder="이름이나 번호 (예: 김민, 56 59)" autocomplete="off" enterkeyhint="done" data-bind="${fk}.find" data-picker="${fk}"></label>
   <p class="hint">이름 일부를 치고 목록에서 고르거나, 번호를 띄어 쓰며 연달아 적으세요.</p>
   <div id="${fk}-sugg">${P.sugg}</div>
@@ -275,7 +275,7 @@ function vRequest() {
   const f = UI.reqForm;
   return `<div><h1>상점·자봉 요청</h1><p class="sub">부총대가 승인하면 반영돼요. 요청자 이름은 학생들에게 보이지 않아요.</p></div>
   <div class="card">${entryFields('reqForm')}
-  <label class="fld"><span>사유 (선택)</span><textarea id="reqForm-reason" data-bind="reqForm.reason" placeholder="필요하면 적어주세요">${esc(f.reason)}</textarea></label>
+  <label class="fld"><span>사유 (선택)</span><textarea id="reqForm-reason" data-bind="reqForm.reason" data-suggest="reqReason" placeholder="필요하면 적어주세요">${esc(f.reason)}</textarea></label>
   ${photoField('reqForm', f.photo)}
   <button class="btn" data-act="req-add">요청 보내기</button></div>
   ${myPresetsCard()}`;
@@ -287,7 +287,7 @@ function reqCard(r, admin) {
   <div class="chips">${r.sids.map((id) => `<span class="chip">${noOf(id)} ${esc(stu(id)?.name || '')}</span>`).join('')}</div>
   ${r.reason ? `<div class="note">사유: ${esc(r.reason)}</div>` : ''}${photoView(r.photo)}
   ${r.note ? `<div class="note">${esc(r.reviewer || '')}: ${esc(r.note)}</div>` : ''}
-  ${admin && r.status === 'pending' ? `<input id="note-${r.id}" placeholder="반려 사유 (반려할 때 필수)"><div class="btns"><button class="btn ok small" data-act="req-ok" data-id="${r.id}">승인</button><button class="btn danger small" data-act="req-no" data-id="${r.id}">반려</button></div>` : ''}</div>`;
+  ${admin && r.status === 'pending' ? `<input id="note-${r.id}" placeholder="반려 사유 (반려할 때 필수)" autocomplete="off" data-suggest="note"><div class="btns"><button class="btn ok small" data-act="req-ok" data-id="${r.id}">승인</button><button class="btn danger small" data-act="req-no" data-id="${r.id}">반려</button></div>` : ''}</div>`;
 }
 
 // 출석 요청 카드: 교시, 요청자, 지각·결석·공결 명단
@@ -302,7 +302,7 @@ function attReqCard(a, admin) {
   ${groups.map(([k, l]) => `<div class="note">${ST[k][1]} ${l.length}명</div><div class="chips">${l.map((id) => `<span class="chip">${noOf(id)} ${esc(stu(id)?.name || '')}</span>`).join('')}</div>`).join('') || '<div class="note">전원 출석</div>'}
   ${a.status !== 'pending' ? `<div class="note">${esc(a.reviewer || '')} · ${esc(a.reviewedAt || '')}${a.note ? ` · 반려 사유: ${esc(a.note)}` : ''}</div>` : ''}
   ${admin && a.status === 'pending' ? `${S.att[a.pid] ? '<div class="warn">이미 저장된 교시예요. 승인하면 이 요청 내용으로 바뀌어요.</div>' : ''}${others.length ? `<div class="warn">같은 교시에 ${others.map((o) => esc(o.by)).join(', ')}의 요청도 있어요.</div>` : ''}
-  <input id="note-${a.id}" placeholder="반려 사유 (반려할 때 필수)"><div class="btns"><button class="btn ok small" data-act="att-ok" data-id="${a.id}">승인 (출석 저장)</button><button class="btn danger small" data-act="att-no" data-id="${a.id}">반려</button></div>` : ''}</div>`;
+  <input id="note-${a.id}" placeholder="반려 사유 (반려할 때 필수)" autocomplete="off" data-suggest="note"><div class="btns"><button class="btn ok small" data-act="att-ok" data-id="${a.id}">승인 (출석 저장)</button><button class="btn danger small" data-act="att-no" data-id="${a.id}">반려</button></div>` : ''}</div>`;
 }
 
 function vReqs() {
@@ -393,7 +393,7 @@ function vAttend() {
   <div class="seg"><button class="${UI.attView !== 'grid' ? 'on' : ''}" data-act="attview" data-v="list">호명 목록</button><button class="${UI.attView === 'grid' ? 'on' : ''}" data-act="attview" data-v="grid">한눈에 보기</button></div>
   <div class="toolbar"><input type="date" id="attDate" value="${UI.attDate}" data-bind="attDate" data-rerender="1" style="width:auto"></div>
   <div class="seg" style="flex-wrap:wrap">${ps.map((p) => `<button class="${p.id === pid ? 'on' : ''}" data-act="pick-period" data-id="${p.id}">${esc(p.label)}${S.att[p.id] ? ' ·저장됨' : ''}</button>`).join('')}</div>
-  <div class="toolbar"><input id="newPeriod" placeholder="교시 추가 (예: 1교시 구강해부학)" value="${esc(UI.newPeriod)}" data-bind="newPeriod"><button class="btn ghost small" data-act="add-period">추가</button></div>
+  <div class="toolbar"><input id="newPeriod" placeholder="교시 추가 (예: 1교시 구강해부학)" value="${esc(UI.newPeriod)}" autocomplete="off" data-bind="newPeriod" data-suggest="period"><button class="btn ghost small" data-act="add-period">추가</button></div>
   ${body}`;
 }
 
@@ -407,9 +407,9 @@ function vRecord() {
     if (UI.editId === e.id)
       extra = `<div class="edit"><div class="row2"><label class="fld grow"><span>날짜</span><input type="date" id="ed-date" value="${e.date}"></label><label class="fld pts-fld"><span>점수</span><input type="number" step="0.5" inputmode="decimal" id="ed-points" value="${e.points}"></label></div>
       <label class="fld"><span>항목명</span><input id="ed-item" value="${esc(e.item)}"></label><label class="fld"><span>세부</span><input id="ed-detail" value="${esc(e.detail)}"></label>
-      <label class="fld"><span>수정 사유 (필수, 학생들에게 공개)</span><input id="ed-reason"></label><div class="btns"><button class="btn small" data-act="edit-save" data-id="${e.id}">수정 저장</button><button class="btn ghost small" data-act="edit-cancel">닫기</button></div></div>`;
+      <label class="fld"><span>수정 사유 (필수, 학생들에게 공개)</span><input id="ed-reason" autocomplete="off" data-suggest="editReason"></label><div class="btns"><button class="btn small" data-act="edit-save" data-id="${e.id}">수정 저장</button><button class="btn ghost small" data-act="edit-cancel">닫기</button></div></div>`;
     if (UI.voidId === e.id)
-      extra = `<div class="edit"><label class="fld"><span>무효 처리 사유 (필수, 학생들에게 공개)</span><input id="vd-reason"></label><p class="hint" style="margin:0">점수 합계에서 빠지지만, 기록은 줄이 그어진 채로 남아요.</p><div class="btns"><button class="btn danger small" data-act="void-save" data-id="${e.id}">무효 처리</button><button class="btn ghost small" data-act="edit-cancel">닫기</button></div></div>`;
+      extra = `<div class="edit"><label class="fld"><span>무효 처리 사유 (필수, 학생들에게 공개)</span><input id="vd-reason" autocomplete="off" data-suggest="voidReason"></label><p class="hint" style="margin:0">점수 합계에서 빠지지만, 기록은 줄이 그어진 채로 남아요.</p><div class="btns"><button class="btn danger small" data-act="void-save" data-id="${e.id}">무효 처리</button><button class="btn ghost small" data-act="edit-cancel">닫기</button></div></div>`;
     return `<div class="rec-row"><span class="mono">${noOf(e.sid)}번</span><span class="${e.voided ? 'off' : ''}">${esc(e.item)}${e.detail ? ` · ${esc(e.detail)}` : ''}<br><span class="d">${mdw(e.date)}${e.revs?.length ? ' · 수정됨' : ''}${e.voided ? ' · 무효' : ''}</span></span><span class="pts ${e.points > 0 ? 'p' : 'm'} ${e.voided ? 'off' : ''}">${sgn(e.points)}</span>
     ${e.voided ? '' : `<div class="acts"><button class="btn ghost small" data-act="edit" data-id="${e.id}">수정</button><button class="btn ghost small" data-act="void" data-id="${e.id}">무효 처리</button></div>`}${extra}</div>`;
   };
@@ -431,7 +431,7 @@ function vInbox() {
     const e = S.ledger.find((l) => l.id === x.eid);
     return `<div class="card"><div class="req-top"><span class="pill pending">대기</span><span class="note">${esc(x.at)}</span></div>
     <div class="req-body"><b>${noOf(x.sid)}번 ${esc(stu(x.sid)?.name || '')}</b> · ${e ? `${mdw(e.date)} ${esc(periodLabel(e))} ${e.item} ${sgn(e.points)}` : ''}</div>${x.reason ? `<div class="note">사유: ${esc(x.reason)}</div>` : '<div class="note">사유 없음</div>'}${x.photo ? photoView(x.photo) : '<div class="note">증빙 사진 없음</div>'}
-    <input id="note-${x.id}" placeholder="반려 사유 (반려할 때 필수)"><div class="btns"><button class="btn ok small" data-act="exc-ok" data-id="${x.id}">승인 (자봉 무효 처리)</button><button class="btn danger small" data-act="exc-no" data-id="${x.id}">반려</button></div></div>`;
+    <input id="note-${x.id}" placeholder="반려 사유 (반려할 때 필수)" autocomplete="off" data-suggest="note"><div class="btns"><button class="btn ok small" data-act="exc-ok" data-id="${x.id}">승인 (자봉 무효 처리)</button><button class="btn danger small" data-act="exc-no" data-id="${x.id}">반려</button></div></div>`;
   }).join('') || '<p class="empty">대기 중인 공결 신청이 없어요.</p>'}
   ${vDone()}`;
 }
@@ -870,6 +870,63 @@ document.addEventListener('change', (ev) => {
   r.readAsDataURL(el.files[0]);
 });
 
+/* ---------- 입력 추천 ---------- */
+// data-suggest가 붙은 칸을 누르면 칸 바로 아래에 최근·자주 쓴 값(logic.js의 suggest*)을 띄우고, 누르면 그 값이 들어간다.
+// 항목명은 점수도 함께 들어간다. 상자는 칸 밖에 따로 붙여서, 치는 중에 상자만 다시 그려도 한글 조합이 끊기지 않는다.
+let SUG = null; // { el, list }
+function sugList(el) {
+  const kind = el.dataset.suggest;
+  const fk = el.dataset.fk;
+  if (kind === 'item') return L.suggestItems(S, UI.user, el.value, UI[fk].points);
+  if (kind === 'detail') return L.suggestDetails(S, UI.user, UI[fk].item, el.value);
+  if (kind === 'period') return L.suggestPeriods(S, UI.attDate, el.value);
+  return L.suggestTexts(L.reasonEvents(S, kind, UI.user), el.value);
+}
+function hideSug() {
+  document.getElementById('sugbox')?.remove();
+  SUG = null;
+}
+function showSug(el) {
+  const list = sugList(el);
+  if (!list.length) return hideSug();
+  let box = document.getElementById('sugbox');
+  if (!box || SUG?.el !== el) {
+    box?.remove();
+    box = document.createElement('div');
+    box.id = 'sugbox';
+    box.className = 'sugbox';
+    box.setAttribute('role', 'listbox');
+    box.setAttribute('aria-label', '최근·자주 쓴 값');
+    // 항목명처럼 점수 칸과 한 줄에 있으면 그 줄 아래에 (closest는 가장 가까운 것을 고르므로 .row2를 먼저 찾는다)
+    (el.closest('.row2') || el.closest('.fld') || el.closest('.toolbar') || el).after(box);
+  }
+  SUG = { el, list };
+  const groups = [];
+  list.forEach((x, i) => {
+    if (!groups.length || groups.at(-1).g !== x.g) groups.push({ g: x.g, items: [] });
+    groups.at(-1).items.push(
+      `<button type="button" role="option" data-act="sug-pick" data-i="${i}">${esc(x.v)}${x.pts != null ? ` <b class="${x.pts > 0 ? 'p' : 'm'}">${sgn(x.pts)}</b>` : ''}</button>`,
+    );
+  });
+  box.innerHTML = groups.map((g) => `<div class="sug-g">${g.g ? `<span class="sug-l">${g.g}</span>` : ''}${g.items.join('')}</div>`).join('');
+}
+document.addEventListener('focusin', (ev) => {
+  if (ev.target.dataset?.suggest) showSug(ev.target);
+});
+document.addEventListener('focusout', (ev) => {
+  if (ev.target.dataset?.suggest && SUG?.el === ev.target) hideSug();
+});
+// 이미 포커스가 있는 칸을 다시 누르면 다시 띄운다 (값을 고른 뒤 닫힌 경우)
+document.addEventListener('click', (ev) => {
+  if (ev.target.dataset?.suggest && !document.getElementById('sugbox')) showSug(ev.target);
+});
+document.addEventListener('input', (ev) => {
+  if (ev.target.dataset?.suggest && ev.target.isConnected && document.activeElement === ev.target) showSug(ev.target);
+});
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape' && SUG) hideSug();
+});
+
 /* ---------- 동작 ---------- */
 
 const val = (id) => document.getElementById(id)?.value ?? '';
@@ -1306,6 +1363,24 @@ const A = {
     await run('roster_apply', { p_ops: ops, p_adjs: [], p_date: TODAY }, '명단을 저장했어요');
     return true;
   },
+  'sug-pick': (d) => {
+    const x = SUG?.list[Number(d.i)];
+    const el = SUG?.el;
+    if (!x || !el) return true;
+    // 한글 조합 중이면 blur로 조합을 먼저 끝낸다 (학생 고르기와 같은 이유)
+    el.blur();
+    el.value = x.v;
+    el.focus();
+    // 항목명을 고르면 그때 쓴 점수도 함께
+    if (x.pts != null && el.dataset.fk) {
+      UI[el.dataset.fk].points = x.pts;
+      const p = document.getElementById(el.dataset.fk + '-points');
+      if (p) p.value = x.pts;
+    }
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    hideSug();
+    return true;
+  },
   'pts-open': (d) => {
     const pop = document.getElementById(d.fk + '-ptspop');
     closePtsPops(pop);
@@ -1428,7 +1503,7 @@ document.addEventListener('click', async (ev) => {
 // 학생 추천·칩·명단 버튼은 손가락을 떼는 순간 바로 누른다.
 // 보통의 click은 입력칸이 포커스를 잃은 뒤에 오는데, 그때 한글 조합이 끝나면서 추천 목록이 다시 그려져
 // 누른 버튼이 사라지므로 두 번 눌러야 했다. 컴퓨터에서는 mousedown에서 포커스를 뺏지 않게 막는다.
-const TAP_NOW = '[data-act="pick"], [data-act="unpick"], [data-act="gtoggle"]';
+const TAP_NOW = '[data-act="pick"], [data-act="unpick"], [data-act="gtoggle"], [data-act="sug-pick"]';
 let tapStart = null;
 document.addEventListener('touchstart', (ev) => {
   const t = ev.touches[0];

@@ -106,6 +106,12 @@ details.card summary{cursor:pointer}
 .sugg button:first-child{border-top:0}
 .sugg button:hover{background:var(--sunk)}
 .chip.bad{background:var(--pen-soft);color:var(--pen)}
+.sugbox{display:flex;flex-direction:column;gap:6px;margin-top:-4px;padding:8px;border:1px solid var(--line);border-radius:10px;background:var(--sunk)}
+.sug-g{display:flex;flex-wrap:wrap;gap:6px;align-items:center;min-width:0}
+.sug-l{font-size:11px;font-weight:600;color:var(--muted);flex:0 0 auto}
+.sugbox button{border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:5px 11px;font-size:13px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sugbox button:active{background:var(--accent-soft)}
+.sugbox button b{font-family:var(--mono);font-weight:600}.sugbox b.p{color:var(--pen)}.sugbox b.m{color:var(--merit)}
 .btn{border:0;border-radius:10px;padding:10px 14px;font-weight:600;background:var(--accent);color:var(--accent-ink)}
 .btn.ghost{background:transparent;color:var(--accent);border:1px solid var(--line)}
 .btn.small{padding:6px 10px;font-size:13px;font-weight:500}
