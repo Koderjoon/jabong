@@ -169,11 +169,11 @@ function vBoard() {
   if (UI.sort === 'bal') list.sort((a, b) => b.b - a.b || a.s.no - b.s.no);
   const me = UI.role === 'student' ? myStudent() : null;
   return `<div><h1>자봉 현황</h1><p class="live"><span class="dot"></span>실시간 반영 · 마지막 변경 ${esc(S.updatedAt)}</p></div>
+  ${vInstall()}
   ${UI.role === 'student' && S.students.length ? vMyCard(me) : ''}
   <div class="toolbar"><input type="search" id="q" ${named ? '' : 'inputmode="numeric" '}placeholder="${named ? '번호·이름 검색' : '번호 검색'}" value="${esc(UI.q)}" data-bind="q" data-region="board-grid">
   <div class="seg"><button class="${UI.sort === 'no' ? 'on' : ''}" data-act="sort" data-v="no">번호순</button><button class="${UI.sort === 'bal' ? 'on' : ''}" data-act="sort" data-v="bal">자봉 많은 순</button></div></div>
-  <div class="grid${named ? ' named' : ''}" id="board-grid">${list.map(({ s, b }) => `<button class="tile${me && me.id === s.id ? ' me' : ''}" data-act="open" data-sid="${s.id}"><span class="no">${s.no}</span>${named ? `<span class="nm">${esc(s.name)}</span>` : ''}<span class="pt">자봉 ${b}</span></button>`).join('') || `<p class="empty">${S.students.length ? '찾는 학생이 없어요.' : '아직 명단이 없어요.'}</p>`}</div>
-  ${vInstall()}`;
+  <div class="grid${named ? ' named' : ''}" id="board-grid">${list.map(({ s, b }) => `<button class="tile${me && me.id === s.id ? ' me' : ''}" data-act="open" data-sid="${s.id}"><span class="no">${s.no}</span>${named ? `<span class="nm">${esc(s.name)}</span>` : ''}<span class="pt">자봉 ${b}</span></button>`).join('') || `<p class="empty">${S.students.length ? '찾는 학생이 없어요.' : '아직 명단이 없어요.'}</p>`}</div>`;
 }
 
 // 홈 화면에 앱으로 추가 (manifest.webmanifest). 안드로이드 크롬은 버튼, 아이폰은 Safari 공유 메뉴 안내.
@@ -186,8 +186,8 @@ window.addEventListener('beforeinstallprompt', (e) => {
 const standalone = () => window.matchMedia?.('(display-mode: standalone)').matches || navigator.standalone === true;
 function vInstall() {
   if (standalone()) return '';
-  if (installEvt) return '<button class="btn ghost small" data-act="install" style="align-self:center">홈 화면에 앱으로 추가</button>';
-  if (/iPhone|iPad|iPod/.test(navigator.userAgent)) return '<p class="hint" style="text-align:center">Safari 아래쪽 공유 버튼 → "홈 화면에 추가"를 누르면 앱처럼 쓸 수 있어요.</p>';
+  if (installEvt) return '<button class="btn ghost small" data-act="install" style="align-self:flex-start">홈 화면에 앱으로 추가</button>';
+  if (/iPhone|iPad|iPod/.test(navigator.userAgent)) return '<p class="hint" style="margin:0">Safari 아래쪽 공유 버튼 → "홈 화면에 추가"를 누르면 앱처럼 쓸 수 있어요.</p>';
   return '';
 }
 

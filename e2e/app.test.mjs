@@ -1265,6 +1265,7 @@ test('홈 화면 앱: manifest·아이콘, 안드로이드 설치 버튼, 아이
     window.dispatchEvent(e);
   });
   await P.page.waitForSelector('[data-act="install"]');
+  assert.ok(await P.page.$eval('[data-act="install"]', (b) => b.getBoundingClientRect().top < document.querySelector('#board-grid').getBoundingClientRect().top), '현황판 위쪽에');
   await P.fits('설치 버튼');
   await P.click('[data-act="install"]');
   assert.equal(await P.page.evaluate(() => window.__prompted), true);
