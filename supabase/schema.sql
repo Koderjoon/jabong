@@ -424,10 +424,18 @@ end $$;
 
 -- 작업을 시작한다. 이후 이 트랜잭션에서 바뀐 행은 모두 이 작업에 기록된다.
 -- 되돌릴 수 없는 작업(정리·되살리기)은 행 변경을 기록하지 않는다.
+-- 데이터를 바꾸는 함수는 모두 맨 처음에 이 잠금을 잡는다. 동시에 들어온 작업이 한 줄로 서서
+-- (교시 삭제와 출석 저장이 겹치거나, 작업 내역 이동 중에 다른 작업이 끼어드는 일이 없게) 차례로 처리된다.
+-- 행 잠금보다 먼저 잡아야 서로 기다리다 멈추는 일(교착)이 없다.
+create or replace function _wlock() returns void language sql security definer set search_path = public as $$
+  select pg_advisory_xact_lock(7243)
+$$;
+
 create or replace function _op(p_actor text, p_kind text, p_summary text, p_undoable boolean default true) returns bigint
 language plpgsql security definer set search_path = public as $$
 declare nid bigint;
 begin
+  perform _wlock();
   -- 뒤로 간 상태에서 새 작업을 하면, 앞으로 갈 수 있던 작업들은 버린다
   delete from ops where undone;
   insert into ops (actor, kind, summary, undoable) values (p_actor, p_kind, p_summary, p_undoable) returning id into nid;
@@ -511,6 +519,7 @@ create or replace function create_excuse(p_student uuid, p_ledger uuid, p_reason
 language plpgsql security definer set search_path = public as $$
 declare nid uuid;
 begin
+  perform _wlock();
   -- 출석 체크로 생긴 것뿐 아니라 직접 기록하거나 요청으로 들어온 지각·결석도 공결 신청할 수 있다
   if not exists (select 1 from ledger where id = p_ledger and student_id = p_student and voided_at is null
       and item in ('지각', '결석') and src in ('att', 'manual', 'request')) then
@@ -597,6 +606,8 @@ create or replace function create_request(p_token uuid, p_date date, p_sids uuid
 returns uuid language plpgsql security definer set search_path = public as $$
 declare who text := _session(p_token, false); nid uuid;
 begin
+  perform _wlock();
+  if p_date is null then raise exception '날짜를 입력하세요'; end if;
   perform _check_items(p_item, p_points);
   if coalesce(array_length(p_sids, 1), 0) = 0 then raise exception '학생을 골라 주세요'; end if;
   perform _op(who, 'create_request', format('요청: %s %s · %s번', trim(p_item), _pt(p_points), _nums(p_sids)));
@@ -647,6 +658,7 @@ create or replace function ensure_period(p_token uuid, p_date date, p_label text
 language plpgsql security definer set search_path = public as $$
 declare who text := _session_attend(p_token); pid uuid;
 begin
+  perform _wlock();
   if coalesce(trim(p_label), '') = '' then raise exception '교시 이름을 입력하세요'; end if;
   select id into pid from periods where date = p_date and label = trim(p_label);
   if pid is null then
@@ -666,6 +678,7 @@ create or replace function delete_period(p_token uuid, p_id uuid) returns int
 language plpgsql security definer set search_path = public as $$
 declare who text := _session_attend(p_token); per periods; admin boolean; l record; n int := 0;
 begin
+  perform _wlock();
   select * into per from periods where id = p_id for update;
   if not found then raise exception '교시를 찾을 수 없어요'; end if;
   admin := exists (select 1 from accounts where role = who and is_admin);
@@ -729,6 +742,7 @@ create or replace function save_attendance(p_token uuid, p_period uuid, p_status
 language plpgsql security definer set search_path = public as $$
 declare who text := _session(p_token, true);
 begin
+  perform _wlock();
   perform _op(who, 'save_attendance', format('출석 저장: %s (%s)', _per(p_period), _attn(p_statuses)));
   return _apply_attendance(p_period, p_statuses, who, null);
 end $$;
@@ -738,6 +752,7 @@ create or replace function request_attendance(p_token uuid, p_period uuid, p_sta
 language plpgsql security definer set search_path = public as $$
 declare who text := _session_attend(p_token); rid uuid;
 begin
+  perform _wlock();
   if not exists (select 1 from periods where id = p_period) then raise exception '교시를 찾을 수 없어요'; end if;
   perform _op(who, 'request_attendance', format('출석 요청: %s (%s)', _per(p_period), _attn(p_statuses)));
   select id into rid from attendance_requests where period_id = p_period and requested_by = who and status = 'pending';
@@ -753,6 +768,7 @@ create or replace function review_attendance(p_token uuid, p_id uuid, p_approve 
 language plpgsql security definer set search_path = public as $$
 declare who text := _session(p_token, true); r attendance_requests; n int := 0;
 begin
+  perform _wlock();
   select * into r from attendance_requests where id = p_id for update;
   if not found or r.status <> 'pending' then raise exception '이미 처리된 요청이에요'; end if;
   -- 요청 뒤에 그 교시가 저장·공결 처리됐으면, 옛 내용으로 덮어쓰지 않게 승인하지 않는다
@@ -774,6 +790,8 @@ create or replace function add_entries(p_token uuid, p_date date, p_sids uuid[],
 language plpgsql security definer set search_path = public as $$
 declare who text := _session(p_token, true); sid uuid; n int := 0; m int := 0;
 begin
+  perform _wlock();
+  if p_date is null then raise exception '날짜를 입력하세요'; end if;
   perform _check_items(p_item, p_points);
   perform _op(who, 'add_entries', format('기록: %s %s%s · %s번', trim(p_item), _pt(p_points),
     case when coalesce(trim(p_detail), '') <> '' then ' (' || trim(p_detail) || ')' else '' end, _nums(p_sids)));
@@ -790,7 +808,9 @@ create or replace function edit_entry(p_token uuid, p_id uuid, p_date date, p_it
 language plpgsql security definer set search_path = public as $$
 declare who text := _session(p_token, true); e ledger; b jsonb := '{}'; a jsonb := '{}';
 begin
+  perform _wlock();
   if coalesce(trim(p_reason), '') = '' then raise exception '수정 사유를 입력하세요'; end if;
+  if p_date is null then raise exception '날짜를 입력하세요'; end if;
   perform _check_items(p_item, p_points);
   select * into e from ledger where id = p_id;
   if not found then raise exception '기록을 찾을 수 없어요'; end if;
@@ -808,6 +828,7 @@ create or replace function void_entry(p_token uuid, p_id uuid, p_reason text) re
 language plpgsql security definer set search_path = public as $$
 declare who text := _session(p_token, true);
 begin
+  perform _wlock();
   if coalesce(trim(p_reason), '') = '' then raise exception '무효 처리 사유를 입력하세요'; end if;
   if not exists (select 1 from ledger where id = p_id and voided_at is null) then raise exception '이미 무효 처리된 기록이에요'; end if;
   perform _op(who, 'void_entry', (select format('무효 처리: %s번 %s %s (%s)', s.no, l.item, _pt(l.points), trim(p_reason))
@@ -819,6 +840,7 @@ create or replace function review_request(p_token uuid, p_id uuid, p_approve boo
 language plpgsql security definer set search_path = public as $$
 declare who text := _session(p_token, true); r requests; sid uuid; n int := 0;
 begin
+  perform _wlock();
   select * into r from requests where id = p_id for update;
   if not found or r.status <> 'pending' then raise exception '이미 처리된 요청이에요'; end if;
   perform _op(who, 'review_request', format('요청 %s: %s의 %s %s · %s번', case when p_approve then '승인' else '반려' end, r.requested_by, r.item, _pt(r.points), _nums(r.student_ids)));
@@ -840,6 +862,7 @@ create or replace function review_excuse(p_token uuid, p_id uuid, p_approve bool
 language plpgsql security definer set search_path = public as $$
 declare who text := _session(p_token, true); x excuses; e ledger;
 begin
+  perform _wlock();
   select * into x from excuses where id = p_id for update;
   if not found or x.status <> 'pending' then raise exception '이미 처리된 신청이에요'; end if;
   perform _op(who, 'review_excuse', format('공결 %s: %s번 %s', case when p_approve then '승인' else '반려' end,
@@ -868,6 +891,7 @@ create or replace function roster_apply(p_token uuid, p_ops jsonb, p_adjs jsonb,
 language plpgsql security definer set search_path = public as $$
 declare who text := _session(p_token, true); o jsonb; a jsonb; sid uuid; cur numeric; fresh boolean; n int := 0;
 begin
+  perform _wlock();
   perform _op(who, 'roster_apply', (select '명단: ' || coalesce(nullif(concat_ws(' · ',
       nullif(format('추가 %s', count(*) filter (where x ->> 'op' = 'add')), '추가 0'),
       nullif(format('번호 변경 %s', count(*) filter (where x ->> 'op' = 'renum')), '번호 변경 0'),
@@ -916,6 +940,7 @@ create or replace function my_presets_save(p_token uuid, p_list jsonb) returns v
 language plpgsql security definer set search_path = public as $$
 declare who text := _session(p_token, false); p jsonb; i int := 0;
 begin
+  perform _wlock();
   perform _op(who, 'my_presets_save', format('자주 쓰는 항목 저장 (%s개)', jsonb_array_length(coalesce(p_list, '[]'))));
   delete from presets where owner = who and kind = 'item';
   for p in select * from jsonb_array_elements(coalesce(p_list, '[]')) loop
@@ -933,6 +958,7 @@ create or replace function my_periods_save(p_token uuid, p_list jsonb) returns v
 language plpgsql security definer set search_path = public as $$
 declare who text := _session(p_token, false); p jsonb; i int := 0;
 begin
+  perform _wlock();
   if jsonb_typeof(coalesce(p_list, '[]')) <> 'array' then raise exception '교시 목록이 올바르지 않아요'; end if;
   perform _op(who, 'my_periods_save', format('자주 쓰는 교시 저장 (%s개)', jsonb_array_length(coalesce(p_list, '[]'))));
   delete from presets where owner = who and kind = 'period';
@@ -978,6 +1004,7 @@ create or replace function _apply_op(p_op bigint, p_back boolean, p_scratch bigi
 language plpgsql security definer set search_path = public as $$
 declare c op_changes; cur jsonb; want jsonb; cols text; kc text; kw text; mark bigint; bad boolean := false; o ops; act char(1);
 begin
+  perform _wlock();
   select * into o from ops where id = p_op;
   select coalesce(max(id), 0) into mark from op_changes;
   begin
@@ -1057,6 +1084,7 @@ declare
   who text := _session(p_token, true); x bigint; scratch bigint; back_ids bigint[]; fwd_ids bigint[];
   before jsonb; result json; nledger int;
 begin
+  perform _wlock();
   select coalesce(array_agg(id order by id desc), '{}') into back_ids from ops where id > p_target and not undone and kind <> 'scratch';
   select coalesce(array_agg(id order by id), '{}') into fwd_ids from ops where id <= p_target and undone;
   if not exists (select 1 from ops where (id = any (back_ids) or id = any (fwd_ids)) and not dropped) then raise exception '이미 그 시점이에요'; end if;
@@ -1100,6 +1128,7 @@ language plpgsql security definer set search_path = public as $$
 declare
   who text := _session(p_token, true); o ops; scratch bigint; before jsonb; result json; nledger int;
 begin
+  perform _wlock();
   select * into o from ops where id = p_op and kind <> 'scratch';
   if not found then raise exception '작업을 찾을 수 없어요'; end if;
   if not o.undoable then raise exception '보관 후 정리나 백업에서 되살리기는 되돌릴 수 없어요'; end if;
@@ -1169,6 +1198,7 @@ create or replace function restore_backup(p_token uuid, p_data jsonb) returns js
 language plpgsql security definer set search_path = public as $$
 declare who text := _session(p_token, true); t jsonb := p_data -> 'tables';
 begin
+  perform _wlock();
   if p_data ->> 'format' is distinct from 'jabong-backup' or t is null then raise exception '자봉 장부 백업 파일이 아니에요'; end if;
   -- 되살리면 그 전 작업 로그는 지금 데이터와 맞지 않으니 비운다. 되살리기 자체는 되돌릴 수 없다.
   delete from ops where true;
@@ -1201,6 +1231,7 @@ create or replace function purge(p_token uuid, p_cut date) returns json
 language plpgsql security definer set search_path = public as $$
 declare who text := _session(p_token, true); old_n int; carry_n int := 0; r record;
 begin
+  perform _wlock();
   if exists (select 1 from excuses x join ledger l on l.id = x.ledger_id where x.status = 'pending' and l.date <= p_cut)
      or exists (select 1 from attendance_requests a join periods p on p.id = a.period_id where a.status = 'pending' and p.date <= p_cut) then
     raise exception '정리할 기간에 아직 처리하지 않은 공결 신청이나 출석 요청이 있어요. 요청함에서 먼저 처리하세요';

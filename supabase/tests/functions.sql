@@ -701,4 +701,19 @@ select pg_temp.ok(pg_temp.bal(:'d1') = :b1 and pg_temp.bal(:'d2') = :b2 and (sel
   and (select count(*) from ledger where period_id = :'dp2' and voided_at is null) = 2, '교시 삭제 되돌리기');
 \echo 16. 교시 삭제 통과
 
+-- ───────── 17. 2차 검토 ─────────
+set role anon;
+select pg_temp.expect_msg(format('select add_entries(%L, null, array[%L]::uuid[], %L, %L, 1)', :'t', :'d1', 'x', ''), '날짜를 입력하세요', '날짜 없는 기록');
+select pg_temp.expect_msg(format('select create_request(%L, null, array[%L]::uuid[], %L, %L, 1, %L, null)', :'ct', :'d1', 'x', '', ''), '날짜를 입력하세요', '날짜 없는 요청');
+set role postgres;
+select id as le from ledger where voided_at is null limit 1 \gset
+set role anon;
+select pg_temp.expect_msg(format('select edit_entry(%L, %L, null, %L, %L, 1, %L)', :'t', :'le', 'x', '', '사유'), '날짜를 입력하세요', '날짜를 지운 수정');
+set role postgres;
+-- 데이터를 바꾸는 함수는 모두 맨 처음에 쓰기 잠금을 잡는다 (동시에 들어온 작업이 한 줄로)
+select pg_temp.ok(not exists (
+  select 1 from pg_proc p where p.pronamespace = 'public'::regnamespace and p.prolang = (select oid from pg_language where lanname = 'plpgsql')
+    and p.prosrc like '%perform _op(%' and p.prosrc not like '%perform _wlock();%'), '작업을 남기는 함수는 모두 쓰기 잠금');
+\echo 17. 2차 검토 통과
+
 \echo 모든 서버 함수 테스트 통과

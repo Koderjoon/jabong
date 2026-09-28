@@ -656,6 +656,13 @@ test('출석: 교시 추가 칸의 불러오기 — 자주 쓰는 교시 추가(
   await A.click(`${pop} [data-act="pr-add"]`);
   await A.page.fill('#np-prname', '3교시 치과재료학');
   assert.equal(await A.toast(`${pop} [data-act="pr-save"]`), '이미 있는 교시예요');
+  // 서버가 거절해도(40자 넘음) 적던 이름은 다시 그려도 남는다
+  await A.page.fill('#np-prname', '가'.repeat(41));
+  assert.equal(await A.toast(`${pop} [data-act="pr-save"]`), '교시 이름은 40자까지예요');
+  await A.page.click(pop, { position: { x: 5, y: 5 } });
+  await A.page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await A.page.waitForTimeout(500);
+  assert.equal(await A.page.inputValue('#np-prname'), '가'.repeat(41));
   await A.click(`${pop} [data-act="pr-cancel"]`);
   assert.equal(await A.page.$('#np-prname'), null);
   await A.click(`${pop} [data-act="pr-add"]`);
@@ -861,7 +868,7 @@ test('총대: 출석 탭(아침 출석 없음), 교시 추가, 출석 요청·�
   assert.equal(await C.toast('[data-act="add-period"]'), '교시를 추가했어요');
   await C.click('[data-act="per-del"]');
   assert.match(await C.text('.att-confirm'), /3교시 잘못 만듦을\(를\) 지울까요/);
-  assert.equal(await C.toast('[data-act="per-del-yes"]'), '3교시 잘못 만듦 교시를 지웠어요');
+  assert.equal(await C.toast('[data-act="per-del-yes"]'), '교시를 지웠어요: 3교시 잘못 만듦');
   assert.deepEqual(await C.page.$$eval('[data-act="pick-period"]', (b) => b.map((x) => x.textContent)), ['1교시 구강해부학']);
   await C.page.fill('#newPeriod', '2교시 생리학');
   assert.equal(await C.toast('[data-act="add-period"]'), '교시를 추가했어요');
@@ -1502,6 +1509,20 @@ test('교시 삭제(부총대): 확인 뒤 지우면 출결은 사라지고 그 
   await C.click('[data-act="pick-period"]:has-text("7교시 삭제용")');
   assert.equal(await C.page.$('[data-act="per-del"]'), null);
   await C.page.fill('#attDate', TODAY);
+  // 처리하지 않은 출석 요청이 있으면 버튼 대신 안내 (서버도 거절한다). 고치던 출결은 그대로
+  const pdel = (await one(`select id from periods where label = '7교시 삭제용'`)).id;
+  await db.query(`select request_attendance($1, $2, '{}')`, [await C.token(), pdel]);
+  await A.reload();
+  await A.tab('attend');
+  await A.page.fill('#attDate', '2026-01-07');
+  await A.click('[data-act="pick-period"]:has-text("7교시 삭제용")');
+  assert.match(await A.text('.per-del'), /처리하지 않은 출석 요청·공결 신청이 있어서/);
+  assert.equal(await A.page.$('[data-act="per-del"]'), null);
+  await db.query(`select review_attendance($1, (select id from attendance_requests where period_id = $2), false, '확인')`, [await A.token(), pdel]);
+  await A.reload();
+  await A.tab('attend');
+  await A.page.fill('#attDate', '2026-01-07');
+  await A.click('[data-act="pick-period"]:has-text("7교시 삭제용")');
   // 확인창: 그만두기 → 닫힘, 다른 버튼을 눌러도 닫힘
   await A.click('[data-act="per-del"]');
   assert.match(await A.text('.att-confirm'), /7교시 삭제용을\(를\) 지울까요\? .*자봉 1건은 "교시 삭제"로 무효 처리돼요/);
@@ -1512,7 +1533,7 @@ test('교시 삭제(부총대): 확인 뒤 지우면 출결은 사라지고 그 
   await A.click('[data-act="attview"][data-v="list"]');
   assert.equal(await A.page.$('[data-act="per-del-yes"]'), null, '다른 버튼을 누르면 확인창이 닫힌다');
   await A.click('[data-act="per-del"]');
-  assert.equal(await A.toast('[data-act="per-del-yes"]'), '7교시 삭제용 교시를 지웠어요 · 자봉 1건 무효 처리');
+  assert.equal(await A.toast('[data-act="per-del-yes"]'), '교시를 지웠어요: 7교시 삭제용 · 자봉 1건 무효 처리');
   assert.equal(await A.text('#toast button'), '되돌리기');
   assert.doesNotMatch(await A.text('.seg:has([data-act="pick-period"])'), /7교시 삭제용/);
   assert.deepEqual(await balances(), before, '점수는 저장 전으로');

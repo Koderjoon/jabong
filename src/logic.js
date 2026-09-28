@@ -68,13 +68,19 @@ const ATT_ORDER = { 지각: 0, 결석: 1 };
 //   하루: "😿 9/22 자봉, 상점 공지하겠습니다." / 여러 날: 머리말 + 날짜별 소제목
 //   출석으로 생긴 지각·결석은 교시마다 따로 "[교시]" 아래에, 나머지는 항목·점수별로 (세부내용이 있으면 번호를 매긴다).
 //   점수는 항상 적고, 합치지 않는다 (같은 날 두 교시 지각이면 두 교시에 각각 나온다).
+// 명단에서 제외된 학생의 번호는 지금 다른 학생이 쓰고 있을 수 있어서 "(제외)"를 붙인다
+const noLabel = (S, id) => {
+  const st = S.students.find((x) => x.id === id);
+  return st && !st.active ? `${st.no} (제외)` : noOf(S, id);
+};
+
 export function genNotice(S, from, to) {
   const es = S.ledger.filter((e) => live(e) && !['import', 'carry'].includes(e.src) && e.date >= from && e.date <= to);
   const dates = [...new Set(es.map((e) => e.date))].sort();
   if (!dates.length) return '해당 기간에 기록이 없어요.';
   const multi = dates.length > 1;
   const no = (id) => noOf(S, id);
-  const nums = (l) => l.map((e) => no(e.sid)).sort((a, b) => a - b);
+  const nums = (l) => [...l].sort((a, b) => no(a.sid) - no(b.sid)).map((e) => noLabel(S, e.sid));
   const out = [multi ? '😿자봉, 상점 공지하겠습니다.' : `😿 ${md(dates[0])} 자봉, 상점 공지하겠습니다.`];
   dates.forEach((d) => {
     const de = es.filter((e) => e.date === d);
@@ -142,8 +148,14 @@ export function planRoster(S, text, replace) {
     // 전각 숫자(１), 엑셀의 빼기 기호(−) 같은 것을 보통 글자로
     const line = raw.normalize('NFKC').replace(/[\u2212\u2012-\u2015]/g, '-');
     // 엑셀에서 복사하면 칸이 탭으로 나뉜다. 그때는 탭으로만 나눠야 "김 민서"처럼 띄어 쓴 이름이 그대로다
-    const cells = (line.includes('\t') ? line.split('\t') : line.split(/[,]+|\s+/)).map((c) => c.trim()).filter(Boolean);
+    const parts = (line.includes('\t') ? line.split('\t') : line.split(/[,]+|\s+/)).map((c) => c.trim());
+    const cells = parts.filter(Boolean);
     if (!cells.length) return;
+    // "현재 명단 복사"에서 이름 없는 학생은 "번호<탭><탭>자봉"으로 나온다 → 그 번호의 이름 없는 학생 그대로
+    if (line.includes('\t') && /^\d+$/.test(parts[0]) && parts[1] === '' && S.students.some((x) => x.active && !x.name && x.no === Number(parts[0]))) {
+      rows.push({ no: Number(parts[0]), name: '', score: null, nameless: true });
+      return;
+    }
     const NUM = /^[+-]?(\d+(\.\d+)?|\.\d+)$/;
     const ni = cells.findIndex((c) => /^\d+$/.test(c));
     const num = cells[ni];
@@ -167,13 +179,14 @@ export function planRoster(S, text, replace) {
     }
     rows.push({ no: Number(num), name, score: score == null ? null : Number(score) });
   });
-  const dupBy = (k) => rows.filter((r, i) => rows.findIndex((x) => x[k] === r[k]) !== i).map((r) => r[k]);
+  const dupBy = (k) => rows.filter((r, i) => r[k] !== '' && rows.findIndex((x) => x[k] === r[k]) !== i).map((r) => r[k]);
   [...new Set(dupBy('name'))].forEach((n) => errors.push(`같은 이름이 두 번 이상 있어요: ${n} (동명이인이면 "김민서A"처럼 구분해 주세요)`));
   [...new Set(dupBy('no'))].forEach((n) => errors.push(`${n}번이 두 번 이상 있어요`));
   const changes = [];
   const adjs = [];
   let same = 0;
   rows.forEach((r) => {
+    if (r.nameless) return void same++;
     const m = S.students.filter((x) => x.name === r.name);
     if (m.length > 1) {
       errors.push(`기존 명단에 같은 이름이 여러 명 있어요: ${r.name} (하나씩 고치기에서 이름을 구분해 주세요)`);
@@ -189,20 +202,22 @@ export function planRoster(S, text, replace) {
       if (cur !== r.score) adjs.push({ name: r.name, from: cur, to: r.score, delta: r.score - cur });
     }
   });
-  const named = new Set(rows.map((r) => r.name));
+  const named = new Set(rows.filter((r) => !r.nameless).map((r) => r.name));
+  const keptNo = new Set(rows.filter((r) => r.nameless).map((r) => r.no));
+  const kept = (x) => named.has(x.name) || (!x.name && keptNo.has(x.no));
   if (replace)
     active(S)
-      .filter((x) => !named.has(x.name))
+      .filter((x) => !kept(x))
       .forEach((x) => changes.push({ kind: 'remove', sid: x.id, name: x.name || '(이름 없음)', from: x.no }));
   // 적용 후 번호가 겹치는지 확인
   const touched = new Set(changes.map((c) => c.sid).filter(Boolean));
   const final = new Map();
   active(S)
-    .filter((x) => !touched.has(x.id) && !named.has(x.name))
+    .filter((x) => !touched.has(x.id) && !kept(x))
     .forEach((x) => final.set(x.no, x.name || '(이름 없음)'));
   changes
     .filter((c) => c.kind !== 'remove')
-    .concat(rows.filter((r) => S.students.some((x) => x.active && x.name === r.name && x.no === r.no)).map((r) => ({ no: r.no, name: r.name })))
+    .concat(rows.filter((r) => S.students.some((x) => x.active && x.name === r.name && x.no === r.no)).map((r) => ({ no: r.no, name: r.name || '(이름 없음)' })))
     .forEach((c) => {
       if (final.has(c.no) && final.get(c.no) !== c.name)
         errors.push(`${c.no}번이 두 명(${final.get(c.no)}, ${c.name})에게 겹쳐요${replace ? '' : ' (전체 명단이면 위 체크박스를 켜세요)'}`);
@@ -270,14 +285,14 @@ export function exportSheets(S, from, to) {
       const l = S.ledger.filter((x) => x.sid === st.id && live(x));
       const start = l.filter((x) => x.date < from).reduce((a, x) => a + Number(x.points), 0);
       const ch = l.filter((x) => x.date >= from && x.date <= to).reduce((a, x) => a + Number(x.points), 0);
-      return { no: st.active ? st.no : `${st.no} (제외)`, start, change: ch, end: start + ch };
+      return { no: st.active ? st.no : `${st.no} (제외)`, start, change: ch, end: start + ch, now: l.reduce((a, x) => a + Number(x.points), 0) };
     });
   const rows = S.ledger
     .filter((x) => x.date >= from && x.date <= to)
     .sort((a, b) => a.date.localeCompare(b.date) || no(a.sid) - no(b.sid))
     .map((x) => ({
       date: x.date,
-      no: no(x.sid),
+      no: noLabel(S, x.sid),
       item: x.item,
       detail: x.detail || '',
       points: Number(x.points),
@@ -394,7 +409,7 @@ export function suggestPeriods(S, date, typed) {
 }
 
 // 사유 칸들: 지난 사유에서. 출석 정정·공결 처리처럼 앱이 붙인 사유는 뺀다.
-const AUTO_VOID = /^(출석 정정|공결 처리|공결 승인)/;
+const AUTO_VOID = /^(출석 정정|공결 처리|공결 승인|교시 삭제)/;
 export function reasonEvents(S, kind, me) {
   if (kind === 'editReason') return S.ledger.flatMap((e) => (e.revs || []).map((r) => ({ v: r.reason, at: r.at })));
   if (kind === 'voidReason') return S.ledger.filter((e) => e.voided && !AUTO_VOID.test(e.voided.reason || '')).map((e) => ({ v: e.voided.reason, at: e.voided.at }));

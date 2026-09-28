@@ -69,3 +69,19 @@ test('같은 교시를 동시에 추가해도 오류 없이 하나만 생긴다'
   assert.equal(new Set(ids).size, 1);
   assert.equal((await db.query(`select count(*)::int as n from periods where label = '1교시'`)).rows[0].n, 1);
 });
+
+test('교시 삭제와 그 교시 출석 저장이 동시에 와도 영어 오류 없이 하나가 먼저, 다른 하나는 안내', async () => {
+  const t = (await rpc(`select login('부총대', '1234')::json ->> 'token' as t`)).t;
+  await rpc(`select roster_apply($1, '[{"op":"add","name":"가","no":1}]', '[]', '2026-05-01')`, [t]);
+  const s1 = (await db.query(`select id from students where name = '가'`)).rows[0].id;
+  for (let i = 0; i < 5; i++) {
+    const p = (await rpc(`select ensure_period($1, '2026-05-02', $2, false) as p`, [t, `${i + 1}교시`])).p;
+    const res = await Promise.allSettled([
+      rpc(`select save_attendance($1, $2, $3::jsonb)`, [t, p, JSON.stringify({ [s1]: 'late' })]),
+      rpc(`select delete_period($1, $2)`, [t, p]),
+    ]);
+    for (const r of res) if (r.status === 'rejected') assert.match(r.reason.message, /교시를 찾을 수 없어요/, r.reason.message);
+    assert.equal((await db.query(`select count(*)::int as n from periods where id = $1`, [p])).rows[0].n, 0, '교시는 지워진다');
+    assert.equal((await db.query(`select count(*)::int as n from ledger where period_id = $1`, [p])).rows[0].n, 0);
+  }
+});

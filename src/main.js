@@ -134,6 +134,11 @@ function resetDrafts() {
   UI.attPid = null;
   UI.photos = {};
   UI.prOpen = null;
+  UI.prAdding = null;
+  UI.newPeriod = '';
+  UI.perDel = null;
+  UI.attConfirm = false;
+  UI.prOpen = null;
   UI.rosterOpen = false;
   UI.pwOpen = false;
   UI.hist = { list: null, limit: 50, preview: null, loading: false };
@@ -461,6 +466,10 @@ function periodDelBar(pid) {
   const given = S.ledger.filter((e) => e.pid === pid && !e.voided).length;
   const others = (S.attRequests || []).some((a) => a.pid === pid && a.by !== UI.user);
   if (!isAdmin() && (S.att[pid] || S.ledger.some((e) => e.pid === pid) || others)) return '';
+  // 처리하지 않은 출석 요청·공결 신청이 있으면 서버가 거절하니 미리 알린다
+  const eids = new Set(S.ledger.filter((e) => e.pid === pid).map((e) => e.id));
+  if ((S.attRequests || []).some((a) => a.pid === pid && a.status === 'pending') || (S.excuses || []).some((x) => x.status === 'pending' && eids.has(x.eid)))
+    return '<div class="per-del"><span class="note">처리하지 않은 출석 요청·공결 신청이 있어서 지금은 이 교시를 지울 수 없어요. 요청함에서 먼저 처리하세요.</span></div>';
   if (UI.perDel !== pid) return `<div class="per-del"><button class="btn ghost small" data-act="per-del" data-id="${pid}">이 교시 삭제</button></div>`;
   return `<div class="att-confirm"><span>${esc(per.label)}을(를) 지울까요? 저장된 출결과 이 교시의 출석 요청이 함께 지워져요.${given ? ` 이 교시로 준 자봉 ${given}건은 "교시 삭제"로 무효 처리돼요.` : ''}</span>
   <div class="btns"><button class="btn danger small" data-act="per-del-yes" data-id="${pid}">네, 지우기</button><button class="btn ghost small" data-act="per-del-no">그만두기</button></div></div>`;
@@ -580,7 +589,8 @@ function vDone() {
   ${items.length > shown.length ? `<button class="btn ghost" data-act="done-more">더 보기 (${items.length - shown.length}건 남음)</button>` : ''}`;
 }
 
-const lastDate = () => [...new Set(S.ledger.filter((e) => !['import', 'carry'].includes(e.src)).map((e) => e.date))].sort().pop() || TODAY;
+// 무효 처리된 것만 있는 날은 공지할 것이 없으니 건너뛴다
+const lastDate = () => [...new Set(S.ledger.filter((e) => !e.voided && !['import', 'carry'].includes(e.src)).map((e) => e.date))].sort().pop() || TODAY;
 
 function vNotice() {
   // 날짜를 직접 고르지 않았으면 새 기록이 생긴 날로 따라간다 (탭을 켜 둔 채 하루가 지나도)
@@ -757,7 +767,7 @@ function vExempt() {
   const ex = active().filter((s) => s.exempt);
   const P = liveParts('exForm');
   return `<div class="card" id="exempt-card"><h2>자봉 면제</h2>
-  <p class="hint" style="margin:0">지정한 학생은 출석·자봉 탭·요청 승인으로 들어오는 <b>자봉(+)이 쌓이지 않고 상점(−)만</b> 받아요. 지정하기 전에 쌓인 자봉은 그대로라, 필요하면 기록 탭에서 무효 처리하세요.</p>
+  <p class="hint" style="margin:0">지정한 학생은 출석·자봉 탭·요청 승인으로 들어오는 <b>자봉(+)이 쌓이지 않고 상점(−)만</b> 받아요. 지정하기 전에 쌓인 자봉은 그대로라, 필요하면 자봉 탭에서 무효 처리하세요.</p>
   ${ex.length ? `<div class="chips">${ex.map((s) => `<button class="chip" data-act="stu-exempt" data-sid="${s.id}" aria-label="${s.no}번 면제 풀기">${s.no} ${esc(s.name)} ×</button>`).join('')}</div><p class="hint" style="margin:0">칩을 누르면 면제가 풀려요.</p>` : '<p class="note" style="margin:0">지정한 학생이 없어요.</p>'}
   <label class="fld"><span>면제로 지정할 학생</span><input id="exForm-find" type="search" value="${esc(UI.exForm.find)}" placeholder="이름이나 번호" autocomplete="off" enterkeyhint="done" data-bind="exForm.find" data-picker="exForm"></label>
   <div id="exForm-sugg">${P.sugg}</div><div class="chips" id="exForm-chips">${P.chips}</div>
@@ -1119,6 +1129,7 @@ async function submitEntry(fk) {
   const pts = Number(f.points);
   if (!sids.length || bad.length) return toast('학생을 골라 주세요');
   if (!f.item.trim()) return toast('항목명을 입력하세요');
+  if (!f.date) return toast('날짜를 입력하세요');
   if (!L.isHalfStep(pts) || pts === 0) return toast('점수는 0이 아닌 0.5점 단위로 적어 주세요');
   const common = { p_date: f.date, p_sids: sids, p_item: f.item.trim(), p_detail: f.detail.trim(), p_points: pts };
   if (fk === 'reqForm') {
@@ -1337,10 +1348,12 @@ const A = {
   'per-del-yes': async (d) => {
     const label = S.periods.find((p) => p.id === d.id)?.label || '';
     UI.perDel = null;
+    // 서버가 거절하면(대기 중인 요청 등) 고치던 출결을 그대로 두도록, 지워진 뒤에만 초안을 비운다
+    await run('delete_period', { p_id: d.id }, (n) => `교시를 지웠어요: ${label}${n ? ` · 자봉 ${n}건 무효 처리` : ''}`);
     delete UI.draft[d.id];
     delete UI.touched[d.id];
     UI.attPid = null;
-    await run('delete_period', { p_id: d.id }, (n) => `${label} 교시를 지웠어요${n ? ` · 자봉 ${n}건 무효 처리` : ''}`);
+    render();
   },
   'add-period': async () => {
     const l = UI.newPeriod.trim();
@@ -1395,6 +1408,7 @@ const A = {
   'edit-save': async (d) => {
     const pts = Number(val('ed-points'));
     if (!L.isHalfStep(pts) || pts === 0) return toast('점수는 0이 아닌 0.5점 단위로 적어 주세요');
+    if (!val('ed-date')) return toast('날짜를 입력하세요');
     const before = S.lastOp?.id ?? null;
     await rpc('edit_entry', { p_token: token(), p_id: d.id, p_date: val('ed-date'), p_item: val('ed-item'), p_detail: val('ed-detail'), p_points: pts, p_reason: val('ed-reason') });
     UI.editId = null;
@@ -1710,8 +1724,10 @@ const A = {
       if (!name) return toast('교시 이름을 적어 주세요');
       if (myPeriodPresets().some((p) => p.name === name)) return toast('이미 있는 교시예요');
       UI.prOpen = 'np';
-      UI.prAdding = null;
       await run('my_periods_save', { p_list: [...myPeriodPresets().map((p) => p.name), name] }, `자주 쓰는 교시에 넣었어요: ${name}`);
+      // 서버가 거절하면 적던 이름이 남도록 저장된 뒤에만 입력칸을 닫는다
+      UI.prAdding = null;
+      openPresetPop('np');
       return true;
     }
     const name = val(d.fk + '-prname').trim();
@@ -1721,8 +1737,9 @@ const A = {
     if (myPresets().some((p) => p.name === name && p.points === pts)) return toast('이미 있는 항목이에요');
     const list = [...myPresets().map((p) => ({ name: p.name, points: p.points })), { name, points: pts }];
     UI.prOpen = d.fk;
-    UI.prAdding = null;
     await run('my_presets_save', { p_list: list }, `자주 쓰는 항목에 넣었어요: ${name} ${sgn(pts)}`);
+    UI.prAdding = null;
+    openPresetPop(d.fk);
     return true;
   },
   'pr-del': async (d) => {

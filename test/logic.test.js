@@ -136,8 +136,11 @@ test('내보내기 시트: 기간 시작·변동·현재 자봉, 이름은 넣�
   S.add('2026-09-03', '결석', '1교시', 2, [1], { voided: { reason: '공결 승인' } });
   S.ledger[1].revs = [{ at: '2026-09-02 21:00', before: { points: 2 }, after: { points: 1 }, reason: '오기' }];
   const { summary, rows, revisions } = exportSheets(S, '2026-09-01', '2026-09-30');
-  assert.deepEqual(summary[0], { no: 1, start: 3, change: 1, end: 4 });
+  assert.deepEqual(summary[0], { no: 1, start: 3, change: 1, end: 4, now: 4 });
   assert.equal(summary[0].end, bal(S, 's1'));
+  // 기간 뒤의 기록은 "기간 끝"에는 없고 "지금"에는 있다
+  S.add('2026-10-02', '실습', '', 2, [1]);
+  assert.deepEqual(exportSheets(S, '2026-09-01', '2026-09-30').summary[0], { no: 1, start: 3, change: 1, end: 4, now: 6 });
   assert.deepEqual(rows.map((r) => [r.item, r.note]), [['지각', '수정됨'], ['결석', '무효 (공결 승인)']]);
   assert.deepEqual(revisions[0].change, '점수: +2 → +1');
   assert.ok(!JSON.stringify({ summary, rows, revisions }).includes('학생1'));
@@ -248,6 +251,7 @@ test('입력 추천 · 사유: 앱이 붙인 사유는 빼고, 요청 사유는 
   S.add('2026-09-02', 'x', '', 1, [2], { voided: { reason: '착오', at: '2026-09-02 10:00' } });
   S.add('2026-09-03', '결석', '', 2, [3], { src: 'att', voided: { reason: '출석 정정', at: '2026-09-03 10:00' } });
   S.add('2026-09-03', '결석', '', 2, [4], { src: 'att', voided: { reason: '공결 승인 (병원)', at: '2026-09-03 11:00' } });
+  S.add('2026-09-05', '지각', '3교시', 1, [6, 7, 8], { src: 'att', voided: { reason: '교시 삭제', at: '2026-09-05 10:00' } });
   S.add('2026-09-04', 'x', '', 1, [5], { revs: [{ reason: '오기', at: '2026-09-04 10:00' }, { reason: '점수 정정', at: '2026-09-04 11:00' }] });
   S.requests.push({ reason: '청소 안 함', by: '학습부장', at: '2026-09-01 10:00', note: '중복', reviewedAt: '2026-09-02 10:00' }, { reason: '남의 사유', by: '총무', at: '2026-09-01 10:00' });
   S.excuses.push({ note: '증빙 필요', at: '2026-09-01 10:00', reviewedAt: '2026-09-03 10:00' });
@@ -296,9 +300,31 @@ test('내보내기 요약: 제외된 학생도 기간에 기록이 있으면 요
   S.students[11].active = false;
   S.add('2026-09-22', '실습', '', 2, [12]);
   const { summary, rows } = exportSheets(S, '2026-09-01', '2026-09-30');
-  assert.ok(rows.some((r) => r.no === 12));
+  assert.ok(rows.some((r) => r.no === '12 (제외)'));
   const r = summary.find((x) => String(x.no).startsWith('12'));
-  assert.deepEqual(r, { no: '12 (제외)', start: 0, change: 2, end: 2 });
+  assert.deepEqual(r, { no: '12 (제외)', start: 0, change: 2, end: 2, now: 2 });
   assert.equal(summary.at(-1).no, '12 (제외)', '재학생 뒤에');
   assert.equal(summary.length, 70);
+});
+
+test('제외된 학생의 번호를 다른 학생이 쓰면 공지·날짜별 내역에 "(제외)"로 구분한다', () => {
+  const S = state();
+  S.students[2].active = false;
+  S.students.push({ id: 'n3', no: 3, name: '새학생', active: true });
+  S.add('2026-09-23', '청소', '', 1, [3, 5]);
+  S.ledger.push({ id: 'x1', at: '2026-09-23 09:00', date: '2026-09-23', sid: 'n3', item: '청소', detail: '', points: 1, src: 'manual', revs: [] });
+  assert.equal(genNotice(S, '2026-09-23', '2026-09-23'), '😿 9/23 자봉, 상점 공지하겠습니다.\n청소(+1): 3 (제외), 3, 5');
+  assert.deepEqual(exportSheets(S, '2026-09-01', '2026-09-30').rows.map((r) => r.no), ['3 (제외)', 3, 5]);
+});
+
+test('명단 붙여넣기: "현재 명단 복사"로 나온 이름 없는 학생 줄은 그대로 둔다', () => {
+  const S = state();
+  S.students[1].name = '';
+  const text = '번호\t이름\t자봉\n' + S.students.map((x) => `${x.no}\t${x.name}\t0`).join('\n');
+  const p = planRoster(S, text, true);
+  assert.deepEqual(p.errors, []);
+  assert.deepEqual(p.changes, [], '이름 없는 학생도 제외되지 않는다');
+  assert.equal(p.same, 70);
+  // 그 번호에 이름 없는 학생이 없으면 전처럼 알린다
+  assert.match(planRoster(S, '5\t\t0', false).errors[0], /번호와 이름이 모두 있어야 해요/);
 });

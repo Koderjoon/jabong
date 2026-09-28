@@ -9,8 +9,8 @@ export async function downloadExport(S, from, to, fileName) {
   const sheets = [
     {
       sheet: '요약',
-      data: [head(['번호', '기간 시작 자봉', '기간 중 변동', '현재 자봉']), ...summary.map((r) => [r.no, r.start, r.change, r.end])],
-      columns: [{ width: 8 }, { width: 14 }, { width: 12 }, { width: 10 }],
+      data: [head(['번호', '기간 시작 자봉', '기간 중 변동', '기간 끝 자봉', '지금 자봉']), ...summary.map((r) => [r.no, r.start, r.change, r.end, r.now])],
+      columns: [{ width: 8 }, { width: 14 }, { width: 12 }, { width: 12 }, { width: 10 }],
     },
     {
       sheet: '날짜별 내역',
