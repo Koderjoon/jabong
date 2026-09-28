@@ -223,7 +223,7 @@ test('부총대 로그인: 틀린 비밀번호, Enter로 로그인, 탭 목록',
   await A.page.fill('#login-pw', '1234');
   await A.page.press('#login-pw', 'Enter');
   await A.page.waitForSelector('#tabs button');
-  assert.deepEqual(await A.tabs(), ['출석', '기록', '요청함', '공지', '작업 내역', '관리', '현황판']);
+  assert.deepEqual(await A.tabs(), ['출석', '자봉', '요청함', '공지', '작업 내역', '관리', '현황판']);
   assert.match(await A.text('#subbar'), /부총대로 로그인됨/);
   await A.fits('부총대 출석(빈 명단)');
   assert.match(await A.text(), /관리 탭에서 명단을 먼저 넣어 주세요/);
@@ -320,10 +320,19 @@ test('현황판(부총대): 이름 표시, 정렬, 이름·번호 검색', async
 });
 
 // ───────── 기록 ─────────
-test('기록: 입력 검사 안내', async () => {
+test('자봉 탭: 학생 칸이 맨 위, 입력 검사 안내는 화면 순서대로', async () => {
   await A.tab('record');
-  await A.fits('기록 탭');
+  await A.fits('자봉 탭');
+  assert.match(await A.text('h1'), /자봉·상점 주기/);
+  const top = async (sel) => (await A.page.$eval(sel, (el) => el.getBoundingClientRect().top));
+  assert.ok((await top('#recForm-find')) < (await top('#recForm-item')), '학생 칸이 항목명보다 위');
+  assert.ok((await top('#recForm-item')) < (await top('#recForm-points')));
   assert.equal(await A.page.inputValue('#recForm-date'), TODAY);
+  await A.page.fill('#recForm-find', '없는사람');
+  assert.equal(await A.toast('[data-act="rec-add"]'), '학생 칸의 "없는사람"을(를) 목록에서 골라 주세요');
+  await A.page.fill('#recForm-find', '');
+  assert.equal(await A.toast('[data-act="rec-add"]'), '학생을 골라 주세요');
+  await A.page.type('#recForm-find', '1 ');
   assert.equal(await A.toast('[data-act="rec-add"]'), '항목명을 입력하세요');
   await A.page.fill('#recForm-item', '실습');
   await A.page.fill('#recForm-points', '0.3');
@@ -331,10 +340,8 @@ test('기록: 입력 검사 안내', async () => {
   await A.page.fill('#recForm-points', '0');
   assert.equal(await A.toast('[data-act="rec-add"]'), '점수는 0이 아닌 0.5점 단위로 적어 주세요');
   await A.page.fill('#recForm-points', '1');
-  assert.equal(await A.toast('[data-act="rec-add"]'), '학생을 골라 주세요');
-  await A.page.fill('#recForm-find', '없는사람');
-  assert.equal(await A.toast('[data-act="rec-add"]'), '학생 칸의 "없는사람"을(를) 목록에서 골라 주세요');
-  await A.page.fill('#recForm-find', '');
+  await A.page.fill('#recForm-item', '');
+  await A.click('#recForm-chips [data-act="unpick"]');
 });
 
 test('기록: 항목 불러오기, 점수 숫자판, 학생 고르기(추천·번호·Enter·전체 명단·빼기), 저장', async () => {
@@ -381,7 +388,7 @@ test('기록: 항목 불러오기, 점수 숫자판, 학생 고르기(추천·�
   await A.click('#recForm-chips [data-act="unpick"]:has-text("2 이도윤")');
   assert.deepEqual(await chips(), ['1 김민서', '3 박하준']);
   await A.page.fill('#recForm-detail', '전원 안끔');
-  assert.equal(await A.toast('[data-act="rec-add"]'), '2명에게 기록했어요');
+  assert.equal(await A.toast('[data-act="rec-add"]'), '2명에게 자봉 2점을 부과했어요');
   assert.equal(await A.page.inputValue('#recForm-item'), '');
   assert.deepEqual(await chips(), []);
   assert.equal(await A.page.inputValue('#recForm-date'), TODAY);
@@ -395,7 +402,7 @@ test('기록: 항목 불러오기, 점수 숫자판, 학생 고르기(추천·�
   await A.page.fill('#recForm-item', '소치 실습');
   await A.page.fill('#recForm-points', '1.5');
   await A.page.type('#recForm-find', '4 ');
-  assert.equal(await A.toast('[data-act="rec-add"]'), '1명에게 기록했어요');
+  assert.equal(await A.toast('[data-act="rec-add"]'), '1명에게 자봉 1.5점을 부과했어요');
   assert.equal((await balances())['최서연'], 2);
   await A.fits('기록 입력 후');
 });
@@ -433,7 +440,7 @@ test('되돌리기 버튼: 부총대가 한 작업 바로 뒤 안내에서 누�
   await A.page.fill('#recForm-item', '되돌리기 연습');
   await A.page.fill('#recForm-points', '3');
   await A.page.type('#recForm-find', '8 ');
-  assert.equal(await A.toast('[data-act="rec-add"]'), '1명에게 기록했어요');
+  assert.equal(await A.toast('[data-act="rec-add"]'), '1명에게 자봉 3점을 부과했어요');
   assert.equal(await A.text('#toast button'), '되돌리기');
   assert.equal((await balances())['정우진'], before['정우진'] + 3);
   await A.fits('되돌리기 안내');
@@ -491,7 +498,7 @@ test('출석(부총대): 아침 출석 체크·저장, 정정, 전원 출석 확
   assert.match(foot, /지각 1 · 결석 1 · 공결 1/);
   assert.match(foot, /아직 저장 안 됨/);
   await A.fits('출석 체크');
-  assert.equal(await A.toast('[data-act="att-save"]'), '저장했어요 · 새 기록 2건');
+  assert.equal(await A.toast('[data-act="att-save"]'), '저장했어요 · 새 자봉 2건');
   assert.deepEqual(await seg(), ['아침 출석 ·저장됨']);
   assert.match(await A.text('.att-foot'), /저장됨/);
   // 박하준은 기록 탭의 +2(실습 준비 미흡)에 결석 +2
@@ -516,9 +523,9 @@ test('출석(부총대): 아침 출석 체크·저장, 정정, 전원 출석 확
   assert.equal(await A.toast('[data-act="att-clear-yes"]'), '전원 출석으로 되돌렸어요 · 저장해야 반영돼요');
   assert.match(await A.text('.att-foot'), /지각 0 · 결석 0 · 공결 0/);
   await set('박하준', 'absent');
-  assert.equal(await A.toast('[data-act="att-save"]'), '저장했어요 · 새 기록 0건');
+  assert.equal(await A.toast('[data-act="att-save"]'), '저장했어요 · 새 자봉 0건');
   assert.equal((await one(`select void_reason from ledger l join students s on s.id = l.student_id where s.name = '이도윤' and l.item = '지각'`)).void_reason, '출석 정정');
-  assert.equal((await balances())['박하준'], 4, '결석은 그대로라 새 기록 없음');
+  assert.equal((await balances())['박하준'], 4, '결석은 그대로라 새 자봉 없음');
   // 한눈에 보기: 누를 때마다 출석 → 지각 → 결석 → 공결 → 출석
   await A.click('[data-act="attview"][data-v="grid"]');
   const tile = `.att [data-act="cyc"][data-sid="${await sid('정우진')}"]`;
@@ -624,6 +631,55 @@ test('입력 추천(부총대): 항목명은 점수와 함께, 세부내용은 �
   await A.page.fill('#attDate', TODAY);
   await A.page.click('#newPeriod');
   assert.equal(await A.page.$('#sugbox'), null, '오늘은 이미 있는 교시라 추천할 것이 없다');
+  await A.page.click('h1');
+});
+
+test('출석: 교시 추가 칸의 불러오기 — 자주 쓰는 교시 추가(검사·Enter·중복·취소), 고르기, 빼기, 항목과 따로', async () => {
+  await A.tab('attend');
+  const pop = '#np-prpop';
+  await A.page.fill('#newPeriod', '적던 교시');
+  await A.click('[data-act="pr-open"][data-fk="np"]');
+  assert.equal(await A.page.$('#sugbox'), null, '불러오기를 열면 최근 추천은 닫힌다');
+  assert.match(await A.text(pop), /아직 없어요/);
+  await A.click(`${pop} [data-act="pr-add"]`);
+  assert.equal(await A.page.evaluate(() => document.activeElement.id), 'np-prname', '추가를 누르면 교시 이름 칸으로 바로');
+  assert.equal(await A.page.$('#np-prpts'), null, '교시에는 점수 칸이 없다');
+  await A.fits('교시 불러오기 새 교시 입력');
+  assert.equal(await A.toast(`${pop} [data-act="pr-save"]`), '교시 이름을 적어 주세요');
+  await A.page.fill('#np-prname', ' 3교시 치과재료학 ');
+  await A.page.evaluate(() => (document.getElementById('toast').hidden = true));
+  await A.page.press('#np-prname', 'Enter');
+  await A.page.waitForFunction(() => document.querySelector('#toast > span')?.textContent.startsWith('자주 쓰는 교시에 넣었어요'));
+  assert.equal(await A.text('#toast > span'), '자주 쓰는 교시에 넣었어요: 3교시 치과재료학');
+  assert.ok(await A.page.isVisible(pop), '넣은 뒤에도 창이 열려 있다');
+  assert.equal(await A.page.inputValue('#newPeriod'), '적던 교시', '적던 교시 이름은 그대로');
+  await A.click(`${pop} [data-act="pr-add"]`);
+  await A.page.fill('#np-prname', '3교시 치과재료학');
+  assert.equal(await A.toast(`${pop} [data-act="pr-save"]`), '이미 있는 교시예요');
+  await A.click(`${pop} [data-act="pr-cancel"]`);
+  assert.equal(await A.page.$('#np-prname'), null);
+  await A.click(`${pop} [data-act="pr-add"]`);
+  await A.page.fill('#np-prname', '임시 교시');
+  await A.toast(`${pop} [data-act="pr-save"]`);
+  assert.deepEqual(await A.page.$$eval(`${pop} .pr-use`, (b) => b.map((x) => x.textContent)), ['3교시 치과재료학', '임시 교시']);
+  assert.equal(await A.toast(`${pop} .pr-row:has-text("임시 교시") [data-act="pr-del"]`), '자주 쓰는 교시에서 뺐어요: 임시 교시');
+  assert.deepEqual(await A.page.$$eval(`${pop} .pr-use`, (b) => b.map((x) => x.textContent)), ['3교시 치과재료학']);
+  await A.fits('교시 불러오기 창');
+  await A.click(`${pop} .pr-use:has-text("3교시 치과재료학")`);
+  assert.ok(await A.page.isHidden(pop), '고르면 닫힌다');
+  assert.equal(await A.page.inputValue('#newPeriod'), '3교시 치과재료학');
+  await A.click('[data-act="pr-open"][data-fk="np"]');
+  await A.page.click('h1');
+  assert.ok(await A.page.isHidden(pop), '바깥을 누르면 닫힌다');
+  await A.page.fill('#newPeriod', '');
+  const n = async (kind) => (await one(`select count(*)::int as n from presets where owner = '부총대' and kind = $1`, [kind])).n;
+  assert.equal(await n('period'), 1);
+  assert.equal(await n('item'), 6, '자주 쓰는 항목은 그대로');
+  // 항목명 불러오기에는 교시가 섞이지 않는다
+  await A.tab('record');
+  await A.click('[data-act="pr-open"][data-fk="recForm"]');
+  assert.equal((await A.page.$$('#recForm-prpop .pr-use')).length, 6);
+  assert.doesNotMatch(await A.text('#recForm-prpop'), /3교시/);
   await A.page.click('h1');
 });
 
@@ -735,7 +791,7 @@ test('총대단: 항목명 칸의 불러오기 — "추가"를 누르면 그 자
   await O.page.click('h1');
   assert.ok(await O.page.isHidden(pop), '바깥을 누르면 닫힌다');
   assert.equal((await one(`select count(*)::int as n from presets where owner = '학습부장'`)).n, 1);
-  assert.equal((await one(`select count(*)::int as n from presets where owner = '부총대'`)).n, 6, '다른 직책 항목은 그대로');
+  assert.equal((await one(`select count(*)::int as n from presets where owner = '부총대' and kind = 'item'`)).n, 6, '다른 직책 항목은 그대로');
   await O.page.fill('#reqForm-item', '');
   // 날짜는 왼쪽, 점수는 오른쪽
   const x = async (sel) => (await O.page.$eval(sel, (el) => el.getBoundingClientRect().left));
@@ -827,7 +883,7 @@ test('출석: 총대가 손대지 않은 교시는 부총대가 저장한 값을
   await A.tab('attend');
   await A.click('[data-act="pick-period"]:has-text("1교시 구강해부학")');
   await A.click(`[data-act="setst"][data-sid="${jw}"][data-v="late"]`);
-  assert.match(await A.toast('[data-act="att-save"]'), /저장했어요 · 새 기록 1건/);
+  assert.match(await A.toast('[data-act="att-save"]'), /저장했어요 · 새 자봉 1건/);
   // 총대 화면: 화면으로 돌아오면(새로 불러오기) 부총대가 저장한 지각이 보인다
   await C.page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
   await C.page.waitForSelector(`.call.late:has([data-sid="${jw}"])`);
@@ -860,7 +916,7 @@ test('요청함: 알림 숫자, 출석 요청 승인, 사진 보기, 요청 승�
   assert.match(v, /출석 요청 1건 · 총대단 요청 2건 · 공결 신청 0건/);
   assert.match(v, /지각 2명/);
   assert.match(v, /결석 1명/);
-  assert.match(await A.toast('[data-act="att-ok"]'), /^출석을 저장했어요 · 새 기록 3건$/);
+  assert.match(await A.toast('[data-act="att-ok"]'), /^출석을 저장했어요 · 새 자봉 3건$/);
   const reqCard = (item) => `.card:has(.req-body:has-text("${item}"))`;
   await A.click(`${reqCard('청소 불참')} [data-act="photo"]`);
   assert.match(await A.page.getAttribute(`${reqCard('청소 불참')} img.photo-big`, 'src'), /^data:image\/jpeg/);
@@ -1117,7 +1173,7 @@ test('작업 내역: 뒤로가기·앞으로 가기, 그만두기, 이 작업만
   assert.equal(await sig(), start);
   // 50개가 넘으면 "더 보기"
   const tok = await A.token();
-  for (let i = 0; i < 50; i++) await db.query(`select my_presets_save($1, (select json_agg(json_build_object('name', name, 'points', points) order by sort) from presets where owner = '부총대')::jsonb)`, [tok]);
+  for (let i = 0; i < 50; i++) await db.query(`select my_presets_save($1, (select json_agg(json_build_object('name', name, 'points', points) order by sort) from presets where owner = '부총대' and kind = 'item')::jsonb)`, [tok]);
   await A.tab('board');
   await A.tab('history');
   assert.equal((await rows()).length, 51);
@@ -1192,7 +1248,7 @@ test('관리: 새 복구 코드 → 복구 코드로 들어가기(소문자·붙
   pw.부총대 = 'zxcv';
   const code2 = (await A.text('.card:has([data-act="code-ok"]) .mono')).trim();
   assert.notEqual(code2, code);
-  assert.deepEqual(await A.tabs(), ['출석', '기록', '요청함', '공지', '작업 내역', '관리', '현황판']);
+  assert.deepEqual(await A.tabs(), ['출석', '자봉', '요청함', '공지', '작업 내역', '관리', '현황판']);
   await A.click('[data-act="code-ok"]');
   await A.fits('복구 뒤');
 });
@@ -1396,11 +1452,11 @@ test('자봉 면제: 관리에서 지정·해제, 면제 학생은 자봉이 빠
   await A.page.fill('#recForm-points', '1');
   await A.page.type('#recForm-find', '6 8 ');
   assert.match(await A.text('#recForm-chips'), /6 서지호 · 면제/);
-  assert.equal(await A.toast('[data-act="rec-add"]'), '1명에게 기록했어요 · 자봉 면제 1명은 빠졌어요');
+  assert.equal(await A.toast('[data-act="rec-add"]'), '1명에게 자봉 1점을 부과했어요 · 자봉 면제 1명은 빠졌어요');
   await A.page.fill('#recForm-item', '면제 상점');
   await A.page.fill('#recForm-points', '-1');
   await A.page.type('#recForm-find', '6 ');
-  assert.equal(await A.toast('[data-act="rec-add"]'), '1명에게 기록했어요');
+  assert.equal(await A.toast('[data-act="rec-add"]'), '1명에게 상점 1점을 줬어요');
   const after = await balances();
   assert.equal(after['서지호'], before['서지호'] - 1, '면제 학생은 상점만');
   assert.equal(after['정우진'], before['정우진'] + 1);
@@ -1436,7 +1492,7 @@ test('서버에 못 닿으면 "불러오지 못했어요"와 다시 시도', asy
 test('새로고침해도 로그인 유지, 서버에서 로그인이 지워지면 다음 동작에서 로그아웃', async () => {
   await A.reload();
   assert.match(await A.text('#subbar'), /부총대로 로그인됨/);
-  assert.deepEqual(await A.tabs(), ['출석', '기록', '요청함', '공지', '작업 내역', '관리', '현황판']);
+  assert.deepEqual(await A.tabs(), ['출석', '자봉', '요청함', '공지', '작업 내역', '관리', '현황판']);
   await db.query(`delete from sessions where role = '부총대'`);
   await A.page.evaluate(() => (document.getElementById('toast').hidden = true));
   await A.page.click('#tabs [data-tab="history"]');
@@ -1470,8 +1526,9 @@ test('좁은 폰(320px): 모든 역할의 모든 탭이 가로로 넘치지 않�
   await N.click('[data-act="pickgrid"]');
   await N.click('[data-act="pts-open"][data-fk="recForm"]');
   await N.fits('320 기록 전체 명단·숫자판');
-  await N.page.evaluate(() => window.scrollTo(0, 0));
+  await N.page.click('h1');
   assert.ok(await N.page.$eval('#recForm-item', (el) => {
+    el.scrollIntoView({ block: 'center' });
     const r = el.getBoundingClientRect();
     return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) === el && r.width - 84 > 120;
   }), '좁은 폰에서도 항목명 칸 가운데는 칸이고, 글자 칸이 넉넉하다 (불러오기 버튼에 가리지 않게)');

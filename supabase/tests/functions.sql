@@ -34,9 +34,9 @@ select pg_temp.ok(
   (select array_agg(p.proname::text order by p.proname::text) from pg_proc p where p.pronamespace = 'public'::regnamespace and has_function_privilege('anon', p.oid, 'execute'))
   = (select array_agg(x order by x) from unnest(array['public_state', 'create_excuse', 'login', 'recover', 'private_state', 'logout', 'get_photo',
       'create_request', 'change_pw', 'reset_pw', 'new_recovery', 'ensure_period', 'save_attendance', 'request_attendance', 'review_attendance',
-      'add_entries', 'edit_entry', 'void_entry', 'review_request', 'review_excuse', 'roster_apply', 'my_presets_save', 'purge', 'backup_dump',
+      'add_entries', 'edit_entry', 'void_entry', 'review_request', 'review_excuse', 'roster_apply', 'my_presets_save', 'my_periods_save', 'purge', 'backup_dump',
       'restore_backup', 'history_move', 'history_drop', 'history_restore', 'ops_list']) x),
-  '브라우저(anon)에 열린 함수가 정확히 화면이 쓰는 29개');
+  '브라우저(anon)에 열린 함수가 정확히 화면이 쓰는 30개');
 select pg_temp.ok(not exists (select 1 from pg_proc p where p.pronamespace = 'public'::regnamespace
   and has_function_privilege('anon', p.oid, 'execute') <> has_function_privilege('authenticated', p.oid, 'execute')), 'anon과 authenticated 권한이 같음');
 select pg_temp.ok(not exists (select 1 from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname !~ '^_'
@@ -246,6 +246,27 @@ select pg_temp.expect_msg(format('select my_presets_save(%L, %L)', :'ot', '[{"na
 select pg_temp.expect_msg(format('select my_presets_save(%L, %L)', :'ot', (select json_agg(json_build_object('name', 'x' || i, 'points', 1)) from generate_series(1, 31) i)), '내 항목은 30개까지%', '31개');
 set role postgres;
 select pg_temp.ok((select count(*) from presets where owner = '학습부장') = 2, '실패하면 항목은 그대로');
+-- 자주 쓰는 교시: 이름만, 항목과 따로 저장
+set role anon;
+select my_periods_save(:'ot', '[" 1교시 해부학 ", "", "2교시", "2교시"]');
+set role postgres;
+select pg_temp.ok((select string_agg(name, ',' order by sort) from presets where owner = '학습부장' and kind = 'period') = '1교시 해부학,2교시', '교시: 다듬기, 빈 줄·중복 건너뛰기');
+select pg_temp.ok((select count(*) from presets where owner = '학습부장' and kind = 'item') = 2, '교시를 저장해도 항목은 그대로');
+select pg_temp.ok((select actor = '학습부장' and summary = '자주 쓰는 교시 저장 (4개)' from ops order by id desc limit 1), '교시 저장 작업 요약');
+set role anon;
+select my_presets_save(:'ot', '[{"name":"청소","points":2},{"name":"도움","points":-1}]');
+set role postgres;
+select pg_temp.ok((select count(*) from presets where owner = '학습부장' and kind = 'period') = 2, '항목을 저장해도 교시는 그대로');
+select pg_temp.ok((select json_agg(x) from json_array_elements(public_state() -> 'presets') x where x ->> 'kind' = 'period' and x ->> 'owner' = '학습부장')::jsonb @> '[{"name":"2교시","points":0}]', '화면 상태에 kind가 실린다');
+set role anon;
+select pg_temp.expect_msg(format('select my_periods_save(%L, %L)', :'ot', '[1]'), '교시 이름은 글자%', '글자가 아닌 교시');
+select pg_temp.expect_msg(format('select my_periods_save(%L, %L)', :'ot', '{"a":1}'), '교시 목록이 올바르지%', '배열이 아님');
+select pg_temp.expect_msg(format('select my_periods_save(%L, %L)', :'ot', to_jsonb(array[repeat('가', 41)])), '교시 이름은 40자%', '41자');
+select pg_temp.expect_msg(format('select my_periods_save(%L, %L)', :'ot', (select jsonb_agg(i || '교시') from generate_series(1, 31) i)), '자주 쓰는 교시는 30개까지%', '31개');
+select pg_temp.expect_msg(format('select my_periods_save(%L, %L)', '00000000-0000-0000-0000-000000000000', '[]'), '%로그인%', '로그인 없이');
+select my_periods_save(:'ot', '[]');
+set role postgres;
+select pg_temp.ok(not exists (select 1 from presets where owner = '학습부장' and kind = 'period'), '교시 비우기');
 \echo 5. 자주 쓰는 항목 통과
 
 -- ───────── 6. 교시·출석 ─────────
@@ -524,6 +545,11 @@ select roster_apply(:'t', '[{"op":"add","name":"새학생","no":9}]', '[]', '202
 select restore_backup(:'t', jsonb_set(:'dump'::jsonb, '{tables,students}', (select jsonb_agg(x - 'exempt') from jsonb_array_elements(:'dump'::jsonb -> 'tables' -> 'students') x)));
 set role postgres;
 select pg_temp.ok(not exists (select 1 from students where exempt), '옛 백업은 면제 없음으로');
+set role anon;
+-- 교시 저장(kind) 칸이 생기기 전 백업의 항목은 모두 'item'이 된다
+select restore_backup(:'t', jsonb_set(:'dump'::jsonb, '{tables,presets}', (select jsonb_agg(x - 'kind') from jsonb_array_elements(:'dump'::jsonb -> 'tables' -> 'presets') x)));
+set role postgres;
+select pg_temp.ok(exists (select 1 from presets) and not exists (select 1 from presets where kind is distinct from 'item'), '옛 백업 항목은 모두 item');
 set role anon;
 select restore_backup(:'t', :'dump'::jsonb)::json as rs \gset
 set role postgres;

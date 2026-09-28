@@ -63,7 +63,7 @@ const myStudent = () => (UI.myNo ? S.students.find((x) => x.active && x.no === U
 const TABS = {
   student: [['board', '현황판'], ['excuse', '공결 신청']],
   officer: [['request', '요청하기'], ['reqs', '요청 현황'], ['board', '현황판']],
-  admin: [['attend', '출석'], ['record', '기록'], ['inbox', '요청함'], ['notice', '공지'], ['history', '작업 내역'], ['manage', '관리'], ['board', '현황판']],
+  admin: [['attend', '출석'], ['record', '자봉'], ['inbox', '요청함'], ['notice', '공지'], ['history', '작업 내역'], ['manage', '관리'], ['board', '현황판']],
 };
 // 출석 권한을 받은 총대단(기본: 실습부장)은 맨 앞에 출석 탭이 생긴다
 const canAttend = () => Boolean(S.accounts.find((a) => a.role === UI.user)?.attend);
@@ -194,12 +194,12 @@ function vInstall() {
 function vMyCard(me) {
   if (!me)
     return `<div class="card mycard"><div class="toolbar"><input id="myno" inputmode="numeric" placeholder="내 번호" style="width:110px" autocomplete="off"><button class="btn ghost small" data-act="myno-set">내 번호로 정하기</button></div>
-    <p class="hint" style="margin:0">이 폰에만 기억해요. 정해 두면 여기서 내 자봉과 최근 기록을 바로 보고, 공결 신청에도 번호가 미리 들어가요.</p></div>`;
+    <p class="hint" style="margin:0">이 폰에만 기억해요. 정해 두면 여기서 내 자봉과 최근 내역을 바로 보고, 공결 신청에도 번호가 미리 들어가요.</p></div>`;
   const es = S.ledger.filter((e) => e.sid === me.id).reverse().sort((a, c) => c.date.localeCompare(a.date) || c.at.localeCompare(a.at)).slice(0, 3);
   const b = bal(me.id);
   return `<div class="card mycard"><div class="req-top"><b>내 번호 ${me.no}</b><span class="mybal">자봉 ${b}</span></div>
   ${es.map((e) => `<div class="rec-row"><span class="note mono">${md(e.date)}</span><span class="${e.voided ? 'off' : ''}">${esc(e.item)}${e.voided ? ' · 무효' : ''}</span><span class="pts ${e.points > 0 ? 'p' : 'm'} ${e.voided ? 'off' : ''}">${sgn(e.points)}</span></div>`).join('') || '<p class="note" style="margin:0">아직 기록이 없어요.</p>'}
-  <div class="btns"><button class="btn ghost small" data-act="open" data-sid="${me.id}">전체 기록</button><button class="btn ghost small" data-act="to-excuse" data-no="${me.no}">공결 신청</button><button class="btn ghost small" data-act="myno-clear">번호 바꾸기</button></div></div>`;
+  <div class="btns"><button class="btn ghost small" data-act="open" data-sid="${me.id}">전체 보기</button><button class="btn ghost small" data-act="to-excuse" data-no="${me.no}">공결 신청</button><button class="btn ghost small" data-act="myno-clear">번호 바꾸기</button></div></div>`;
 }
 
 function vDetail() {
@@ -221,11 +221,11 @@ function vDetail() {
   </li>`;
   };
   return `<button class="back" data-act="back">← 현황판</button>
-  <div class="hero"><div><h1>${s.no}번${isStaff() && s.name ? ` <span class="sub" style="font-size:15px">${esc(s.name)}</span>` : ''}</h1><p class="sub">${isStaff() && s.exempt ? '<b>자봉 면제</b> · 상점만 받아요 · ' : ''}기록 ${es.filter(live).length}건${es.some((e) => e.voided) ? ` · 무효 ${es.filter((e) => e.voided).length}건` : ''}</p></div>
+  <div class="hero"><div><h1>${s.no}번${isStaff() && s.name ? ` <span class="sub" style="font-size:15px">${esc(s.name)}</span>` : ''}</h1><p class="sub">${isStaff() && s.exempt ? '<b>자봉 면제</b> · 상점만 받아요 · ' : ''}자봉·상점 ${es.filter(live).length}건${es.some((e) => e.voided) ? ` · 무효 ${es.filter((e) => e.voided).length}건` : ''}</p></div>
   <div style="text-align:right"><div class="sub">자봉</div><div class="big ${b > 0 ? 'p' : b < 0 ? 'm' : ''}">${b}</div></div></div>
   ${UI.role === 'student' ? `<button class="btn ghost" data-act="to-excuse" data-no="${s.no}">이 번호로 공결 신청</button>${UI.myNo !== s.no ? `<button class="btn ghost small" data-act="myno-set" data-no="${s.no}" style="align-self:flex-start">이 번호를 내 번호로 정하기</button>` : ''}` : ''}
-  ${admin ? `<button class="btn ghost" data-act="to-record" data-no="${s.no}">이 학생 기록 수정·무효 처리</button>` : ''}
-  <div>${dates.map((d) => `<div class="day">${mdw(d)}</div><ul class="evs">${es.filter((e) => e.date === d).map(ev).join('')}</ul>`).join('') || '<p class="empty">기록이 없어요.</p>'}</div>`;
+  ${admin ? `<button class="btn ghost" data-act="to-record" data-no="${s.no}">이 학생 자봉·상점 수정·무효 처리</button>` : ''}
+  <div>${dates.map((d) => `<div class="day">${mdw(d)}</div><ul class="evs">${es.filter((e) => e.date === d).map(ev).join('')}</ul>`).join('') || '<p class="empty">아직 자봉·상점이 없어요.</p>'}</div>`;
 }
 
 function liveParts(fk) {
@@ -297,9 +297,19 @@ function closePtsPops(except) {
   });
 }
 
-const myPresets = () => S.presets.filter((p) => UI.user && p.owner === UI.user);
+const myPresets = () => S.presets.filter((p) => UI.user && p.owner === UI.user && p.kind !== 'period');
+const myPeriodPresets = () => S.presets.filter((p) => UI.user && p.owner === UI.user && p.kind === 'period');
 // 항목명 칸 오른쪽 "불러오기": 내 자주 쓰는 항목을 고르고, 지금 적은 항목을 추가·삭제한다 (직책마다 따로, 공용 없음)
+// fk가 'np'이면 출석 "교시 추가" 칸의 자주 쓰는 교시(이름만)
 function presetPop(fk) {
+  if (fk === 'np') {
+    const list = myPeriodPresets().map((p) => `<div class="pr-row"><button type="button" class="pr-use" data-act="pr-use" data-fk="np" data-id="${p.id}">${esc(p.name)}</button><button type="button" class="pr-del" data-act="pr-del" data-fk="np" data-id="${p.id}" aria-label="${esc(p.name)} 삭제">×</button></div>`).join('');
+    const form = UI.prAdding === 'np'
+      ? `<div class="pr-new one"><input id="np-prname" placeholder="교시 이름 (예: 1교시 구강해부학)" autocomplete="off" enterkeyhint="done">
+      <div class="btns"><button type="button" class="btn small" data-act="pr-save" data-fk="np">추가</button><button type="button" class="btn ghost small" data-act="pr-cancel" data-fk="np">취소</button></div></div>`
+      : '<button type="button" class="pr-add" data-act="pr-add" data-fk="np">＋ 자주 쓰는 교시 추가</button>';
+    return (list || '<p class="note" style="margin:0">아직 없어요. 아래 버튼으로 자주 쓰는 교시를 만들어 두세요.</p>') + form;
+  }
   const list = myPresets().map((p) => `<div class="pr-row"><button type="button" class="pr-use" data-act="pr-use" data-fk="${fk}" data-id="${p.id}">${esc(p.name)} <b class="${p.points > 0 ? 'p' : 'm'}">${sgn(p.points)}</b></button><button type="button" class="pr-del" data-act="pr-del" data-fk="${fk}" data-id="${p.id}" aria-label="${esc(p.name)} 삭제">×</button></div>`).join('');
   const empty = '<p class="note" style="margin:0">아직 없어요. 아래 버튼으로 자주 쓰는 항목을 만들어 두세요.</p>';
   // "추가"를 누르면 그 자리에서 항목명·점수를 새로 적는다 (자주 쓰는 항목 점수는 정수)
@@ -326,20 +336,21 @@ function closePresetPops() {
 function entryFields(fk) {
   const f = UI[fk];
   const P = liveParts(fk);
-  return `<div class="fld"><label for="${fk}-item">항목명</label><div class="itembox"><input id="${fk}-item" value="${esc(f.item)}" placeholder="예: 실습실 뒷정리 미흡" autocomplete="off" data-bind="${fk}.item" data-live="${fk}" data-suggest="item" data-fk="${fk}">
-  <button type="button" class="itemdrop" data-act="pr-open" data-fk="${fk}" aria-expanded="${UI.prOpen === fk}">불러오기</button>
-  <div class="prpop" id="${fk}-prpop" ${UI.prOpen === fk ? '' : 'hidden'}>${UI.prOpen === fk ? presetPop(fk) : ''}</div></div></div>
-  <div class="row2"><label class="fld grow"><span>날짜</span><input type="date" id="${fk}-date" value="${esc(f.date)}" data-bind="${fk}.date" data-rerender="1"></label>
-  <label class="fld pts-fld"><span>점수</span>${pointsField(fk)}</label></div>
-  <p class="hint">+는 자봉, −는 상점이에요. 항목명 칸을 누르면 최근·자주 쓴 항목이, "불러오기"를 누르면 내 자주 쓰는 항목이 떠요.</p>
-  <label class="fld"><span>세부내용 (선택)</span><input id="${fk}-detail" value="${esc(f.detail)}" placeholder="예: 전원 안끔" autocomplete="off" data-bind="${fk}.detail" data-suggest="detail" data-fk="${fk}"></label>
-  <label class="fld"><span>학생</span><input id="${fk}-find" type="search" value="${esc(f.find)}" placeholder="이름이나 번호 (예: 김민, 56 59)" autocomplete="off" enterkeyhint="done" data-bind="${fk}.find" data-picker="${fk}"></label>
+  // 학생을 먼저 고르고 항목·점수를 적는다
+  return `<label class="fld"><span>학생</span><input id="${fk}-find" type="search" value="${esc(f.find)}" placeholder="이름이나 번호 (예: 김민, 56 59)" autocomplete="off" enterkeyhint="done" data-bind="${fk}.find" data-picker="${fk}"></label>
   <p class="hint">이름 일부를 치고 목록에서 고르거나, 번호를 띄어 쓰며 연달아 적으세요.</p>
   <div id="${fk}-sugg">${P.sugg}</div>
   <div class="req-top"><button class="btn ghost small" data-act="pickgrid">${UI.pickGrid ? '전체 명단 닫기 ▴' : '전체 명단에서 누르기 ▾'}</button><span class="note" id="${fk}-count">${P.count}</span></div>
   <div id="${fk}-grid">${P.grid}</div>
   <div class="chips" id="${fk}-chips">${P.chips}</div>
-  <div id="${fk}-dup">${P.dup}</div>`;
+  <div id="${fk}-dup">${P.dup}</div>
+  <div class="fld"><label for="${fk}-item">항목명</label><div class="itembox"><input id="${fk}-item" value="${esc(f.item)}" placeholder="예: 실습실 뒷정리 미흡" autocomplete="off" data-bind="${fk}.item" data-live="${fk}" data-suggest="item" data-fk="${fk}">
+  <button type="button" class="itemdrop" data-act="pr-open" data-fk="${fk}" aria-expanded="${UI.prOpen === fk}">불러오기</button>
+  <div class="prpop" id="${fk}-prpop" ${UI.prOpen === fk ? '' : 'hidden'}>${UI.prOpen === fk ? presetPop(fk) : ''}</div></div></div>
+  <div class="row2"><label class="fld grow"><span>날짜</span><input type="date" id="${fk}-date" value="${esc(f.date)}" data-bind="${fk}.date" data-rerender="1"></label>
+  <label class="fld pts-fld"><span>점수</span>${pointsField(fk)}</label></div>
+  <p class="hint">+는 자봉, −는 상점이에요. 항목명 칸을 누르면 최근·자주 쓴 항목이, "불러오기"를 누르면 내 자주 쓰는 항목이 떠요.</p>
+  <label class="fld"><span>세부내용 (선택)</span><input id="${fk}-detail" value="${esc(f.detail)}" placeholder="예: 전원 안끔" autocomplete="off" data-bind="${fk}.detail" data-suggest="detail" data-fk="${fk}"></label>`;
 }
 
 function photoField(key, val) {
@@ -481,7 +492,9 @@ function vAttend() {
   <div class="seg"><button class="${UI.attView !== 'grid' ? 'on' : ''}" data-act="attview" data-v="list">호명 목록</button><button class="${UI.attView === 'grid' ? 'on' : ''}" data-act="attview" data-v="grid">한눈에 보기</button></div>
   <div class="toolbar"><input type="date" id="attDate" value="${UI.attDate}" data-bind="attDate" data-rerender="1" style="width:auto"></div>
   <div class="seg" style="flex-wrap:wrap">${ps.map((p) => `<button class="${p.id === pid ? 'on' : ''}" data-act="pick-period" data-id="${p.id}">${esc(p.label)}${S.att[p.id] ? ' ·저장됨' : ''}</button>`).join('')}</div>
-  <div class="toolbar"><input id="newPeriod" placeholder="교시 추가 (예: 1교시 구강해부학)" value="${esc(UI.newPeriod)}" autocomplete="off" data-bind="newPeriod" data-suggest="period"><button class="btn ghost small" data-act="add-period">추가</button></div>
+  <div class="toolbar"><div class="itembox"><input id="newPeriod" placeholder="교시 추가 (예: 1교시 구강해부학)" value="${esc(UI.newPeriod)}" autocomplete="off" data-bind="newPeriod" data-suggest="period">
+  <button type="button" class="itemdrop" data-act="pr-open" data-fk="np" aria-expanded="${UI.prOpen === 'np'}">불러오기</button>
+  <div class="prpop" id="np-prpop" ${UI.prOpen === 'np' ? '' : 'hidden'}>${UI.prOpen === 'np' ? presetPop('np') : ''}</div></div><button class="btn ghost small" data-act="add-period">추가</button></div>
   ${body}`;
 }
 
@@ -501,11 +514,11 @@ function vRecord() {
     return `<div class="rec-row"><span class="mono">${noOf(e.sid)}번</span><span class="${e.voided ? 'off' : ''}">${esc(e.item)}${e.detail ? ` · ${esc(e.detail)}` : ''}<br><span class="d">${mdw(e.date)}${e.revs?.length ? ' · 수정됨' : ''}${e.voided ? ' · 무효' : ''}</span></span><span class="pts ${e.points > 0 ? 'p' : 'm'} ${e.voided ? 'off' : ''}">${sgn(e.points)}</span>
     ${e.voided ? '' : `<div class="acts"><button class="btn ghost small" data-act="edit" data-id="${e.id}">수정</button><button class="btn ghost small" data-act="void" data-id="${e.id}">무효 처리</button></div>`}${extra}</div>`;
   };
-  return `<div><h1>직접 기록</h1><p class="sub">즉석 부과, 상점 등 모든 항목을 여기서 바로 기록해요.</p></div>
-  <div class="card">${entryFields('recForm')}<button class="btn" data-act="rec-add">기록 추가</button></div>
-  <h2>기록 수정·무효 처리</h2><p class="sub" style="margin-top:-12px">지우지 않고 이력으로 남아요. 학생 상세 화면에서 누구나 수정 내역을 볼 수 있어요.</p>
+  return `<div><h1>자봉·상점 주기</h1><p class="sub">즉석 부과, 상점 등 모든 항목을 여기서 바로 줘요.</p></div>
+  <div class="card">${entryFields('recForm')}<button class="btn" data-act="rec-add">자봉·상점 주기</button></div>
+  <h2>자봉·상점 수정·무효 처리</h2><p class="sub" style="margin-top:-12px">지우지 않고 이력으로 남아요. 학생 상세 화면에서 누구나 수정 내역을 볼 수 있어요.</p>
   <input type="search" id="recFilter" placeholder="번호 또는 항목으로 찾기" value="${esc(UI.recFilter)}" data-bind="recFilter" data-region="rec-list">
-  <div class="card" style="gap:0" id="rec-list">${shown.map(row).join('') || '<p class="empty">기록이 없어요.</p>'}${list.length > 40 ? '<p class="note">최근 40건만 보여요. 번호로 찾아보세요.</p>' : ''}</div>`;
+  <div class="card" style="gap:0" id="rec-list">${shown.map(row).join('') || '<p class="empty">아직 준 자봉·상점이 없어요.</p>'}${list.length > 40 ? '<p class="note">최근 40건만 보여요. 번호로 찾아보세요.</p>' : ''}</div>`;
 }
 
 function vInbox() {
@@ -731,7 +744,7 @@ function vExempt() {
   const ex = active().filter((s) => s.exempt);
   const P = liveParts('exForm');
   return `<div class="card" id="exempt-card"><h2>자봉 면제</h2>
-  <p class="hint" style="margin:0">지정한 학생은 출석·직접 기록·요청 승인으로 들어오는 <b>자봉(+)이 쌓이지 않고 상점(−)만</b> 받아요. 지정하기 전에 쌓인 자봉은 그대로라, 필요하면 기록 탭에서 무효 처리하세요.</p>
+  <p class="hint" style="margin:0">지정한 학생은 출석·자봉 탭·요청 승인으로 들어오는 <b>자봉(+)이 쌓이지 않고 상점(−)만</b> 받아요. 지정하기 전에 쌓인 자봉은 그대로라, 필요하면 기록 탭에서 무효 처리하세요.</p>
   ${ex.length ? `<div class="chips">${ex.map((s) => `<button class="chip" data-act="stu-exempt" data-sid="${s.id}" aria-label="${s.no}번 면제 풀기">${s.no} ${esc(s.name)} ×</button>`).join('')}</div><p class="hint" style="margin:0">칩을 누르면 면제가 풀려요.</p>` : '<p class="note" style="margin:0">지정한 학생이 없어요.</p>'}
   <label class="fld"><span>면제로 지정할 학생</span><input id="exForm-find" type="search" value="${esc(UI.exForm.find)}" placeholder="이름이나 번호" autocomplete="off" enterkeyhint="done" data-bind="exForm.find" data-picker="exForm"></label>
   <div id="exForm-sugg">${P.sugg}</div><div class="chips" id="exForm-chips">${P.chips}</div>
@@ -1024,7 +1037,7 @@ function showSug(el) {
   box.innerHTML = groups.map((g) => `<div class="sug-g">${g.g ? `<span class="sug-l">${g.g}</span>` : ''}${g.items.join('')}</div>`).join('');
 }
 document.addEventListener('focusin', (ev) => {
-  if (ev.target.dataset?.suggest === 'item' && UI.prOpen) closePresetPops();
+  if (['item', 'period'].includes(ev.target.dataset?.suggest) && UI.prOpen) closePresetPops();
   if (ev.target.dataset?.suggest) showSug(ev.target);
 });
 document.addEventListener('focusout', (ev) => {
@@ -1078,7 +1091,7 @@ async function saveAttendance(asRequest) {
   UI.noticeText = null;
   await refresh();
   render();
-  doneToast(`저장했어요 · 새 기록 ${n}건`, before);
+  doneToast(`저장했어요 · 새 자봉 ${n}건`, before);
 }
 
 async function submitEntry(fk) {
@@ -1091,15 +1104,15 @@ async function submitEntry(fk) {
   const f = UI[fk];
   const { sids, bad } = parseNums(f.nums);
   const pts = Number(f.points);
+  if (!sids.length || bad.length) return toast('학생을 골라 주세요');
   if (!f.item.trim()) return toast('항목명을 입력하세요');
   if (!L.isHalfStep(pts) || pts === 0) return toast('점수는 0이 아닌 0.5점 단위로 적어 주세요');
-  if (!sids.length || bad.length) return toast('학생을 골라 주세요');
   const common = { p_date: f.date, p_sids: sids, p_item: f.item.trim(), p_detail: f.detail.trim(), p_points: pts };
   if (fk === 'reqForm') {
     await run('create_request', { ...common, p_reason: f.reason.trim(), p_photo: f.photo || null }, '요청을 보냈어요');
     UI.reqForm = { ...blankForm(), date: f.date };
   } else {
-    await run('add_entries', common, (n) => `${n}명에게 기록했어요${n < sids.length ? ` · 자봉 면제 ${sids.length - n}명은 빠졌어요` : ''}`);
+    await run('add_entries', common, (n) => `${n}명에게 ${pts > 0 ? `자봉 ${pts}점을 부과했어요` : `상점 ${-pts}점을 줬어요`}${n < sids.length ? ` · 자봉 면제 ${sids.length - n}명은 빠졌어요` : ''}`);
     UI.recForm = { ...blankForm(), date: f.date };
     UI.noticeText = null;
   }
@@ -1330,7 +1343,7 @@ const A = {
     return true;
   },
   'att-ok': async (d) => {
-    await run('review_attendance', { p_id: d.id, p_approve: true, p_note: null }, (n) => `출석을 저장했어요 · 새 기록 ${n}건`);
+    await run('review_attendance', { p_id: d.id, p_approve: true, p_note: null }, (n) => `출석을 저장했어요 · 새 자봉 ${n}건`);
     clearDrafts();
     UI.noticeText = null;
     return true;
@@ -1638,6 +1651,12 @@ const A = {
   'pr-use': (d) => {
     const p = S.presets.find((x) => x.id === d.id);
     if (!p) return true;
+    if (d.fk === 'np') {
+      UI.newPeriod = p.name;
+      document.getElementById('newPeriod').value = p.name;
+      closePresetPops();
+      return true;
+    }
     const f = UI[d.fk];
     f.item = p.name;
     f.points = p.points;
@@ -1659,6 +1678,15 @@ const A = {
     return true;
   },
   'pr-save': async (d) => {
+    if (d.fk === 'np') {
+      const name = val('np-prname').trim();
+      if (!name) return toast('교시 이름을 적어 주세요');
+      if (myPeriodPresets().some((p) => p.name === name)) return toast('이미 있는 교시예요');
+      UI.prOpen = 'np';
+      UI.prAdding = null;
+      await run('my_periods_save', { p_list: [...myPeriodPresets().map((p) => p.name), name] }, `자주 쓰는 교시에 넣었어요: ${name}`);
+      return true;
+    }
     const name = val(d.fk + '-prname').trim();
     const pts = Number(val(d.fk + '-prpts'));
     if (!name) return toast('항목명을 적어 주세요');
@@ -1672,6 +1700,11 @@ const A = {
   },
   'pr-del': async (d) => {
     const gone = S.presets.find((p) => p.id === d.id);
+    if (d.fk === 'np') {
+      UI.prOpen = 'np';
+      await run('my_periods_save', { p_list: myPeriodPresets().filter((p) => p.id !== d.id).map((p) => p.name) }, `자주 쓰는 교시에서 뺐어요: ${gone?.name || ''}`);
+      return true;
+    }
     const list = myPresets().filter((p) => p.id !== d.id).map((p) => ({ name: p.name, points: p.points }));
     UI.prOpen = d.fk;
     await run('my_presets_save', { p_list: list }, `자주 쓰는 항목에서 뺐어요: ${gone?.name || ''}`);

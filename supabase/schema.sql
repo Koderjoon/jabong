@@ -35,6 +35,8 @@ create table if not exists presets (
   sort int not null default 0
 );
 alter table presets add column if not exists owner text;
+-- kind: 'item'(항목명·점수) 또는 'period'(출석 교시 이름, 점수 0)
+alter table presets add column if not exists kind text not null default 'item';
 
 create table if not exists periods (
   id uuid primary key default gen_random_uuid(),
@@ -188,10 +190,15 @@ create table if not exists op_changes (
   after jsonb
 );
 create index if not exists op_changes_op on op_changes (op_id);
+create index if not exists op_changes_row on op_changes (tbl, row_key);
 -- 학생 표에 칸(exempt)이 생기기 전의 작업 기록은 그 칸이 없어서 지금 행과 비교가 어긋난다. 기본값으로 채운다.
 update op_changes set before = case when before is not null and not before ? 'exempt' then before || '{"exempt": false}' else before end,
   after = case when after is not null and not after ? 'exempt' then after || '{"exempt": false}' else after end
 where tbl = 'students' and ((before is not null and not before ? 'exempt') or (after is not null and not after ? 'exempt'));
+-- 항목 표에 kind 칸이 생기기 전의 작업 기록도 같은 방식으로 채운다
+update op_changes set before = case when before is not null and not before ? 'kind' then before || '{"kind": "item"}' else before end,
+  after = case when after is not null and not after ? 'kind' then after || '{"kind": "item"}' else after end
+where tbl = 'presets' and ((before is not null and not before ? 'kind') or (after is not null and not after ? 'kind'));
 
 -- 직책별 계정. role이 곧 화면에 보이는 이름이다.
 create table if not exists accounts (
@@ -452,7 +459,7 @@ language sql stable security definer set search_path = public as $$
         then json_build_object('id', id, 'no', no, 'name', name, 'active', active, 'exempt', exempt)
         else json_build_object('id', id, 'no', no, 'active', active, 'exempt', exempt) end order by active desc, no), '[]')
       from students),
-    'presets', (select coalesce(json_agg(json_build_object('id', id, 'name', name, 'points', points, 'owner', owner) order by sort, name), '[]') from presets),
+    'presets', (select coalesce(json_agg(json_build_object('id', id, 'name', name, 'points', points, 'owner', owner, 'kind', kind) order by sort, name), '[]') from presets),
     'periods', (select coalesce(json_agg(json_build_object('id', id, 'date', date, 'label', label, 'morning', morning, 'savedAt', _kst(saved_at))
       order by date, morning desc, nullif(substring(label from '^[0-9]+'), '')::int nulls last, label), '[]') from periods),
     'att', (select coalesce(json_object_agg(p.id, (select coalesce(json_object_agg(a.student_id, a.status), '{}') from attendance a where a.period_id = p.id)), '{}')
@@ -881,7 +888,7 @@ language plpgsql security definer set search_path = public as $$
 declare who text := _session(p_token, false); p jsonb; i int := 0;
 begin
   perform _op(who, 'my_presets_save', format('자주 쓰는 항목 저장 (%s개)', jsonb_array_length(coalesce(p_list, '[]'))));
-  delete from presets where owner = who;
+  delete from presets where owner = who and kind = 'item';
   for p in select * from jsonb_array_elements(coalesce(p_list, '[]')) loop
     i := i + 1;
     if coalesce(trim(p ->> 'name'), '') <> '' then
@@ -890,6 +897,25 @@ begin
     end if;
   end loop;
   if i > 30 then raise exception '내 항목은 30개까지 만들 수 있어요'; end if;
+end $$;
+
+-- 출석 "교시 추가" 칸의 자주 쓰는 교시. p_list는 교시 이름 배열이다. 항목과 마찬가지로 직책마다 따로.
+create or replace function my_periods_save(p_token uuid, p_list jsonb) returns void
+language plpgsql security definer set search_path = public as $$
+declare who text := _session(p_token, false); p jsonb; i int := 0;
+begin
+  if jsonb_typeof(coalesce(p_list, '[]')) <> 'array' then raise exception '교시 목록이 올바르지 않아요'; end if;
+  perform _op(who, 'my_periods_save', format('자주 쓰는 교시 저장 (%s개)', jsonb_array_length(coalesce(p_list, '[]'))));
+  delete from presets where owner = who and kind = 'period';
+  for p in select * from jsonb_array_elements(coalesce(p_list, '[]')) loop
+    if jsonb_typeof(p) <> 'string' then raise exception '교시 이름은 글자여야 해요'; end if;
+    if trim(p #>> '{}') <> '' and not exists (select 1 from presets where owner = who and kind = 'period' and name = trim(p #>> '{}')) then
+      i := i + 1;
+      if length(trim(p #>> '{}')) > 40 then raise exception '교시 이름은 40자까지예요'; end if;
+      insert into presets (name, points, sort, owner, kind) values (trim(p #>> '{}'), 0, 100 + i, who, 'period');
+    end if;
+  end loop;
+  if i > 30 then raise exception '자주 쓰는 교시는 30개까지 만들 수 있어요'; end if;
 end $$;
 
 -- 기준 날짜까지의 기록을 학생별 "이월" 한 줄로 합친다. 점수는 그대로 유지된다.
@@ -1047,6 +1073,15 @@ begin
   if p_restore and not o.dropped then raise exception '빼 둔 작업이 아니에요'; end if;
   if not p_restore and o.dropped then raise exception '이미 빼 둔 작업이에요'; end if;
   if not p_restore and o.undone then raise exception '뒤로 가 있는 작업이에요. 먼저 앞으로 가서 적용한 뒤에 빼세요'; end if;
+  -- 뒤에 적용된 작업이 같은 행을 건드렸으면 멈춘다. (_apply_op는 이미 지워진 행을 건너뛰므로,
+  --  예를 들어 뒤의 작업이 이 작업이 넣은 행을 지웠으면 이것만으로는 알아채지 못한다)
+  if not o.undone and exists (
+      select 1 from op_changes a join op_changes b on b.tbl = a.tbl and b.row_key = a.row_key
+      join ops l on l.id = b.op_id
+      where a.op_id = p_op and l.id > p_op and not l.undone and not l.dropped and l.kind <> 'scratch') then
+    raise exception '"%" 작업 뒤에 같은 기록을 바꾼 작업이 있어서, 이 작업만 %수 없어요. "이 시점으로"를 써 보세요',
+      o.summary, case when p_restore then '다시 살릴 ' else '되돌릴 ' end using errcode = 'P0002';
+  end if;
   before := _snap();
   select count(*) into nledger from ledger where voided_at is null;
   begin
@@ -1111,7 +1146,8 @@ begin
   delete from students where true;
   -- 자봉 면제 칸이 생기기 전 백업에는 exempt가 없으니 false로 채운다
   insert into students select (jsonb_populate_record(null::students, '{"exempt": false}'::jsonb || e)).* from jsonb_array_elements(t -> 'students') e;
-  insert into presets select * from jsonb_populate_recordset(null::presets, t -> 'presets');
+  -- 교시 저장(kind)이 생기기 전 백업의 항목은 모두 'item'이다
+  insert into presets select (jsonb_populate_record(null::presets, '{"kind": "item"}'::jsonb || e)).* from jsonb_array_elements(t -> 'presets') e;
   insert into periods select * from jsonb_populate_recordset(null::periods, t -> 'periods');
   insert into attendance select * from jsonb_populate_recordset(null::attendance, t -> 'attendance');
   insert into ledger select * from jsonb_populate_recordset(null::ledger, t -> 'ledger');
@@ -1179,7 +1215,7 @@ do $$ declare f text; begin
       'change_pw(uuid,text,text)', 'reset_pw(uuid,text,text)', 'new_recovery(uuid,text)', 'ensure_period(uuid,date,text,boolean)',
       'save_attendance(uuid,uuid,jsonb)', 'request_attendance(uuid,uuid,jsonb)', 'review_attendance(uuid,uuid,boolean,text)', 'add_entries(uuid,date,uuid[],text,text,numeric)', 'edit_entry(uuid,uuid,date,text,text,numeric,text)',
       'void_entry(uuid,uuid,text)', 'review_request(uuid,uuid,boolean,text)', 'review_excuse(uuid,uuid,boolean,text)',
-      'roster_apply(uuid,jsonb,jsonb,date)', 'my_presets_save(uuid,jsonb)', 'purge(uuid,date)', 'backup_dump()', 'restore_backup(uuid,jsonb)', 'history_move(uuid,bigint,boolean)', 'history_drop(uuid,bigint,boolean)', 'history_restore(uuid,bigint,boolean)', 'ops_list(uuid,integer)'
+      'roster_apply(uuid,jsonb,jsonb,date)', 'my_presets_save(uuid,jsonb)', 'my_periods_save(uuid,jsonb)', 'purge(uuid,date)', 'backup_dump()', 'restore_backup(uuid,jsonb)', 'history_move(uuid,bigint,boolean)', 'history_drop(uuid,bigint,boolean)', 'history_restore(uuid,bigint,boolean)', 'ops_list(uuid,integer)'
     ] loop
       execute format('grant execute on function %s to anon, authenticated', f);
     end loop;

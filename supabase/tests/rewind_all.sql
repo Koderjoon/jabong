@@ -44,6 +44,8 @@ select id as s3 from students where name = '다' \gset
 select id as s4 from students where name = '라' \gset
 select my_presets_save(:'ot', '[{"name":"청소","points":2}]'); select pg_temp.snap();
 select my_presets_save(:'t', '[{"name":"매점","points":-1},{"name":"실습","points":1}]'); select pg_temp.snap();
+select my_periods_save(:'t', '["1교시 해부학","2교시"]'); select pg_temp.snap();
+select my_presets_save(:'t', '[{"name":"매점","points":-1}]'); select pg_temp.snap();
 select ensure_period(:'t', '2026-04-02', '아침 출석', true) as p1 \gset
 select pg_temp.snap();
 select save_attendance(:'t', :'p1', format('{"%s":"late","%s":"absent"}', :'s1', :'s2')::jsonb); select pg_temp.snap();
@@ -90,8 +92,8 @@ select save_attendance(:'t', :'p2', format('{"%s":"late"}', :'s2')::jsonb); sele
 
 select pg_temp.ok((select count(*) from sigs) = (select count(*) from ops) + 1, '작업마다 시점 하나 (+ 맨 처음)');
 select pg_temp.ok((select array_agg(distinct kind order by kind) from ops) = array['add_entries', 'create_excuse', 'create_request', 'edit_entry', 'ensure_period',
-  'my_presets_save', 'request_attendance', 'review_attendance', 'review_excuse', 'review_request', 'roster_apply', 'save_attendance', 'void_entry'],
-  '데이터를 바꾸는 함수 13종 모두 사용');
+  'my_periods_save', 'my_presets_save', 'request_attendance', 'review_attendance', 'review_excuse', 'review_request', 'roster_apply', 'save_attendance', 'void_entry'],
+  '데이터를 바꾸는 함수 14종 모두 사용');
 select max(op) as last from sigs \gset
 select count(*) as nops from ops \gset
 \echo 시나리오 준비 (작업 :nops 개)
@@ -161,6 +163,8 @@ select count(*) filter (where result = 'ok') as nok, count(*) filter (where resu
 select pg_temp.ok(:nok >= 10, '대부분의 작업은 하나만 되돌릴 수 있음');
 -- 뒤 작업이 같은 기록을 바꾼 작업은 반드시 겹침으로 멈춰야 한다
 select pg_temp.ok((select result from drops where op = (select min(id) from ops)) = 'conflict', '명단 추가(뒤에서 번호·이름을 바꿈)는 하나만 되돌릴 수 없음');
+-- 뒤 작업이 이 작업이 넣은 행을 지운 경우도 (지워진 행은 건너뛰니 _apply_op만으로는 모른다)
+select pg_temp.ok((select result from drops where op = (select min(id) from ops where kind = 'my_presets_save' and actor = '부총대')) = 'conflict', '뒤에서 다시 저장한 항목 저장은 하나만 되돌릴 수 없음');
 select pg_temp.ok((select result from drops d join ops o on o.id = d.op where o.summary like '요청: 결석%') = 'conflict', '승인된 요청의 작성은 하나만 되돌릴 수 없음');
 select pg_temp.ok(pg_temp.sig() = (select sig from sigs where op = :last) and (select count(*) from ops) = :nops, '끝나고 원래 상태');
 select string_agg(o.id || ' ' || o.summary, E'\n' order by o.id) as conf_list from drops d join ops o on o.id = d.op where d.result = 'conflict' \gset
