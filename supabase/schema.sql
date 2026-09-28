@@ -295,7 +295,7 @@ do $$ declare t text; begin
 end $$;
 
 -- 바뀐 행을 지금 작업(jabong.op)에 기록한다. 작업 밖(SQL Editor 등)의 변경은 기록하지 않는다.
--- 트리거 이름이 zz_로 시작해야 외래키 연쇄 삭제(RI_...)보다 늦게 불려서, 자식 행이 부모보다 먼저 기록된다.
+-- 외래키 연쇄 삭제로 바뀐 자식 행은 부모 행보다 나중에 기록된다. _apply_op가 교시 삭제의 순서를 따로 맞춘다.
 create or replace function _log_change() returns trigger language plpgsql security definer set search_path = public as $$
 declare
   op bigint := nullif(current_setting('jabong.op', true), '')::bigint;
@@ -659,6 +659,35 @@ begin
   return pid;
 end $$;
 
+-- 교시 삭제. 출결·출석 요청은 함께 지워지고, 이 교시로 준 자봉은 지우지 않고 "교시 삭제"로 무효 처리한다(학생 상세에 남는다).
+-- 부총대는 어느 교시든, 출석 요청을 보낼 수 있는 총대단은 아직 저장 안 됐고 다른 사람의 요청도 없는 교시만 지운다.
+-- 처리하지 않은 출석 요청(부총대)이나 공결 신청이 있으면 먼저 처리하게 한다. 무효 처리한 자봉 수를 돌려준다.
+create or replace function delete_period(p_token uuid, p_id uuid) returns int
+language plpgsql security definer set search_path = public as $$
+declare who text := _session_attend(p_token); per periods; admin boolean; l record; n int := 0;
+begin
+  select * into per from periods where id = p_id for update;
+  if not found then raise exception '교시를 찾을 수 없어요'; end if;
+  admin := exists (select 1 from accounts where role = who and is_admin);
+  if not admin and (per.saved_at is not null or exists (select 1 from ledger where period_id = p_id)
+      or exists (select 1 from attendance_requests where period_id = p_id and requested_by <> who)) then
+    raise exception '출석이 저장됐거나 다른 사람의 출석 요청이 있는 교시는 부총대만 지울 수 있어요';
+  end if;
+  if admin and exists (select 1 from attendance_requests where period_id = p_id and status = 'pending') then
+    raise exception '이 교시에 처리하지 않은 출석 요청이 있어요. 요청함에서 먼저 처리해 주세요';
+  end if;
+  if exists (select 1 from excuses x join ledger e on e.id = x.ledger_id where e.period_id = p_id and x.status = 'pending') then
+    raise exception '이 교시에 처리하지 않은 공결 신청이 있어요. 요청함에서 먼저 처리해 주세요';
+  end if;
+  perform _op(who, 'delete_period', format('교시 삭제: %s', _per(p_id)));
+  for l in select id from ledger where period_id = p_id and voided_at is null order by created_at loop
+    perform _void(l.id, '교시 삭제', who);
+    n := n + 1;
+  end loop;
+  delete from periods where id = p_id;
+  return n;
+end $$;
+
 -- 한 교시의 출결을 저장한다. p_statuses = {학생 id: 'late'|'absent'|'excused'} (없으면 출석)
 -- 한 교시의 출결을 반영한다. p_by는 저장(승인)한 사람, p_requested_by는 출석 요청을 보낸 사람
 create or replace function _apply_attendance(p_period uuid, p_statuses jsonb, p_by text, p_requested_by text) returns int
@@ -952,7 +981,11 @@ begin
   select * into o from ops where id = p_op;
   select coalesce(max(id), 0) into mark from op_changes;
   begin
-  for c in select * from op_changes where op_id = p_op order by case when p_back then -id else id end loop
+  -- 교시 삭제는 연쇄로 바뀐 자식 행(출결·자봉의 period_id)보다 교시 행이 먼저 기록된다(트리거가 도는 순서).
+  -- 그래서 교시 행 삭제는 앞으로 갈 때 맨 나중에, 뒤로 갈 때(다시 넣기) 맨 먼저 한다.
+  for c in select * from op_changes where op_id = p_op
+    order by case when tbl = 'periods' and action = 'D' then case when p_back then 0 else 2 end else 1 end,
+      case when p_back then -id else id end loop
     -- 기본키로 찾는다 (to_jsonb(t) @> 로 찾으면 표 전체를 훑어서, 한 학기 분량을 오가면 수 초가 걸린다)
     kc := case c.tbl when 'attendance' then 'period_id, student_id' when 'ledger_private' then 'ledger_id' else 'id' end;
     kw := format('(%2$s) = (select %2$s from jsonb_populate_record(null::%1$I, $1))', c.tbl, kc);
@@ -1212,7 +1245,7 @@ do $$ declare f text; begin
     foreach f in array array[
       'public_state()', 'create_excuse(uuid,uuid,text,text)', 'login(text,text)', 'recover(text,text,text)',
       'private_state(uuid)', 'logout(uuid)', 'get_photo(uuid,uuid)', 'create_request(uuid,date,uuid[],text,text,numeric,text,text)',
-      'change_pw(uuid,text,text)', 'reset_pw(uuid,text,text)', 'new_recovery(uuid,text)', 'ensure_period(uuid,date,text,boolean)',
+      'change_pw(uuid,text,text)', 'reset_pw(uuid,text,text)', 'new_recovery(uuid,text)', 'ensure_period(uuid,date,text,boolean)', 'delete_period(uuid,uuid)',
       'save_attendance(uuid,uuid,jsonb)', 'request_attendance(uuid,uuid,jsonb)', 'review_attendance(uuid,uuid,boolean,text)', 'add_entries(uuid,date,uuid[],text,text,numeric)', 'edit_entry(uuid,uuid,date,text,text,numeric,text)',
       'void_entry(uuid,uuid,text)', 'review_request(uuid,uuid,boolean,text)', 'review_excuse(uuid,uuid,boolean,text)',
       'roster_apply(uuid,jsonb,jsonb,date)', 'my_presets_save(uuid,jsonb)', 'my_periods_save(uuid,jsonb)', 'purge(uuid,date)', 'backup_dump()', 'restore_backup(uuid,jsonb)', 'history_move(uuid,bigint,boolean)', 'history_drop(uuid,bigint,boolean)', 'history_restore(uuid,bigint,boolean)', 'ops_list(uuid,integer)'

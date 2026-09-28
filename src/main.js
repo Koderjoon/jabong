@@ -24,7 +24,7 @@ const token = () => getSession()?.token;
 const blankForm = () => ({ date: TODAY, preset: '', item: '', points: 1, detail: '', nums: '', find: '', reason: '', photo: '' });
 const UI = {
   role: 'student', tab: 'board', sid: null, user: null, sort: 'no', q: '',
-  attDate: TODAY, attPid: null, attView: 'list', draft: {}, touched: {}, newPeriod: '', attConfirm: false,
+  attDate: TODAY, attPid: null, attView: 'list', draft: {}, touched: {}, newPeriod: '', attConfirm: false, perDel: null,
   recForm: blankForm(), reqForm: blankForm(), exForm: blankForm(), excForm: { no: '', eid: '', reason: '', photo: '' },
   recFilter: '', editId: null, voidId: null, openRev: {}, photos: {},
   noticeFrom: null, noticeTo: null, noticeText: null,
@@ -454,6 +454,18 @@ const ST = { present: ['✓', '출석'], late: ['지', '지각'], absent: ['결'
 // 출결 초안과 저장된 출결이 같은지 (학생 순서와 무관하게)
 const sameAtt = (a, b) => Object.keys(a).length === Object.keys(b).length && Object.keys(a).every((k) => a[k] === b[k]);
 
+// 고른 교시 삭제. 부총대는 어느 교시든, 총대단은 아직 저장 안 됐고 다른 사람의 요청도 없는 교시만 (서버 delete_period와 같은 조건)
+function periodDelBar(pid) {
+  const per = pid && S.periods.find((p) => p.id === pid);
+  if (!per) return ''; // 아직 만들지 않은 아침 출석(v:)
+  const given = S.ledger.filter((e) => e.pid === pid && !e.voided).length;
+  const others = (S.attRequests || []).some((a) => a.pid === pid && a.by !== UI.user);
+  if (!isAdmin() && (S.att[pid] || S.ledger.some((e) => e.pid === pid) || others)) return '';
+  if (UI.perDel !== pid) return `<div class="per-del"><button class="btn ghost small" data-act="per-del" data-id="${pid}">이 교시 삭제</button></div>`;
+  return `<div class="att-confirm"><span>${esc(per.label)}을(를) 지울까요? 저장된 출결과 이 교시의 출석 요청이 함께 지워져요.${given ? ` 이 교시로 준 자봉 ${given}건은 "교시 삭제"로 무효 처리돼요.` : ''}</span>
+  <div class="btns"><button class="btn danger small" data-act="per-del-yes" data-id="${pid}">네, 지우기</button><button class="btn ghost small" data-act="per-del-no">그만두기</button></div></div>`;
+}
+
 function vAttend() {
   const ps = periodsOf(UI.attDate);
   if (!ps.some((p) => p.id === UI.attPid)) UI.attPid = ps.find((p) => !S.att[p.id])?.id || ps[0]?.id || null;
@@ -492,6 +504,7 @@ function vAttend() {
   <div class="seg"><button class="${UI.attView !== 'grid' ? 'on' : ''}" data-act="attview" data-v="list">호명 목록</button><button class="${UI.attView === 'grid' ? 'on' : ''}" data-act="attview" data-v="grid">한눈에 보기</button></div>
   <div class="toolbar"><input type="date" id="attDate" value="${UI.attDate}" data-bind="attDate" data-rerender="1" style="width:auto"></div>
   <div class="seg" style="flex-wrap:wrap">${ps.map((p) => `<button class="${p.id === pid ? 'on' : ''}" data-act="pick-period" data-id="${p.id}">${esc(p.label)}${S.att[p.id] ? ' ·저장됨' : ''}</button>`).join('')}</div>
+  ${periodDelBar(pid)}
   <div class="toolbar"><div class="itembox"><input id="newPeriod" placeholder="교시 추가 (예: 1교시 구강해부학)" value="${esc(UI.newPeriod)}" autocomplete="off" data-bind="newPeriod" data-suggest="period">
   <button type="button" class="itemdrop" data-act="pr-open" data-fk="np" aria-expanded="${UI.prOpen === 'np'}">불러오기</button>
   <div class="prpop" id="np-prpop" ${UI.prOpen === 'np' ? '' : 'hidden'}>${UI.prOpen === 'np' ? presetPop('np') : ''}</div></div><button class="btn ghost small" data-act="add-period">추가</button></div>
@@ -1315,6 +1328,20 @@ const A = {
   'pick-period': (d) => {
     UI.attPid = d.id;
   },
+  'per-del': (d) => {
+    UI.perDel = d.id;
+  },
+  'per-del-no': () => {
+    UI.perDel = null;
+  },
+  'per-del-yes': async (d) => {
+    const label = S.periods.find((p) => p.id === d.id)?.label || '';
+    UI.perDel = null;
+    delete UI.draft[d.id];
+    delete UI.touched[d.id];
+    UI.attPid = null;
+    await run('delete_period', { p_id: d.id }, (n) => `${label} 교시를 지웠어요${n ? ` · 자봉 ${n}건 무효 처리` : ''}`);
+  },
   'add-period': async () => {
     const l = UI.newPeriod.trim();
     if (!l) return toast('교시 이름을 입력하세요');
@@ -1721,6 +1748,7 @@ document.addEventListener('click', async (ev) => {
   if (!el || busy) return;
   const act = el.dataset.act;
   if (!/^att-clear/.test(act)) UI.attConfirm = false;
+  if (!/^per-del/.test(act)) UI.perDel = null;
   const fn = A[act];
   if (!fn) return;
   busy = true;

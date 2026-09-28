@@ -856,8 +856,16 @@ test('총대: 출석 탭(아침 출석 없음), 교시 추가, 출석 요청·�
   assert.match(await C.text(), /위에서 교시를 추가한 뒤 출석을 체크하세요/);
   assert.equal(await C.page.$('[data-act="pick-period"]'), null, '총대단 화면에는 아침 출석이 없다');
   await C.page.fill('#attDate', TODAY);
+  // 잘못 만든 빈 교시는 총대도 지울 수 있다
+  await C.page.fill('#newPeriod', '3교시 잘못 만듦');
+  assert.equal(await C.toast('[data-act="add-period"]'), '교시를 추가했어요');
+  await C.click('[data-act="per-del"]');
+  assert.match(await C.text('.att-confirm'), /3교시 잘못 만듦을\(를\) 지울까요/);
+  assert.equal(await C.toast('[data-act="per-del-yes"]'), '3교시 잘못 만듦 교시를 지웠어요');
+  assert.deepEqual(await C.page.$$eval('[data-act="pick-period"]', (b) => b.map((x) => x.textContent)), ['1교시 구강해부학']);
   await C.page.fill('#newPeriod', '2교시 생리학');
   assert.equal(await C.toast('[data-act="add-period"]'), '교시를 추가했어요');
+  assert.ok(await C.page.$('[data-act="per-del"]'), '내가 만든 저장 전 교시는 지우기 버튼이 있다');
   await C.click(`[data-act="setst"][data-sid="${await sid('김민서')}"][data-v="late"]`);
   await C.click(`[data-act="setst"][data-sid="${await sid('서지호')}"][data-v="absent"]`);
   assert.equal(await C.page.$('[data-act="att-save"]'), null, '총대단은 저장 대신 요청');
@@ -1476,6 +1484,47 @@ test('자봉 면제: 관리에서 지정·해제, 면제 학생은 자봉이 빠
   assert.equal(await A.toast('#exempt-card [data-act="stu-exempt"]'), '6번 자봉 면제를 풀었어요');
   assert.match(await A.text('#exempt-card'), /지정한 학생이 없어요/);
   assert.ok(!(await one(`select exempt from students where name = '서지호'`)).exempt);
+});
+
+test('교시 삭제(부총대): 확인 뒤 지우면 출결은 사라지고 그 교시의 자봉은 무효로 남는다, 총대단은 저장된 교시를 못 지운다', async () => {
+  await A.tab('attend');
+  await A.click('[data-act="attview"][data-v="list"]');
+  await A.page.fill('#attDate', '2026-01-07');
+  await A.page.fill('#newPeriod', '7교시 삭제용');
+  assert.equal(await A.toast('[data-act="add-period"]'), '교시를 추가했어요');
+  const before = await balances();
+  await A.click(`[data-act="setst"][data-sid="${await sid('김민서')}"][data-v="late"]`);
+  assert.equal(await A.toast('[data-act="att-save"]'), '저장했어요 · 새 자봉 1건');
+  assert.equal((await balances())['김민서'], before['김민서'] + 1);
+  // 총대단 화면: 부총대가 저장한 교시는 지우기 버튼이 없다
+  await C.reload();
+  await C.page.fill('#attDate', '2026-01-07');
+  await C.click('[data-act="pick-period"]:has-text("7교시 삭제용")');
+  assert.equal(await C.page.$('[data-act="per-del"]'), null);
+  await C.page.fill('#attDate', TODAY);
+  // 확인창: 그만두기 → 닫힘, 다른 버튼을 눌러도 닫힘
+  await A.click('[data-act="per-del"]');
+  assert.match(await A.text('.att-confirm'), /7교시 삭제용을\(를\) 지울까요\? .*자봉 1건은 "교시 삭제"로 무효 처리돼요/);
+  await A.fits('교시 삭제 확인');
+  await A.click('[data-act="per-del-no"]');
+  assert.equal(await A.page.$('[data-act="per-del-yes"]'), null);
+  await A.click('[data-act="per-del"]');
+  await A.click('[data-act="attview"][data-v="list"]');
+  assert.equal(await A.page.$('[data-act="per-del-yes"]'), null, '다른 버튼을 누르면 확인창이 닫힌다');
+  await A.click('[data-act="per-del"]');
+  assert.equal(await A.toast('[data-act="per-del-yes"]'), '7교시 삭제용 교시를 지웠어요 · 자봉 1건 무효 처리');
+  assert.equal(await A.text('#toast button'), '되돌리기');
+  assert.doesNotMatch(await A.text('.seg:has([data-act="pick-period"])'), /7교시 삭제용/);
+  assert.deepEqual(await balances(), before, '점수는 저장 전으로');
+  assert.deepEqual(await q(`select item, detail, void_reason from ledger where date = '2026-01-07'`), [{ item: '지각', detail: '7교시 삭제용', void_reason: '교시 삭제' }]);
+  assert.equal((await one(`select count(*)::int as n from periods where label = '7교시 삭제용'`)).n, 0);
+  // 학생 상세에는 무효로 남는다
+  await A.tab('board');
+  await A.click('#board-grid .tile:has(.no:text-is("1"))');
+  assert.match(await A.text(), /무효 사유: 교시 삭제|교시 삭제/);
+  await A.click('[data-act="back"]');
+  await A.tab('attend');
+  await A.page.fill('#attDate', TODAY);
 });
 
 test('서버에 못 닿으면 "불러오지 못했어요"와 다시 시도', async () => {

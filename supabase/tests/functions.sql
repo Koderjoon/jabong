@@ -33,10 +33,10 @@ select pg_temp.ok((select count(*) from presets where owner = '부총대') = 6 a
 select pg_temp.ok(
   (select array_agg(p.proname::text order by p.proname::text) from pg_proc p where p.pronamespace = 'public'::regnamespace and has_function_privilege('anon', p.oid, 'execute'))
   = (select array_agg(x order by x) from unnest(array['public_state', 'create_excuse', 'login', 'recover', 'private_state', 'logout', 'get_photo',
-      'create_request', 'change_pw', 'reset_pw', 'new_recovery', 'ensure_period', 'save_attendance', 'request_attendance', 'review_attendance',
+      'create_request', 'change_pw', 'reset_pw', 'new_recovery', 'ensure_period', 'delete_period', 'save_attendance', 'request_attendance', 'review_attendance',
       'add_entries', 'edit_entry', 'void_entry', 'review_request', 'review_excuse', 'roster_apply', 'my_presets_save', 'my_periods_save', 'purge', 'backup_dump',
       'restore_backup', 'history_move', 'history_drop', 'history_restore', 'ops_list']) x),
-  '브라우저(anon)에 열린 함수가 정확히 화면이 쓰는 30개');
+  '브라우저(anon)에 열린 함수가 정확히 화면이 쓰는 31개');
 select pg_temp.ok(not exists (select 1 from pg_proc p where p.pronamespace = 'public'::regnamespace
   and has_function_privilege('anon', p.oid, 'execute') <> has_function_privilege('authenticated', p.oid, 'execute')), 'anon과 authenticated 권한이 같음');
 select pg_temp.ok(not exists (select 1 from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname !~ '^_'
@@ -645,5 +645,60 @@ select pg_temp.expect(format('select history_move(%L, %s, true)', :'t', :op_add 
 \ir ../schema.sql
 select pg_temp.ok(history_move(:'t', :op_add - 1, true) is not null, 'schema.sql을 다시 실행하면 옛 기록도 뒤로 갈 수 있음');
 \echo 15. 검토에서 찾은 문제 통과
+
+-- ───────── 16. 교시 삭제 ─────────
+set role anon;
+select (login('부총대', '1234')::json ->> 'token') as t \gset
+select (login('총대', '1234')::json ->> 'token') as ct \gset
+select (login('실습부장 2', '1234')::json ->> 'token') as pt \gset
+select (login('학습부장', '1234')::json ->> 'token') as ot \gset
+set role postgres;
+select id as d1 from students where active order by no limit 1 \gset
+select id as d2 from students where active order by no offset 1 limit 1 \gset
+set role anon;
+-- 빈 교시: 총대단도 지울 수 있다
+select ensure_period(:'ct', '2026-06-01', '1교시 빈 교시', false) as dp0 \gset
+select pg_temp.ok(delete_period(:'ct', :'dp0') = 0, '빈 교시는 총대도 지움');
+set role postgres;
+select pg_temp.ok(not exists (select 1 from periods where id = :'dp0') and (select summary from ops order by id desc limit 1) = '교시 삭제: 6/1 1교시 빈 교시', '교시 삭제 작업 요약');
+set role anon;
+-- 자기 출석 요청만 있는 교시는 총대가 지울 수 있고, 요청도 함께 지워진다
+select ensure_period(:'ct', '2026-06-01', '2교시', false) as dp1 \gset
+select request_attendance(:'ct', :'dp1', format('{"%s":"late"}', :'d1')::jsonb);
+select pg_temp.expect_msg(format('select delete_period(%L, %L)', :'pt', :'dp1'), '%부총대만 지울 수 있어요', '다른 사람의 요청이 있으면 다른 총대단은 못 지움');
+select pg_temp.expect_msg(format('select delete_period(%L, %L)', :'t', :'dp1'), '%처리하지 않은 출석 요청%', '부총대도 대기 중 출석 요청이 있으면 멈춤');
+select pg_temp.expect(format('select delete_period(%L, %L)', :'ot', :'dp1'), '42501', '출석 권한 없는 직책');
+select pg_temp.expect_msg(format('select delete_period(%L, %L)', :'t', gen_random_uuid()), '교시를 찾을 수 없어요', '없는 교시');
+select delete_period(:'ct', :'dp1');
+set role postgres;
+select pg_temp.ok(not exists (select 1 from attendance_requests where period_id = :'dp1'), '요청도 함께 지워짐');
+set role anon;
+-- 저장된 교시: 총대단은 못 지우고, 부총대가 지우면 그 교시의 자봉은 무효로 남는다
+select ensure_period(:'t', '2026-06-02', '3교시 해부학', false) as dp2 \gset
+select save_attendance(:'t', :'dp2', format('{"%s":"late","%s":"absent"}', :'d1', :'d2')::jsonb);
+set role postgres;
+select pg_temp.bal(:'d1') as b1, pg_temp.bal(:'d2') as b2 \gset
+set role anon;
+select pg_temp.expect_msg(format('select delete_period(%L, %L)', :'ct', :'dp2'), '출석이 저장됐거나%', '저장된 교시는 총대가 못 지움');
+-- 처리하지 않은 공결 신청이 있으면 멈춘다
+set role postgres;
+select id as dl from ledger where period_id = :'dp2' and student_id = :'d2' \gset
+set role anon;
+select create_excuse(:'d2', :'dl', '', null) as dx \gset
+select pg_temp.expect_msg(format('select delete_period(%L, %L)', :'t', :'dp2'), '%처리하지 않은 공결 신청%', '대기 중 공결이 있으면 멈춤');
+select review_excuse(:'t', :'dx', false, '확인');
+select pg_temp.ok(delete_period(:'t', :'dp2') = 2, '부총대: 자봉 2건 무효 처리');
+set role postgres;
+select pg_temp.ok(pg_temp.bal(:'d1') = :b1 - 1 and pg_temp.bal(:'d2') = :b2 - 2, '점수에서 빠짐');
+select pg_temp.ok((select count(*) from ledger where detail = '3교시 해부학' and date = '2026-06-02' and void_reason = '교시 삭제' and period_id is null) = 2, '자봉은 "교시 삭제" 무효로 남음');
+select pg_temp.ok(not exists (select 1 from attendance where period_id = :'dp2') and not exists (select 1 from periods where id = :'dp2'), '출결·교시 삭제');
+-- 이 작업만 되돌리기로 교시·출결·자봉이 모두 돌아온다
+select max(id) as opdel from ops where kind = 'delete_period' \gset
+set role anon;
+select history_drop(:'t', :opdel, false);
+set role postgres;
+select pg_temp.ok(pg_temp.bal(:'d1') = :b1 and pg_temp.bal(:'d2') = :b2 and (select count(*) from attendance where period_id = :'dp2') = 2
+  and (select count(*) from ledger where period_id = :'dp2' and voided_at is null) = 2, '교시 삭제 되돌리기');
+\echo 16. 교시 삭제 통과
 
 \echo 모든 서버 함수 테스트 통과
