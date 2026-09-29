@@ -18,6 +18,19 @@ jobs:
           if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_ANON_KEY" ]; then
             echo "저장소 Secrets에 SUPABASE_URL, SUPABASE_ANON_KEY를 넣어 주세요 (README 4번)"; exit 1
           fi
-          curl -fsS -X POST "$SUPABASE_URL/rest/v1/rpc/public_state" \
-            -H "apikey: $SUPABASE_ANON_KEY" -H "Content-Type: application/json" -d '{}' -o /dev/null
+          # 붙여넣을 때 섞이기 쉬운 공백·줄바꿈, 끝의 / 나 /rest/v1 을 떼어 낸다
+          URL=$(printf '%s' "$SUPABASE_URL" | tr -d '[:space:]' | sed -E 's#/+$##; s#/rest/v1$##; s#/+$##')
+          KEY=$(printf '%s' "$SUPABASE_ANON_KEY" | tr -d '[:space:]')
+          case "$URL" in
+            https://*.supabase.co) ;;
+            *) echo "SUPABASE_URL은 https://프로젝트ID.supabase.co 모양이어야 해요 (지금 값의 모양: ${URL%%.*}.…)"; exit 1 ;;
+          esac
+          code=$(curl -sS -o body.txt -w '%{http_code}' -X POST "$URL/rest/v1/rpc/public_state" \
+            -H "apikey: $KEY" -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" -d '{}')
+          if [ "$code" != "200" ]; then
+            echo "Supabase 응답 $code:"; head -c 300 body.txt; echo
+            [ "$code" = "401" ] && echo "→ SUPABASE_ANON_KEY가 맞는지 확인해 주세요"
+            [ "$code" = "404" ] && echo "→ SUPABASE_URL이 이 앱의 Supabase 프로젝트 주소인지, schema.sql을 그 프로젝트에서 실행했는지 확인해 주세요"
+            exit 1
+          fi
           echo "깨웠어요"
