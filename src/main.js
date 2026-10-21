@@ -69,8 +69,9 @@ const TABS = {
 const canAttend = () => Boolean(S.accounts.find((a) => a.role === UI.user)?.attend);
 const tabsOf = (role) => (role === 'officer' && UI.user && canAttend() ? [['attend', '출석'], ...TABS.officer] : TABS[role]);
 const STATUS = { pending: '대기', approved: '승인', rejected: '반려' };
+// 하루 전체 공결 신청은 여러 줄이어도 한 건으로 센다
 const pendingCount = () =>
-  [S.requests, S.excuses, S.attRequests || []].reduce((n, l) => n + l.filter((x) => x.status === 'pending').length, 0);
+  [S.requests, S.attRequests || []].reduce((n, l) => n + l.filter((x) => x.status === 'pending').length, 0) + excGroups(S.excuses.filter((x) => x.status === 'pending')).length;
 
 // 안내 문구. undo(작업 id)를 주면 "되돌리기" 버튼을 붙이고 조금 더 오래 보여 준다.
 function toast(msg, undo) {
@@ -414,6 +415,27 @@ function vReqs() {
 
 const periodLabel = (e) => S.periods.find((p) => p.id === e.pid)?.label || e.detail;
 
+// 공결 신청을 묶음째로 모은다. 하루 전체 신청(grp)은 한 묶음, 나머지는 한 건씩.
+function excGroups(list) {
+  const m = new Map();
+  list.forEach((x) => {
+    const k = x.grp || x.id;
+    if (!m.has(k)) m.set(k, []);
+    m.get(k).push(x);
+  });
+  return [...m.values()];
+}
+// "9/26(금) 하루 전체 · 1교시 결석, 2교시 지각 (+3)" 또는 "9/26(금) 1교시 결석 +2"
+function excText(g, pts) {
+  const es = g.map((x) => S.ledger.find((l) => l.id === x.eid)).filter(Boolean);
+  if (!es.length) return '';
+  if (g[0].grp) {
+    const sum = es.reduce((a, e) => a + Number(e.points), 0);
+    return `${mdw(es[0].date)} <b>하루 전체</b> · ${es.map((e) => `${esc(periodLabel(e))} ${e.item}`).join(', ')}${pts ? ` (${sgn(sum)})` : ''}`;
+  }
+  return `${mdw(es[0].date)} ${esc(periodLabel(es[0]))} ${es[0].item}${pts ? ` ${sgn(es[0].points)}` : ''}`;
+}
+
 function vExcuse() {
   const f = UI.excForm;
   const s = S.students.find((x) => x.active && x.no === Number(f.no));
@@ -422,15 +444,25 @@ function vExcuse() {
         .filter((e) => e.sid === s.id && L.excusable(e) && !S.excuses.some((x) => x.eid === e.id && x.status === 'pending'))
         .sort((a, b) => b.date.localeCompare(a.date))
     : [];
-  const mine = s ? S.excuses.filter((x) => x.sid === s.id).reverse().sort((a, b) => b.at.localeCompare(a.at)) : [];
+  const mine = s ? excGroups(S.excuses.filter((x) => x.sid === s.id)).sort((a, b) => b[0].at.localeCompare(a[0].at)) : [];
+  // 날짜별로 묶고, 그날 두 건 이상이면 맨 위에 "하루 전체"
+  const days = [...new Set(cands.map((e) => e.date))];
+  const opts = days.map((d) => {
+    const es = cands.filter((e) => e.date === d);
+    const cnt = ['결석', '지각'].map((k) => [k, es.filter((e) => e.item === k).length]).filter(([, n]) => n).map(([k, n]) => `${k} ${n}`).join(' · ');
+    return `<optgroup label="${mdw(d)}">${es.length > 1 ? `<option value="day:${d}" ${f.eid === 'day:' + d ? 'selected' : ''}>${mdw(d)} 하루 전체 (${cnt})</option>` : ''}${es
+      .map((e) => `<option value="${e.id}" ${f.eid === e.id ? 'selected' : ''}>${mdw(e.date)} ${esc(periodLabel(e))} ${e.item} ${sgn(e.points)}</option>`)
+      .join('')}</optgroup>`;
+  });
   return `<div><h1>공결 신청</h1><p class="sub">번호만 입력하면 돼요. 부총대가 증빙을 확인하고 승인하면 해당 자봉이 무효 처리돼요.</p></div>
   <div class="card"><label class="fld"><span>내 번호</span><input id="exc-no" inputmode="numeric" value="${esc(f.no)}" data-bind="excForm.no" data-rerender="1" placeholder="예: 56"></label>
-  ${s ? (cands.length ? `<label class="fld"><span>공결 처리할 출결</span><select id="exc-eid" data-bind="excForm.eid"><option value="">선택하세요</option>${cands.map((e) => `<option value="${e.id}" ${f.eid === e.id ? 'selected' : ''}>${mdw(e.date)} ${esc(periodLabel(e))} ${e.item} ${sgn(e.points)}</option>`).join('')}</select></label>
+  ${s ? (cands.length ? `<label class="fld"><span>공결 처리할 출결</span><select id="exc-eid" data-bind="excForm.eid"><option value="">선택하세요</option>${opts.join('')}</select></label>
+  <p class="hint" style="margin:0">하루를 통째로 빠졌으면 그 날짜의 "하루 전체"를 고르세요. 그날의 지각·결석이 한 번에 신청돼요.</p>
   <label class="fld"><span>사유 (선택)</span><textarea id="exc-reason" data-bind="excForm.reason" placeholder="예: 예비군 훈련">${esc(f.reason)}</textarea></label>
   ${photoField('excForm', f.photo)}<button class="btn" data-act="exc-add">신청하기</button>` : '<p class="note">공결 신청할 지각·결석 기록이 없어요.</p>') : f.no ? '<p class="note">없는 번호예요.</p>' : ''}</div>
-  ${mine.length ? `<h2>${s.no}번 신청 내역</h2>${mine.map((x) => {
-    const e = S.ledger.find((l) => l.id === x.eid);
-    return `<div class="card"><div class="req-top"><span class="pill ${x.status}">${STATUS[x.status]}</span><span class="note">${esc(x.at)}</span></div><div class="req-body">${e ? `${mdw(e.date)} ${esc(periodLabel(e))} ${e.item}` : ''}${x.reason ? ` · ${esc(x.reason)}` : ''}</div>${x.note ? `<div class="note">반려 사유: ${esc(x.note)}</div>` : ''}</div>`;
+  ${mine.length ? `<h2>${s.no}번 신청 내역</h2>${mine.map((g) => {
+    const x = g[0];
+    return `<div class="card"><div class="req-top"><span class="pill ${x.status}">${STATUS[x.status]}</span><span class="note">${esc(x.at)}</span></div><div class="req-body">${excText(g, false)}${x.reason ? ` · ${esc(x.reason)}` : ''}</div>${x.note ? `<div class="note">반려 사유: ${esc(x.note)}</div>` : ''}</div>`;
   }).join('')}` : ''}`;
 }
 
@@ -550,16 +582,16 @@ function vRecord() {
 
 function vInbox() {
   const rq = S.requests.filter((r) => r.status === 'pending');
-  const ex = S.excuses.filter((x) => x.status === 'pending');
+  const ex = excGroups(S.excuses.filter((x) => x.status === 'pending'));
   const ar = (S.attRequests || []).filter((a) => a.status === 'pending');
   return `<div><h1>요청함</h1><p class="sub">출석 요청 ${ar.length}건 · 총대단 요청 ${rq.length}건 · 공결 신청 ${ex.length}건</p></div>
   ${ar.length ? `<h2>출석 요청</h2>${ar.map((a) => attReqCard(a, true)).join('')}` : ''}
   <h2>총대단 요청</h2>${rq.map((r) => reqCard(r, true)).join('') || '<p class="empty">대기 중인 요청이 없어요.</p>'}
-  <h2>공결 신청</h2>${ex.map((x) => {
-    const e = S.ledger.find((l) => l.id === x.eid);
-    return `<div class="card"><div class="req-top"><span class="pill pending">대기</span><span class="note">${esc(x.at)}</span></div>
-    <div class="req-body"><b>${noOf(x.sid)}번 ${esc(stu(x.sid)?.name || '')}</b> · ${e ? `${mdw(e.date)} ${esc(periodLabel(e))} ${e.item} ${sgn(e.points)}` : ''}</div>${x.reason ? `<div class="note">사유: ${esc(x.reason)}</div>` : '<div class="note">사유 없음</div>'}${x.photo ? photoView(x.photo) : '<div class="note">증빙 사진 없음</div>'}
-    <input id="note-${x.id}" placeholder="반려 사유 (반려할 때 필수)" autocomplete="off" data-suggest="note"><div class="btns"><button class="btn ok small" data-act="exc-ok" data-id="${x.id}">승인 (자봉 무효 처리)</button><button class="btn danger small" data-act="exc-no" data-id="${x.id}">반려</button></div></div>`;
+  <h2>공결 신청</h2>${ex.map((g) => {
+    const x = g[0];
+    return `<div class="card"><div class="req-top"><span class="pill pending">대기${g.length > 1 ? ` · ${g.length}건` : ''}</span><span class="note">${esc(x.at)}</span></div>
+    <div class="req-body"><b>${noOf(x.sid)}번 ${esc(stu(x.sid)?.name || '')}</b> · ${excText(g, true)}</div>${x.reason ? `<div class="note">사유: ${esc(x.reason)}</div>` : '<div class="note">사유 없음</div>'}${x.photo ? photoView(x.photo) : '<div class="note">증빙 사진 없음</div>'}
+    <input id="note-${x.id}" placeholder="반려 사유 (반려할 때 필수)" autocomplete="off" data-suggest="note"><div class="btns"><button class="btn ok small" data-act="exc-ok" data-id="${x.id}">${g.length > 1 ? `${g.length}건 모두 승인` : '승인'} (자봉 무효 처리)</button><button class="btn danger small" data-act="exc-no" data-id="${x.id}">반려</button></div></div>`;
   }).join('') || '<p class="empty">대기 중인 공결 신청이 없어요.</p>'}
   ${vDone()}`;
 }
@@ -568,7 +600,7 @@ function vInbox() {
 function vDone() {
   const items = [
     ...S.requests.filter((r) => r.status !== 'pending').map((r) => ({ kind: 'req', at: r.reviewedAt || r.at, r })),
-    ...S.excuses.filter((x) => x.status !== 'pending').map((x) => ({ kind: 'exc', at: x.reviewedAt || x.at, x })),
+    ...excGroups(S.excuses.filter((x) => x.status !== 'pending')).map((g) => ({ kind: 'exc', at: g[0].reviewedAt || g[0].at, x: g[0], g })),
     ...(S.attRequests || []).filter((a) => a.status !== 'pending').map((a) => ({ kind: 'att', at: a.reviewedAt || a.at, a })),
   ].sort((a, b) => b.at.localeCompare(a.at));
   const shown = items.slice(0, UI.doneLimit);
@@ -583,9 +615,9 @@ function vDone() {
       ${r.note ? `<div class="note">반려 사유: ${esc(r.note)}</div>` : ''}${photoView(r.photo)}</div>`;
     }
     const x = it.x;
-    const e = S.ledger.find((l) => l.id === x.eid);
+    const txt = excText(it.g, true);
     return `<div class="card"><div class="req-top"><span class="pill ${x.status}">공결 ${STATUS[x.status]}</span><span class="note">${esc(x.reviewer || '')} · ${esc(it.at)}</span></div>
-    <div class="req-body"><b>${noOf(x.sid)}번 ${esc(stu(x.sid)?.name || '')}</b>${e ? ` · ${mdw(e.date)} ${esc(periodLabel(e))} ${e.item} ${sgn(e.points)}` : ''}</div>
+    <div class="req-body"><b>${noOf(x.sid)}번 ${esc(stu(x.sid)?.name || '')}</b>${txt ? ` · ${txt}` : ''}</div>
     <div class="note">신청: ${esc(x.at)}${x.reason ? ` · 사유: ${esc(x.reason)}` : ''}</div>
     ${x.note ? `<div class="note">반려 사유: ${esc(x.note)}</div>` : ''}${photoView(x.photo)}</div>`;
   };
@@ -1465,7 +1497,7 @@ const A = {
     return true;
   },
   'exc-ok': async (d) => {
-    await run('review_excuse', { p_id: d.id, p_approve: true, p_note: null }, '공결을 승인했어요 · 해당 자봉이 무효 처리됐어요');
+    await run('review_excuse', { p_id: d.id, p_approve: true, p_note: null }, S.excuses.some((x) => x.id === d.id && x.grp) ? '하루 전체 공결을 승인했어요 · 그날 자봉이 무효 처리됐어요' : '공결을 승인했어요 · 해당 자봉이 무효 처리됐어요');
     clearDrafts();
     UI.noticeText = null;
     return true;
@@ -1479,11 +1511,14 @@ const A = {
     const s = S.students.find((x) => x.active && x.no === Number(f.no));
     if (!s) return toast('번호를 확인하세요');
     if (!f.eid) return toast('공결 처리할 출결을 고르세요');
-    await rpc('create_excuse', { p_student: s.id, p_ledger: f.eid, p_reason: f.reason.trim(), p_photo: f.photo || null });
+    const day = f.eid.startsWith('day:') ? f.eid.slice(4) : null;
+    const n = day
+      ? await rpc('create_excuse_day', { p_student: s.id, p_date: day, p_reason: f.reason.trim(), p_photo: f.photo || null })
+      : await rpc('create_excuse', { p_student: s.id, p_ledger: f.eid, p_reason: f.reason.trim(), p_photo: f.photo || null });
     UI.excForm = { no: f.no, eid: '', reason: '', photo: '' };
     await refresh();
     render();
-    return toast('신청했어요 · 부총대 확인을 기다려요');
+    return toast(day ? `하루 전체(${n}건)를 신청했어요 · 부총대 확인을 기다려요` : '신청했어요 · 부총대 확인을 기다려요');
   },
   'done-more': () => {
     UI.doneLimit += 20;

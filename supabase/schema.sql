@@ -144,6 +144,10 @@ create table if not exists excuses (
 );
 
 -- 총대단이 보낸 출석 요청. 부총대가 승인하면 그 교시의 출석으로 저장된다.
+-- 하루 전체 공결: 그날의 지각·결석마다 한 줄씩 만들고 같은 grp로 묶는다 (승인·반려도 묶음째)
+alter table excuses add column if not exists grp uuid;
+create index if not exists excuses_grp on excuses (grp) where grp is not null;
+
 create table if not exists attendance_requests (
   id uuid primary key default gen_random_uuid(),
   period_id uuid not null references periods on delete cascade,
@@ -195,6 +199,10 @@ create index if not exists op_changes_row on op_changes (tbl, row_key);
 update op_changes set before = case when before is not null and not before ? 'exempt' then before || '{"exempt": false}' else before end,
   after = case when after is not null and not after ? 'exempt' then after || '{"exempt": false}' else after end
 where tbl = 'students' and ((before is not null and not before ? 'exempt') or (after is not null and not after ? 'exempt'));
+-- 공결 표에 grp 칸이 생기기 전의 작업 기록도
+update op_changes set before = case when before is not null and not before ? 'grp' then before || '{"grp": null}' else before end,
+  after = case when after is not null and not after ? 'grp' then after || '{"grp": null}' else after end
+where tbl = 'excuses' and ((before is not null and not before ? 'grp') or (after is not null and not after ? 'grp'));
 -- 항목 표에 kind 칸이 생기기 전의 작업 기록도 같은 방식으로 채운다
 update op_changes set before = case when before is not null and not before ? 'kind' then before || '{"kind": "item"}' else before end,
   after = case when after is not null and not after ? 'kind' then after || '{"kind": "item"}' else after end
@@ -486,7 +494,7 @@ language sql stable security definer set search_path = public as $$
       ) order by l.date, l.created_at), '[]')
       from ledger l left join ledger_private lp on lp.ledger_id = l.id),
     'excuses', (select coalesce(json_agg(json_build_object(
-        'id', x.id, 'sid', x.student_id, 'eid', x.ledger_id, 'reason', x.reason, 'status', x.status,
+        'id', x.id, 'sid', x.student_id, 'eid', x.ledger_id, 'grp', x.grp, 'reason', x.reason, 'status', x.status,
         'note', x.review_note, 'at', _kst(x.created_at),
         'reviewer', case when p_private then x.reviewed_by end,
         'reviewedAt', case when p_private then _kst(x.reviewed_at) end,
@@ -535,6 +543,27 @@ begin
   values (p_student, p_ledger, left(coalesce(trim(p_reason), ''), 500), _photo(p_photo))
   returning id into nid;
   return nid;
+end $$;
+
+-- 하루 전체 공결 신청: 그날 공결 신청할 수 있는 지각·결석(이미 대기 중인 것은 빼고)을 한꺼번에. 사진은 한 장을 함께 쓴다.
+create or replace function create_excuse_day(p_student uuid, p_date date, p_reason text, p_photo text) returns int
+language plpgsql security definer set search_path = public as $$
+declare g uuid := gen_random_uuid(); ph uuid; ids uuid[]; summ text;
+begin
+  perform _wlock();
+  if p_date is null then raise exception '날짜를 고르세요'; end if;
+  select array_agg(l.id order by l.created_at) into ids from ledger l
+  where l.student_id = p_student and l.date = p_date and l.voided_at is null and l.item in ('지각', '결석') and l.src in ('att', 'manual', 'request')
+    and not exists (select 1 from excuses x where x.ledger_id = l.id and x.status = 'pending');
+  if ids is null then raise exception '그날 공결 신청할 지각·결석 기록이 없어요'; end if;
+  select string_agg(format('%s %s', item, n), ' · ' order by item) into summ
+    from (select item, count(*) n from ledger where id = any (ids) group by item) t;
+  perform _op((select no from students where id = p_student) || '번 학생', 'create_excuse_day',
+    format('하루 공결 신청: %s번 %s (%s)', (select no from students where id = p_student), to_char(p_date, 'FMMM/FMDD'), summ));
+  ph := _photo(p_photo);
+  insert into excuses (student_id, ledger_id, reason, photo_id, grp)
+  select p_student, i, left(coalesce(trim(p_reason), ''), 500), ph, g from unnest(ids) with ordinality u(i, o) order by o;
+  return array_length(ids, 1);
 end $$;
 
 create or replace function login(p_role text, p_pw text) returns json
@@ -886,28 +915,34 @@ end $$;
 
 create or replace function review_excuse(p_token uuid, p_id uuid, p_approve boolean, p_note text) returns void
 language plpgsql security definer set search_path = public as $$
-declare who text := _session(p_token, true); x excuses; e ledger;
+declare who text := _session(p_token, true); x excuses; e ledger; r excuses; n int;
 begin
   perform _wlock();
   select * into x from excuses where id = p_id for update;
   if not found or x.status <> 'pending' then raise exception '이미 처리된 신청이에요'; end if;
+  if not p_approve and coalesce(trim(p_note), '') = '' then raise exception '반려 사유를 입력하세요'; end if;
+  -- 하루 전체 신청은 같은 grp의 대기 중인 것을 함께 처리한다
+  select count(*) into n from excuses where status = 'pending' and (id = p_id or (x.grp is not null and grp = x.grp));
   perform _op(who, 'review_excuse', format('공결 %s: %s번 %s', case when p_approve then '승인' else '반려' end,
-    (select no from students where id = x.student_id), coalesce((select to_char(date, 'FMMM/FMDD') || ' ' || item from ledger where id = x.ledger_id), '')));
-  if p_approve then
-    select * into e from ledger where id = x.ledger_id;
-    if e.id is not null and e.voided_at is null then
-      perform _void(e.id, case when x.reason <> '' then format('공결 승인 (%s)', x.reason) else '공결 승인' end, who);
-      if e.period_id is not null then
-        update periods set saved_at = now() where id = e.period_id;
-        insert into attendance (period_id, student_id, status) values (e.period_id, x.student_id, 'excused')
-        on conflict (period_id, student_id) do update set status = 'excused';
+    (select no from students where id = x.student_id),
+    case when x.grp is not null then coalesce((select to_char(date, 'FMMM/FMDD') from ledger where id = x.ledger_id), '') || format(' 하루 (%s건)', n)
+      else coalesce((select to_char(date, 'FMMM/FMDD') || ' ' || item from ledger where id = x.ledger_id), '') end));
+  for r in select * from excuses where status = 'pending' and (id = p_id or (x.grp is not null and grp = x.grp)) order by created_at, id for update loop
+    if p_approve then
+      select * into e from ledger where id = r.ledger_id;
+      if e.id is not null and e.voided_at is null then
+        perform _void(e.id, case when r.reason <> '' then format('공결 승인 (%s)', r.reason) else '공결 승인' end, who);
+        if e.period_id is not null then
+          update periods set saved_at = now() where id = e.period_id;
+          insert into attendance (period_id, student_id, status) values (e.period_id, r.student_id, 'excused')
+          on conflict (period_id, student_id) do update set status = 'excused';
+        end if;
       end if;
+      update excuses set status = 'approved', reviewed_by = who, reviewed_at = now() where id = r.id;
+    else
+      update excuses set status = 'rejected', review_note = trim(p_note), reviewed_by = who, reviewed_at = now() where id = r.id;
     end if;
-    update excuses set status = 'approved', reviewed_by = who, reviewed_at = now() where id = p_id;
-  else
-    if coalesce(trim(p_note), '') = '' then raise exception '반려 사유를 입력하세요'; end if;
-    update excuses set status = 'rejected', review_note = trim(p_note), reviewed_by = who, reviewed_at = now() where id = p_id;
-  end if;
+  end loop;
 end $$;
 
 -- 명단 변경을 한 번에 적용한다.
@@ -1300,7 +1335,7 @@ do $$ declare f text; begin
   if exists (select 1 from pg_roles where rolname = 'anon') then
     execute 'revoke execute on all functions in schema public from public, anon, authenticated';
     foreach f in array array[
-      'public_state()', 'create_excuse(uuid,uuid,text,text)', 'login(text,text)', 'recover(text,text,text)',
+      'public_state()', 'create_excuse(uuid,uuid,text,text)', 'create_excuse_day(uuid,date,text,text)', 'login(text,text)', 'recover(text,text,text)',
       'private_state(uuid)', 'logout(uuid)', 'get_photo(uuid,uuid)', 'create_request(uuid,date,uuid[],text,text,numeric,text,text)',
       'change_pw(uuid,text,text)', 'reset_pw(uuid,text,text)', 'new_recovery(uuid,text)', 'ensure_period(uuid,date,text,boolean)', 'delete_period(uuid,uuid)', 'rename_period(uuid,uuid,text)',
       'save_attendance(uuid,uuid,jsonb)', 'request_attendance(uuid,uuid,jsonb)', 'review_attendance(uuid,uuid,boolean,text)', 'add_entries(uuid,date,uuid[],text,text,numeric)', 'edit_entry(uuid,uuid,date,text,text,numeric,text)',

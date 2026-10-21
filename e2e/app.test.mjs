@@ -1494,6 +1494,40 @@ test('자봉 면제: 관리에서 지정·해제, 면제 학생은 자봉이 빠
   assert.ok(!(await one(`select exempt from students where name = '서지호'`)).exempt);
 });
 
+test('하루 전체 공결: 학생은 날짜의 "하루 전체"를 골라 한 번에 신청, 부총대는 한 카드로 모두 승인', async () => {
+  const tok = await A.token();
+  const yd = await sid('이도윤');
+  const no = (await one(`select no from students where id = $1`, [yd])).no;
+  for (const l of ['1교시', '2교시']) {
+    const p = (await one(`select ensure_period($1, '2026-01-09', $2, false) as p`, [tok, l])).p;
+    await db.query(`select save_attendance($1, $2, $3::jsonb)`, [tok, p, JSON.stringify({ [yd]: 'absent' })]);
+  }
+  const before = (await balances())['이도윤'];
+  await S.reload();
+  await S.tab('excuse');
+  await S.page.fill('#exc-no', String(no));
+  const opt = await S.page.$eval('#exc-eid option[value="day:2026-01-09"]', (o) => o.textContent);
+  assert.match(opt, /1\/9\(금\) 하루 전체 \(결석 2\)/);
+  assert.equal(await S.page.$eval('#exc-eid optgroup[label^="1/9"]', (g) => g.querySelectorAll('option').length), 3, '하루 전체 + 교시 둘');
+  await S.page.selectOption('#exc-eid', 'day:2026-01-09');
+  await S.page.fill('#exc-reason', '독감');
+  await S.fits('하루 전체 공결 신청');
+  assert.equal(await S.toast('[data-act="exc-add"]'), '하루 전체(2건)를 신청했어요 · 부총대 확인을 기다려요');
+  assert.match(await S.text(), /1\/9\(금\) 하루 전체 · (1교시 결석, 2교시 결석|2교시 결석, 1교시 결석) · 독감/);
+  assert.equal(await S.page.$('#exc-eid option[value="day:2026-01-09"]'), null, '신청한 날은 다시 고를 수 없다');
+  // 부총대: 한 카드, 한 번에 승인
+  await A.reload();
+  await A.tab('inbox');
+  const card = `.card:has(.req-body:has-text("하루 전체"))`;
+  assert.equal((await A.page.$$(card)).length, 1);
+  assert.match(await A.text(`${card} .pill`), /대기 · 2건/);
+  assert.match(await A.text(`${card} .req-body`), /결석, .*결석 \(\+4\)/);
+  assert.equal(await A.toast(`${card} [data-act="exc-ok"]`), '하루 전체 공결을 승인했어요 · 그날 자봉이 무효 처리됐어요');
+  assert.equal((await balances())['이도윤'], before - 4);
+  assert.equal((await one(`select count(*)::int as n from attendance a join periods p on p.id = a.period_id where p.date = '2026-01-09' and a.status = 'excused'`)).n, 2);
+  assert.equal((await A.page.$$(`.card:has(.pill:text-is("공결 승인")):has-text("하루 전체")`)).length, 1, '처리한 내역도 한 카드');
+});
+
 test('교시 이름 바꾸기: 검사·취소(Esc)·Enter로 저장, 그 교시 자봉의 세부내용도 함께, 같은 날 같은 이름은 막는다', async () => {
   await A.tab('attend');
   await A.click('[data-act="attview"][data-v="list"]');

@@ -32,11 +32,11 @@ select pg_temp.ok((select count(*) from presets where owner = '부총대') = 6 a
 -- ───────── 1. 노출과 권한 ─────────
 select pg_temp.ok(
   (select array_agg(p.proname::text order by p.proname::text) from pg_proc p where p.pronamespace = 'public'::regnamespace and has_function_privilege('anon', p.oid, 'execute'))
-  = (select array_agg(x order by x) from unnest(array['public_state', 'create_excuse', 'login', 'recover', 'private_state', 'logout', 'get_photo',
+  = (select array_agg(x order by x) from unnest(array['public_state', 'create_excuse', 'create_excuse_day', 'login', 'recover', 'private_state', 'logout', 'get_photo',
       'create_request', 'change_pw', 'reset_pw', 'new_recovery', 'ensure_period', 'delete_period', 'rename_period', 'save_attendance', 'request_attendance', 'review_attendance',
       'add_entries', 'edit_entry', 'void_entry', 'review_request', 'review_excuse', 'roster_apply', 'my_presets_save', 'my_periods_save', 'purge', 'backup_dump',
       'restore_backup', 'history_move', 'history_drop', 'history_restore', 'ops_list']) x),
-  '브라우저(anon)에 열린 함수가 정확히 화면이 쓰는 32개');
+  '브라우저(anon)에 열린 함수가 정확히 화면이 쓰는 33개');
 select pg_temp.ok(not exists (select 1 from pg_proc p where p.pronamespace = 'public'::regnamespace
   and has_function_privilege('anon', p.oid, 'execute') <> has_function_privilege('authenticated', p.oid, 'execute')), 'anon과 authenticated 권한이 같음');
 select pg_temp.ok(not exists (select 1 from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname !~ '^_'
@@ -748,5 +748,62 @@ select history_drop(:'t', :opren, false);
 set role postgres;
 select pg_temp.ok((select label from periods where id = :'rp') = '1교시 오타' and (select count(*) from ledger where period_id = :'rp' and detail = '1교시 오타') = 2, '이름 바꾸기 되돌리기');
 \echo 18. 교시 이름 바꾸기 통과
+
+-- ───────── 19. 하루 전체 공결 ─────────
+set role anon;
+select ensure_period(:'t', '2026-06-20', '1교시', false) as dy1 \gset
+select ensure_period(:'t', '2026-06-20', '2교시', false) as dy2 \gset
+select ensure_period(:'t', '2026-06-20', '3교시', false) as dy3 \gset
+select save_attendance(:'t', :'dy1', format('{"%s":"late","%s":"absent"}', :'d1', :'d2')::jsonb);
+select save_attendance(:'t', :'dy2', format('{"%s":"absent","%s":"absent"}', :'d1', :'d2')::jsonb);
+select save_attendance(:'t', :'dy3', format('{"%s":"absent"}', :'d1')::jsonb);
+set role postgres;
+select id as dyl3 from ledger where period_id = :'dy3' and student_id = :'d1' \gset
+select pg_temp.bal(:'d1') as db1 \gset
+set role anon;
+-- 한 교시는 따로 먼저 신청해 두었다 → 하루 전체는 나머지 2건만
+select create_excuse(:'d1', :'dyl3', '', null);
+select pg_temp.expect_msg(format('select create_excuse_day(%L, %L, %L, null)', :'d1', '2026-06-21', ''), '그날 공결 신청할 지각·결석 기록이 없어요', '기록 없는 날');
+select pg_temp.expect_msg(format('select create_excuse_day(%L, null, %L, null)', :'d1', ''), '날짜를 고르세요', '날짜 없음');
+select pg_temp.ok(create_excuse_day(:'d1', '2026-06-20', '병원', 'data:image/png;base64,iVBORw0KGgo=') = 2, '하루 전체: 대기 중인 것을 빼고 2건');
+set role postgres;
+select pg_temp.ok((select count(distinct grp) = 1 and count(*) = 2 and count(distinct photo_id) = 1 and bool_and(reason = '병원') from excuses where grp is not null and student_id = :'d1'), '같은 묶음, 사진 한 장');
+select pg_temp.ok((select summary from ops order by id desc limit 1) like '하루 공결 신청: %번 6/20 (결석 1 · 지각 1)', '작업 요약');
+select pg_temp.ok((select count(*) from json_array_elements(public_state() -> 'excuses') x where x ->> 'grp' is not null) = 2, '화면 상태에 grp');
+set role anon;
+select pg_temp.expect_msg(format('select create_excuse_day(%L, %L, %L, null)', :'d1', '2026-06-20', ''), '그날 공결 신청할 지각·결석 기록이 없어요', '이미 다 신청한 날');
+-- 대기 중인 하루 공결이 있으면 그 교시는 지울 수 없다
+select pg_temp.expect_msg(format('select delete_period(%L, %L)', :'t', :'dy1'), '%처리하지 않은 공결 신청%', '교시 삭제 막음');
+-- 묶음 중 하나로 승인하면 묶음 전체가
+set role postgres;
+select id as dyx from excuses where grp is not null and student_id = :'d1' order by created_at desc, id limit 1 \gset
+set role anon;
+select review_excuse(:'t', :'dyx', true, null);
+set role postgres;
+select pg_temp.ok((select bool_and(status = 'approved') from excuses where grp is not null and student_id = :'d1'), '묶음 전체 승인');
+select pg_temp.ok(pg_temp.bal(:'d1') = :db1 - 3, '지각 1 + 결석 2 무효');
+select pg_temp.ok((select status from attendance where period_id = :'dy1' and student_id = :'d1') = 'excused'
+  and (select status from attendance where period_id = :'dy2' and student_id = :'d1') = 'excused'
+  and (select status from attendance where period_id = :'dy3' and student_id = :'d1') = 'absent', '그 두 교시만 공결로 (따로 신청한 것은 대기)');
+select pg_temp.ok((select summary from ops order by id desc limit 1) like '공결 승인: %번 6/20 하루 (2건)', '승인 요약');
+select pg_temp.ok((select pending_n from (select count(*) pending_n from excuses where ledger_id = :'dyl3' and status = 'pending') t) = 1, '따로 신청한 것은 그대로 대기');
+-- 반려도 묶음째, 사유 필수
+set role anon;
+select create_excuse_day(:'d2', '2026-06-20', '', null);
+set role postgres;
+select id as dyx2 from excuses where grp is not null and student_id = :'d2' limit 1 \gset
+set role anon;
+select pg_temp.expect_msg(format('select review_excuse(%L, %L, false, %L)', :'t', :'dyx2', ' '), '반려 사유를 입력하세요', '반려 사유 필수');
+select review_excuse(:'t', :'dyx2', false, '증빙 없음');
+select pg_temp.expect_msg(format('select review_excuse(%L, %L, true, null)', :'t', :'dyx2'), '이미 처리된 신청이에요', '이미 처리');
+set role postgres;
+select pg_temp.ok((select bool_and(status = 'rejected' and review_note = '증빙 없음') and count(*) = 2 from excuses where grp is not null and student_id = :'d2'), '묶음 전체 반려');
+-- 승인을 이 작업만 되돌리기 → 대기로, 자봉도 원래대로
+select max(id) as opx from ops where kind = 'review_excuse' and summary like '공결 승인:%하루%' \gset
+set role anon;
+select history_drop(:'t', :opx, false);
+set role postgres;
+select pg_temp.ok(pg_temp.bal(:'d1') = :db1 and (select bool_and(status = 'pending') from excuses where grp is not null and student_id = :'d1'), '하루 공결 승인 되돌리기');
+\echo 19. 하루 전체 공결 통과
 
 \echo 모든 서버 함수 테스트 통과
