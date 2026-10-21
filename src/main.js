@@ -24,7 +24,7 @@ const token = () => getSession()?.token;
 const blankForm = () => ({ date: TODAY, preset: '', item: '', points: 1, detail: '', nums: '', find: '', reason: '', photo: '' });
 const UI = {
   role: 'student', tab: 'board', sid: null, user: null, sort: 'no', q: '',
-  attDate: TODAY, attPid: null, attView: 'list', draft: {}, touched: {}, newPeriod: '', attConfirm: false, perDel: null, perEdit: null,
+  attDate: TODAY, attPid: null, attView: 'list', draft: {}, touched: {}, newPeriod: '', attConfirm: false, perDel: null, perEdit: null, recall: null,
   recForm: blankForm(), reqForm: blankForm(), exForm: blankForm(), excForm: { no: '', eid: '', reason: '', photo: '' },
   recFilter: '', editId: null, voidId: null, openRev: {}, photos: {},
   noticeFrom: null, noticeTo: null, noticeText: null,
@@ -487,6 +487,7 @@ function attDraft(pid) {
 function clearDrafts() {
   UI.draft = {};
   UI.touched = {};
+  UI.recall = null;
 }
 const ST = { present: ['✓', '출석'], late: ['지', '지각'], absent: ['결', '결석'], excused: ['공', '공결'] };
 // 출결 초안과 저장된 출결이 같은지 (학생 순서와 무관하게)
@@ -516,6 +517,8 @@ function vAttend() {
   const ps = periodsOf(UI.attDate);
   if (!ps.some((p) => p.id === UI.attPid)) UI.attPid = ps.find((p) => !S.att[p.id])?.id || ps[0]?.id || null;
   const pid = UI.attPid;
+  // 다른 교시·날짜로 옮기면 지각 다시 부르기는 끝난다
+  if (UI.recall && UI.recall.pid !== pid) UI.recall = null;
   let body = isAdmin() ? '' : '<p class="empty">위에서 교시를 추가한 뒤 출석을 체크하세요.<br>예: 1교시 구강해부학</p>';
   if (pid) {
     const d = attDraft(pid);
@@ -529,8 +532,20 @@ function vAttend() {
     const state = admin
       ? saved ? (dirty ? '변경 사항 있음' : '저장됨') : '아직 저장 안 됨'
       : mine?.status === 'pending' ? '요청 보냄 · 부총대 확인 대기 중' : saved ? '부총대가 저장한 교시예요' : '아직 요청 안 함';
+    // 지각 다시 부르기: 시작할 때 지각이던 학생만 모아 두고, 누르면 지각 ↔ 출석만 오간다 (출석으로 바뀌어도 목록에 남는다)
+    const rc = UI.recall && UI.recall.pid === pid ? UI.recall : null;
+    const rcList = rc ? active().filter((s) => rc.sids.includes(s.id)) : [];
+    const lateNow = active().filter((s) => d[s.id] === 'late').length;
     body =
-      (UI.attView === 'grid'
+      (rc
+        ? `<div class="recall-bar"><span><b>지각 다시 부르기</b> · 지각 ${rcList.length}명 중 <b id="recall-ok">${rcList.filter((s) => !d[s.id]).length}</b>명 출석</span><button class="btn small" data-act="recall-end">끝내기</button></div>
+        <p class="hint" style="margin:0">대답하면 칸을 눌러 출석으로 바꾸세요. 잘못 눌렀으면 한 번 더 누르면 지각으로 돌아가요.</p>
+        <div class="att recall">${rcList.map((s) => {
+            const st = d[s.id] || 'present';
+            return `<button class="${st}" data-act="recall-tog" data-sid="${s.id}" aria-label="${s.no}번 ${esc(s.name)} ${ST[st][1]}"${st === 'late' || st === 'present' ? '' : ' aria-disabled="true"'}>${s.no}<span class="nm">${esc(s.name)}</span><small>${ST[st][1]}</small></button>`;
+          }).join('')}</div>`
+        : (lateNow ? `<button class="btn ghost recall-start" data-act="recall-start">지각 다시 부르기 (${lateNow}명)</button>` : '') +
+          (UI.attView === 'grid'
         ? `<div class="att">${active().map((s) => {
             const st = d[s.id] || 'present';
             return `<button class="${st}" data-act="cyc" data-sid="${s.id}" aria-label="${s.no}번 ${esc(s.name)} ${ST[st][1]}">${s.no}<span class="nm">${esc(s.name)}</span><small>${ST[st][0]}</small></button>`;
@@ -538,7 +553,7 @@ function vAttend() {
         : `<div class="calls">${active().map((s) => {
             const st = d[s.id] || 'present';
             return `<div class="call ${st}"><span class="no">${s.no}</span><span class="nm">${esc(s.name || '이름 없음')}${s.exempt ? ' <span class="ex">면제</span>' : ''}</span><div class="st4" role="group" aria-label="${s.no}번 출결">${Object.entries(ST).map(([k, [, l]]) => `<button class="${k} ${st === k ? 'on' : ''}" data-act="setst" data-sid="${s.id}" data-v="${k}">${l}</button>`).join('')}</div></div>`;
-          }).join('') || '<p class="empty">관리 탭에서 명단을 먼저 넣어 주세요.</p>'}</div>`) +
+          }).join('') || '<p class="empty">관리 탭에서 명단을 먼저 넣어 주세요.</p>'}</div>`)) +
       `${pendingHere.length ? `<div class="warn">이 교시에 ${pendingHere.map((a) => esc(a.by)).join(', ')}의 출석 요청이 있어요. 요청함에서 확인하세요.</div>` : ''}
     ${mine?.status === 'rejected' ? `<div class="warn">지난 요청이 반려됐어요: ${esc(mine.note || '')}</div>` : ''}
     <div class="att-foot"><span class="note">지각 ${c.late} · 결석 ${c.absent} · 공결 ${c.excused}<br>${state}</span>
@@ -1134,13 +1149,20 @@ async function saveAttendance(asRequest) {
   if (pid.startsWith('v:')) {
     const per = periodsOf(UI.attDate).find((p) => p.id === pid);
     const real = await rpc('ensure_period', { p_token: token(), p_date: per.date, p_label: per.label, p_morning: per.morning });
+    // 새로 만든 교시를 화면 상태에도 넣어 둔다. 바로 뒤 저장이 실패해도 다시 그릴 때 임시 교시(v:)로 돌아가
+    // 고치던 출결이 빈 초안이 되지 않게 (지각 다시 부르기도 그 교시에서 이어진다)
+    if (!S.periods.some((p) => p.id === real)) S.periods.push({ id: real, date: per.date, label: per.label, morning: per.morning, savedAt: null });
     UI.draft[real] = draft;
     UI.touched[real] = UI.touched[pid];
     delete UI.draft[pid];
+    delete UI.touched[pid];
+    if (UI.recall?.pid === pid) UI.recall.pid = real;
     UI.attPid = pid = real;
   }
   if (asRequest) {
     await run('request_attendance', { p_period: pid, p_statuses: draft }, '출석 요청을 보냈어요 · 부총대 확인을 기다려요');
+    UI.recall = null;
+    render();
     return;
   }
   // 저장이 끝나면 초안을 지운 뒤에 다시 그린다 (먼저 그리면 방금 저장한 초안이 "변경 사항 있음"으로 보인다)
@@ -1148,6 +1170,7 @@ async function saveAttendance(asRequest) {
   const n = await rpc('save_attendance', { p_token: token(), p_period: pid, p_statuses: draft });
   delete UI.draft[pid];
   delete UI.touched[pid];
+  UI.recall = null;
   UI.noticeText = null;
   await refresh();
   render();
@@ -1346,6 +1369,7 @@ const A = {
   },
   attview: (d) => {
     UI.attView = d.v;
+    UI.recall = null;
   },
   setst: (d) => {
     const dr = attDraft(UI.attPid);
@@ -1361,10 +1385,32 @@ const A = {
     if (n === 'present') delete dr[d.sid];
     else dr[d.sid] = n;
   },
+  'recall-start': () => {
+    const d = attDraft(UI.attPid);
+    UI.recall = { pid: UI.attPid, sids: active().filter((s) => d[s.id] === 'late').map((s) => s.id) };
+    render();
+    // 다시 부를 학생 칸이 화면에 들어오도록, 막대를 위쪽 고정 머리 바로 아래로 올린다
+    const bar = document.querySelector('.recall-bar');
+    const head = document.querySelector('header.top')?.getBoundingClientRect().bottom || 0;
+    if (bar) window.scrollTo(0, Math.max(0, window.scrollY + bar.getBoundingClientRect().top - head - 8));
+    return true;
+  },
+  'recall-end': () => {
+    UI.recall = null;
+  },
+  'recall-tog': (d) => {
+    const dr = attDraft(UI.attPid);
+    // 지각 ↔ 출석만. 그사이 다른 기기에서 결석·공결이 된 학생은 건드리지 않는다
+    if (dr[d.sid] && dr[d.sid] !== 'late') return toast('결석·공결인 학생은 호명 목록에서 바꾸세요');
+    UI.touched[UI.attPid] = true;
+    if (dr[d.sid] === 'late') delete dr[d.sid];
+    else dr[d.sid] = 'late';
+  },
   'att-clear': () => {
     UI.attConfirm = true;
   },
   'att-clear-yes': () => {
+    UI.recall = null;
     UI.draft[UI.attPid] = {};
     UI.touched[UI.attPid] = true;
     UI.attConfirm = false;

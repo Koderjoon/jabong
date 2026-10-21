@@ -161,6 +161,8 @@ function ui(page) {
       const [sw, w] = await page.evaluate(() => [document.documentElement.scrollWidth, window.innerWidth]);
       assert.ok(sw <= w, `${label}: 화면이 가로로 넘침 (${sw} > ${w})`);
     },
+    // 요소가 있는지 (요소 객체를 assert에 넘기면 실패할 때 테스트 실행기가 그 큰 객체를 출력하다 죽는다)
+    has: async (sel) => !!(await page.$(sel)),
     clipboard: () => page.evaluate(() => navigator.clipboard.readText()),
     downloads: () => page.evaluate(() => window.__downloads),
     async download(sel) {
@@ -383,7 +385,7 @@ test('기록: 항목 불러오기, 점수 숫자판, 학생 고르기(추천·�
   assert.equal(await A.text('#recForm-count'), '4명 선택');
   await A.click('#recForm-grid [data-act="gtoggle"]:has(b:text-is("4"))');
   await A.click('[data-act="pickgrid"]');
-  assert.equal(await A.page.$('#recForm-grid .pickgrid'), null);
+  assert.equal(await A.has('#recForm-grid .pickgrid'), false);
   // 칩을 눌러 빼기
   await A.click('#recForm-chips [data-act="unpick"]:has-text("2 이도윤")');
   assert.deepEqual(await chips(), ['1 김민서', '3 박하준']);
@@ -424,13 +426,13 @@ test('기록: 수정(검사·이력)과 무효 처리', async () => {
   assert.equal((await one(`select count(*)::int as n from ledger_revisions`)).n, 1);
   await A.click(`${row} [data-act="edit"]`);
   await A.click('[data-act="edit-cancel"]');
-  assert.equal(await A.page.$('#ed-points'), null);
+  assert.equal(await A.has('#ed-points'), false);
   await A.click(`${row} [data-act="void"]`);
   assert.equal(await A.toast('[data-act="void-save"]'), '무효 처리 사유를 입력하세요');
   await A.page.fill('#vd-reason', '착오');
   assert.equal(await A.toast('[data-act="void-save"]'), '무효 처리했어요 · 점수에서 빠졌어요');
   assert.match(await A.text(row), /무효/);
-  assert.equal(await A.page.$(`${row} [data-act="edit"]`), null, '무효 처리한 기록은 버튼이 없다');
+  assert.equal(await A.has(`${row} [data-act="edit"]`), false, '무효 처리한 기록은 버튼이 없다');
   assert.equal((await balances())['김민서'], 3);
   await A.page.fill('#recFilter', '');
 });
@@ -447,7 +449,7 @@ test('되돌리기 버튼: 부총대가 한 작업 바로 뒤 안내에서 누�
   await A.page.click('#toast [data-act="undo-last"]');
   await A.page.waitForFunction(() => document.querySelector('#toast > span')?.textContent.startsWith('되돌렸어요'));
   assert.equal(await A.text('#toast > span'), '되돌렸어요 · 작업 내역에서 다시 살릴 수 있어요');
-  assert.equal(await A.page.$('#toast button'), null);
+  assert.equal(await A.has('#toast button'), false);
   assert.deepEqual(await balances(), before);
   assert.ok((await one(`select dropped from ops where summary like '기록: 되돌리기 연습%'`)).dropped, '작업 내역에는 "이 작업만 되돌림"으로 남는다');
   assert.equal((await one(`select count(*)::int as n from ops where summary like '%되돌%' and summary not like '기록: 되돌리기 연습%'`)).n, 0, '되돌리기 자체는 기록이 없다');
@@ -518,7 +520,7 @@ test('출석(부총대): 아침 출석 체크·저장, 정정, 전원 출석 확
   await A.click('[data-act="att-clear"]');
   assert.match(await A.text('.att-confirm'), /지각 0명 · 결석 1명 · 공결 1명이 모두 출석으로 바뀌어요/);
   await A.click('[data-act="att-clear-no"]');
-  assert.equal(await A.page.$('.att-confirm'), null);
+  assert.equal(await A.has('.att-confirm'), false);
   await A.click('[data-act="att-clear"]');
   assert.equal(await A.toast('[data-act="att-clear-yes"]'), '전원 출석으로 되돌렸어요 · 저장해야 반영돼요');
   assert.match(await A.text('.att-foot'), /지각 0 · 결석 0 · 공결 0/);
@@ -546,13 +548,13 @@ test('출석(부총대): 아침 출석 체크·저장, 정정, 전원 출석 확
   await A.click('[data-act="pick-period"]:has-text("아침 출석")');
   await A.page.fill('#newPeriod', '1교시 구강해부학');
   assert.equal(await A.toast('[data-act="add-period"]'), '이미 있는 교시예요 · 그 교시를 골랐어요');
-  assert.equal(await A.page.$('#toast button'), null);
+  assert.equal(await A.has('#toast button'), false);
   assert.match(await A.text('[data-act="pick-period"].on'), /1교시 구강해부학/);
   // 다른 기기가 방금 같은 교시를 만든 경우(이 화면은 아직 모름): 오류 없이 그 교시를 고르고, 엉뚱한 되돌리기 버튼이 없다
   await db.query(`select ensure_period($1, $2, '5교시', false)`, [await A.token(), TODAY]);
   await A.page.fill('#newPeriod', '5교시');
   assert.equal(await A.toast('[data-act="add-period"]'), '교시를 추가했어요');
-  assert.equal(await A.page.$('#toast button'), null);
+  assert.equal(await A.has('#toast button'), false);
   assert.match(await A.text('[data-act="pick-period"].on'), /5교시/);
   // 뒤 테스트에 영향이 없게 그 교시 추가를 "이 작업만 되돌리기"로 뺀다
   await db.query(`select history_drop($1, (select max(id) from ops where summary like '교시 추가:%5교시'), false)`, [await A.token()]);
@@ -584,7 +586,7 @@ test('입력 추천(부총대): 항목명은 점수와 함께, 세부내용은 �
   await A.click('[data-act="pickgrid"]');
   assert.equal(await A.page.inputValue('#recForm-item'), '소치 실습');
   assert.equal(await A.page.inputValue('#recForm-points'), '1.5');
-  assert.equal(await A.page.$('#sugbox'), null, '고르면 닫힌다');
+  assert.equal(await A.has('#sugbox'), false, '고르면 닫힌다');
   // 치는 중이면 그 글자가 들어간 것만
   await A.page.fill('#recForm-item', '');
   await A.page.type('#recForm-item', '미흡');
@@ -600,11 +602,11 @@ test('입력 추천(부총대): 항목명은 점수와 함께, 세부내용은 �
   await A.page.fill('#recForm-detail', '');
   assert.ok(await A.page.$('#sugbox'));
   await A.page.keyboard.press('Escape');
-  assert.equal(await A.page.$('#sugbox'), null);
+  assert.equal(await A.has('#sugbox'), false);
   await A.page.click('#recForm-detail');
   assert.ok(await A.page.$('#sugbox'));
   await A.page.click('h1');
-  assert.equal(await A.page.$('#sugbox'), null, '칸을 떠나면 닫힌다');
+  assert.equal(await A.has('#sugbox'), false, '칸을 떠나면 닫힌다');
   await A.page.fill('#recForm-item', '');
   await A.page.fill('#recForm-points', '1');
   // 수정·무효 사유: 지난 사유
@@ -630,7 +632,7 @@ test('입력 추천(부총대): 항목명은 점수와 함께, 세부내용은 �
   await A.page.fill('#newPeriod', '');
   await A.page.fill('#attDate', TODAY);
   await A.page.click('#newPeriod');
-  assert.equal(await A.page.$('#sugbox'), null, '오늘은 이미 있는 교시라 추천할 것이 없다');
+  assert.equal(await A.has('#sugbox'), false, '오늘은 이미 있는 교시라 추천할 것이 없다');
   await A.page.click('h1');
 });
 
@@ -639,11 +641,11 @@ test('출석: 교시 추가 칸의 불러오기 — 자주 쓰는 교시 추가(
   const pop = '#np-prpop';
   await A.page.fill('#newPeriod', '적던 교시');
   await A.click('[data-act="pr-open"][data-fk="np"]');
-  assert.equal(await A.page.$('#sugbox'), null, '불러오기를 열면 최근 추천은 닫힌다');
+  assert.equal(await A.has('#sugbox'), false, '불러오기를 열면 최근 추천은 닫힌다');
   assert.match(await A.text(pop), /아직 없어요/);
   await A.click(`${pop} [data-act="pr-add"]`);
   assert.equal(await A.page.evaluate(() => document.activeElement.id), 'np-prname', '추가를 누르면 교시 이름 칸으로 바로');
-  assert.equal(await A.page.$('#np-prpts'), null, '교시에는 점수 칸이 없다');
+  assert.equal(await A.has('#np-prpts'), false, '교시에는 점수 칸이 없다');
   await A.fits('교시 불러오기 새 교시 입력');
   assert.equal(await A.toast(`${pop} [data-act="pr-save"]`), '교시 이름을 적어 주세요');
   await A.page.fill('#np-prname', ' 3교시 치과재료학 ');
@@ -664,7 +666,7 @@ test('출석: 교시 추가 칸의 불러오기 — 자주 쓰는 교시 추가(
   await A.page.waitForTimeout(500);
   assert.equal(await A.page.inputValue('#np-prname'), '가'.repeat(41));
   await A.click(`${pop} [data-act="pr-cancel"]`);
-  assert.equal(await A.page.$('#np-prname'), null);
+  assert.equal(await A.has('#np-prname'), false);
   await A.click(`${pop} [data-act="pr-add"]`);
   await A.page.fill('#np-prname', '임시 교시');
   await A.toast(`${pop} [data-act="pr-save"]`);
@@ -718,7 +720,7 @@ test('내보내기: 엑셀 파일(이름·요청자 없음, 시트 3개), 기간
   await A.click('[data-act="exp-range"][data-v="custom"]');
   assert.ok(await A.page.$('#exp-from'));
   await A.click('[data-act="exp-range"][data-v="all"]');
-  assert.equal(await A.page.$('#exp-from'), null);
+  assert.equal(await A.has('#exp-from'), false);
   const file = await A.download('[data-act="exp-make"]');
   assert.equal((await A.downloads()).at(-1), '25학번_자봉_전체.xlsx');
   const buf = fs.readFileSync(file);
@@ -751,7 +753,7 @@ test('총대단 로그인: 탭, 비밀번호 바꾸기(검사·성공·다시 �
   assert.equal(await O.toast('[data-act="pw-change"]'), '현재 비밀번호가 맞지 않아요');
   await O.page.fill('#pw-cur', '1234');
   assert.equal(await O.toast('[data-act="pw-change"]'), '내 비밀번호를 바꿨어요');
-  assert.equal(await O.page.$('#pw-cur'), null);
+  assert.equal(await O.has('#pw-cur'), false);
   pw.학습부장 = '5678';
   assert.equal(await O.toast('[data-act="logout"]'), '로그아웃했어요');
   assert.deepEqual(await O.tabs(), ['현황판', '공결 신청']);
@@ -764,7 +766,7 @@ test('총대단: 항목명 칸의 불러오기 — "추가"를 누르면 그 자
   await O.page.fill('#reqForm-item', '적던 항목');
   await O.click('[data-act="pr-open"][data-fk="reqForm"]');
   assert.match(await O.text(pop), /아직 없어요/);
-  assert.equal(await O.page.$('#reqForm-prname'), null);
+  assert.equal(await O.has('#reqForm-prname'), false);
   await O.click(`${pop} [data-act="pr-add"]`);
   assert.equal(await O.page.evaluate(() => document.activeElement.id), 'reqForm-prname', '추가를 누르면 항목명 칸으로 바로');
   assert.equal(await O.page.inputValue('#reqForm-prname'), '');
@@ -780,14 +782,14 @@ test('총대단: 항목명 칸의 불러오기 — "추가"를 누르면 그 자
   await O.page.waitForFunction(() => document.querySelector('#toast > span')?.textContent.startsWith('자주 쓰는 항목에 넣었어요'));
   assert.equal(await O.text('#toast > span'), '자주 쓰는 항목에 넣었어요: 청소 불참 +2');
   assert.ok(await O.page.isVisible(pop), '넣은 뒤에도 창이 열려 있다');
-  assert.equal(await O.page.$('#reqForm-prname'), null, '입력칸은 닫히고 목록에 들어간다');
+  assert.equal(await O.has('#reqForm-prname'), false, '입력칸은 닫히고 목록에 들어간다');
   assert.equal(await O.page.inputValue('#reqForm-item'), '적던 항목', '적던 항목명은 그대로');
   await O.click(`${pop} [data-act="pr-add"]`);
   await O.page.fill('#reqForm-prname', '청소 불참');
   await O.page.fill('#reqForm-prpts', '2');
   assert.equal(await O.toast(`${pop} [data-act="pr-save"]`), '이미 있는 항목이에요');
   await O.click(`${pop} [data-act="pr-cancel"]`);
-  assert.equal(await O.page.$('#reqForm-prname'), null);
+  assert.equal(await O.has('#reqForm-prname'), false);
   await O.click(`${pop} [data-act="pr-add"]`);
   await O.page.fill('#reqForm-prname', '임시');
   await O.page.fill('#reqForm-prpts', '-1');
@@ -818,8 +820,8 @@ test('총대단: 사진 붙인 요청, 숫자판으로 상점 요청, 요청 현
   await O.page.waitForSelector('img.thumb');
   await O.fits('요청 사진 첨부');
   assert.equal(await O.toast('[data-act="req-add"]'), '요청을 보냈어요');
-  assert.equal(await O.page.$('#toast button'), null, '총대단 안내에는 되돌리기가 없다 (작업 내역은 부총대만)');
-  assert.equal(await O.page.$('img.thumb'), null);
+  assert.equal(await O.has('#toast button'), false, '총대단 안내에는 되돌리기가 없다 (작업 내역은 부총대만)');
+  assert.equal(await O.has('img.thumb'), false);
   // 요청 사유: 내가 쓴 지난 사유
   await O.page.click('#reqForm-reason');
   assert.deepEqual(await sugChips(O), ['청소 시간에 없음']);
@@ -849,7 +851,7 @@ test('총대단: 사진 붙인 요청, 숫자판으로 상점 요청, 요청 현
   await O.tab('board');
   assert.match(await O.text('#board-grid'), /김민서/);
   // 총대단은 출석 탭이 없다
-  assert.equal(await O.page.$('#tabs [data-tab="attend"]'), null);
+  assert.equal(await O.has('#tabs [data-tab="attend"]'), false);
 });
 
 // ───────── 출석 권한 총대단 (총대) ─────────
@@ -861,7 +863,7 @@ test('총대: 출석 탭(아침 출석 없음), 교시 추가, 출석 요청·�
   assert.deepEqual(await C.page.$$eval('[data-act="pick-period"]', (b) => b.map((x) => x.textContent)), ['1교시 구강해부학']);
   await C.page.fill('#attDate', '2026-01-06');
   assert.match(await C.text(), /위에서 교시를 추가한 뒤 출석을 체크하세요/);
-  assert.equal(await C.page.$('[data-act="pick-period"]'), null, '총대단 화면에는 아침 출석이 없다');
+  assert.equal(await C.has('[data-act="pick-period"]'), false, '총대단 화면에는 아침 출석이 없다');
   await C.page.fill('#attDate', TODAY);
   // 잘못 만든 빈 교시는 총대도 지울 수 있다
   await C.page.fill('#newPeriod', '3교시 잘못 만듦');
@@ -876,7 +878,7 @@ test('총대: 출석 탭(아침 출석 없음), 교시 추가, 출석 요청·�
   assert.ok(await C.page.$('[data-act="per-ren"]'), '이름 바꾸기 버튼도 있다');
   await C.click(`[data-act="setst"][data-sid="${await sid('김민서')}"][data-v="late"]`);
   await C.click(`[data-act="setst"][data-sid="${await sid('서지호')}"][data-v="absent"]`);
-  assert.equal(await C.page.$('[data-act="att-save"]'), null, '총대단은 저장 대신 요청');
+  assert.equal(await C.has('[data-act="att-save"]'), false, '총대단은 저장 대신 요청');
   assert.equal(await C.toast('[data-act="att-request"]'), '출석 요청을 보냈어요 · 부총대 확인을 기다려요');
   assert.match(await C.text('.att-foot'), /요청 보냄 · 부총대 확인 대기 중/);
   assert.equal(await C.text('[data-act="att-request"]'), '요청 다시 보내기');
@@ -946,7 +948,7 @@ test('요청함: 알림 숫자, 출석 요청 승인, 사진 보기, 요청 승�
   await A.page.waitForTimeout(400);
   assert.equal(await A.page.inputValue(`#note-${id}`), '중복');
   assert.equal(await A.toast(`${reqCard('매점 도움')} [data-act="req-no"]`), '반려했어요');
-  assert.equal(await A.page.$('#tabs [data-tab="inbox"] .badge'), null);
+  assert.equal(await A.has('#tabs [data-tab="inbox"] .badge'), false);
   const done = await A.text();
   assert.match(done, /총대단 요청 승인/);
   assert.match(done, /총대단 요청 반려/);
@@ -973,7 +975,7 @@ test('학생 현황판: 번호만(이름 없음), 번호 검색, 상세(수정 �
   const v = await S.text();
   for (const name of ['김민서', '이도윤', '서지호']) assert.doesNotMatch(v, new RegExp(name));
   assert.equal(await S.page.getAttribute('#q', 'inputmode'), 'numeric');
-  assert.equal(await S.page.$('[data-act="sort"]'), null, '학생 화면은 번호순만(자봉 많은 순 없음)');
+  assert.equal(await S.has('[data-act="sort"]'), false, '학생 화면은 번호순만(자봉 많은 순 없음)');
   await S.page.fill('#q', '1');
   assert.deepEqual(await S.page.$$eval('#board-grid .tile .no', (t) => t.map((x) => x.textContent)), ['1']);
   await S.page.fill('#q', '김');
@@ -1073,13 +1075,13 @@ test('학생 "내 번호": 정하기(없는 번호 안내), 내 카드·칸 강�
   await S.click('[data-act="back"]');
   await S.click('.mycard [data-act="myno-clear"]');
   assert.ok(await S.page.$('#myno'));
-  assert.equal(await S.page.$('#board-grid .tile.me'), null);
+  assert.equal(await S.has('#board-grid .tile.me'), false);
   await S.click('#board-grid .tile:has(.no:text-is("4"))');
   assert.equal(await S.toast('[data-act="myno-set"]'), '4번을 내 번호로 정했어요 · 이 폰에만 기억해요');
   assert.match(await S.text('.mycard'), /내 번호 4/);
   assert.equal(await S.page.evaluate(() => localStorage.getItem('jabong-myno')), '4');
   await A.tab('board');
-  assert.equal(await A.page.$('.mycard'), null, '부총대 현황판에는 내 번호 카드가 없다');
+  assert.equal(await A.has('.mycard'), false, '부총대 현황판에는 내 번호 카드가 없다');
   await S.click('.mycard [data-act="myno-clear"]');
 });
 
@@ -1135,7 +1137,7 @@ test('HTML이 들어간 이름·항목은 글자로만 보인다', async () => {
   await A.tab('notice');
   assert.match(await A.page.inputValue('#notice-text'), /<img src=x/);
   assert.equal(await A.page.evaluate(() => window.__x), undefined);
-  assert.equal(await A.page.$('#view i, #view img:not(.photo-big):not(.thumb)'), null);
+  assert.equal(await A.has('#view i, #view img:not(.photo-big):not(.thumb)'), false);
 });
 
 // ───────── 작업 내역 ─────────
@@ -1155,7 +1157,7 @@ test('작업 내역: 뒤로가기·앞으로 가기, 그만두기, 이 작업만
   assert.match(await A.text('.card[style*="warn"]'), /뒤로가기.*되돌릴 작업 1개/s);
   await A.fits('뒤로가기 미리보기');
   await A.click('[data-act="hist-cancel"]');
-  assert.equal(await A.page.$('[data-act="hist-run"]'), null);
+  assert.equal(await A.has('[data-act="hist-run"]'), false);
   await A.click('[data-title="뒤로가기"]');
   assert.equal(await A.toast('[data-act="hist-run"]'), '이동했어요');
   list = await rows();
@@ -1248,7 +1250,7 @@ test('관리: 새 복구 코드 → 복구 코드로 들어가기(소문자·붙
   assert.equal(await A.toast('[data-act="code-copy"]'), '복사했어요');
   assert.equal(await A.clipboard(), code);
   await A.click('[data-act="code-ok"]');
-  assert.equal(await A.page.$('[data-act="code-ok"]'), null);
+  assert.equal(await A.has('[data-act="code-ok"]'), false);
   await A.toast('[data-act="logout"]');
   await A.click('#roles [data-role="admin"]');
   await A.click('[data-act="recover-open"]');
@@ -1303,7 +1305,7 @@ test('폰: 한글을 치던 중 추천 이름을 한 번 탭하면 바로 선택
   await T.page.waitForTimeout(200);
   assert.equal(await T.page.inputValue('#reqForm-item'), '청소 불참');
   assert.equal(await T.page.inputValue('#reqForm-points'), '2');
-  assert.equal(await T.page.$('#sugbox'), null);
+  assert.equal(await T.has('#sugbox'), false);
   await T.page.context().close();
 });
 
@@ -1336,7 +1338,7 @@ test('백업: 받기 → 데이터 바꾸기 → 파일로 되살리기(미리�
   await A.page.waitForSelector('#bk-typed');
   await A.page.waitForTimeout(200);
   assert.equal(await A.page.evaluate(() => window.__bk), undefined, '백업 파일 속 HTML은 글자로만');
-  assert.equal(await A.page.$('#view img, #view i, #view .card b b'), null);
+  assert.equal(await A.has('#view img, #view i, #view .card b b'), false);
   await A.page.setInputFiles('[data-bkfile]', file);
   await A.page.waitForSelector('#bk-typed');
   const pv = await A.text('.card:has(#bk-typed)');
@@ -1350,7 +1352,7 @@ test('백업: 받기 → 데이터 바꾸기 → 파일로 되살리기(미리�
   assert.match(await A.toast('[data-act="bk-restore"]'), /백업으로 되살렸어요 · 직전 상태 파일도 받아 뒀어요$/);
   assert.match((await A.downloads())[n0], /^jabong-되살리기전-/);
   assert.deepEqual(await balances(), before);
-  assert.equal(await A.page.$('#bk-typed'), null);
+  assert.equal(await A.has('#bk-typed'), false);
   // 예전에 암호를 걸어 받은 파일도 열 수 있다
   const enc = await encryptBackup(dump, 'oldpw1');
   await A.page.setInputFiles('[data-bkfile]', { name: 'old.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(enc)) });
@@ -1390,7 +1392,7 @@ test('보관 후 정리: 전체 파일 먼저, 확인 입력, 점수 그대로, 
   assert.match(await A.text(), /보관 후 정리/);
   assert.match(await A.text(), /이 너머로는 못 가요/);
   assert.ok(await A.page.isDisabled('[data-title="뒤로가기"]'));
-  assert.equal(await A.page.$('[data-title="맨 처음으로 이동"]'), null);
+  assert.equal(await A.has('[data-title="맨 처음으로 이동"]'), false);
   await A.tab('board');
   await A.click('#board-grid .tile:has(.no:text-is("1"))');
   assert.match(await A.text(), /이월/);
@@ -1432,7 +1434,7 @@ test('홈 화면 앱: manifest·아이콘, 안드로이드 설치 버튼, 아이
     assert.deepEqual([b.readUInt32BE(16), b.readUInt32BE(20)], ic.sizes.split('x').map(Number), `${ic.src} 크기`);
   }
   // 안드로이드 크롬: 설치할 수 있다고 알려 오면 버튼이 생기고, 누르면 설치 창
-  assert.equal(await P.page.$('[data-act="install"]'), null);
+  assert.equal(await P.has('[data-act="install"]'), false);
   await P.page.evaluate(() => {
     const e = new Event('beforeinstallprompt', { cancelable: true });
     e.prompt = () => (window.__prompted = true);
@@ -1444,7 +1446,7 @@ test('홈 화면 앱: manifest·아이콘, 안드로이드 설치 버튼, 아이
   await P.fits('설치 버튼');
   await P.click('[data-act="install"]');
   assert.equal(await P.page.evaluate(() => window.__prompted), true);
-  assert.equal(await P.page.$('[data-act="install"]'), null);
+  assert.equal(await P.has('[data-act="install"]'), false);
   await P.page.context().close();
   // 아이폰 Safari: 공유 메뉴 안내
   const I = await open({ userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1' });
@@ -1484,7 +1486,7 @@ test('자봉 면제: 관리에서 지정·해제, 면제 학생은 자봉이 빠
   assert.match(await A.text(`.call:has(.no:text-is("6"))`), /면제/);
   await S.reload();
   await S.page.waitForSelector('#board-grid .tile:has(.no:text-is("6"))');
-  assert.equal(await S.page.$('#board-grid .ex'), null, '학생 현황판에는 면제를 보이지 않는다');
+  assert.equal(await S.has('#board-grid .ex'), false, '학생 현황판에는 면제를 보이지 않는다');
   await S.click('#board-grid .tile:has(.no:text-is("6"))');
   assert.doesNotMatch(await S.text('.hero'), /면제/, '학생 상세에도 보이지 않는다');
   await S.click('[data-act="back"]');
@@ -1514,7 +1516,7 @@ test('하루 전체 공결: 학생은 날짜의 "하루 전체"를 골라 한 �
   await S.fits('하루 전체 공결 신청');
   assert.equal(await S.toast('[data-act="exc-add"]'), '하루 전체(2건)를 신청했어요 · 부총대 확인을 기다려요');
   assert.match(await S.text(), /1\/9\(금\) 하루 전체 · (1교시 결석, 2교시 결석|2교시 결석, 1교시 결석) · 독감/);
-  assert.equal(await S.page.$('#exc-eid option[value="day:2026-01-09"]'), null, '신청한 날은 다시 고를 수 없다');
+  assert.equal(await S.has('#exc-eid option[value="day:2026-01-09"]'), false, '신청한 날은 다시 고를 수 없다');
   // 부총대: 한 카드, 한 번에 승인
   await A.reload();
   await A.tab('inbox');
@@ -1532,7 +1534,7 @@ test('교시 이름 바꾸기: 검사·취소(Esc)·Enter로 저장, 그 교시 
   await A.tab('attend');
   await A.click('[data-act="attview"][data-v="list"]');
   await A.page.fill('#attDate', '2026-01-08');
-  assert.equal(await A.page.$('[data-act="per-ren"]'), null, '아직 만들지 않은 아침 출석에는 없다');
+  assert.equal(await A.has('[data-act="per-ren"]'), false, '아직 만들지 않은 아침 출석에는 없다');
   await A.page.fill('#newPeriod', '5교시');
   await A.toast('[data-act="add-period"]');
   await A.page.fill('#newPeriod', '4교시 오타');
@@ -1546,7 +1548,7 @@ test('교시 이름 바꾸기: 검사·취소(Esc)·Enter로 저장, 그 교시 
   await A.page.fill('#per-name', '');
   assert.equal(await A.toast('[data-act="per-ren-save"]'), '교시 이름을 입력하세요');
   await A.page.press('#per-name', 'Escape');
-  assert.equal(await A.page.$('#per-name'), null, 'Esc로 취소');
+  assert.equal(await A.has('#per-name'), false, 'Esc로 취소');
   // 같은 날 같은 이름: 서버가 막고, 적던 이름은 남는다
   await A.click('[data-act="per-ren"]');
   await A.page.fill('#per-name', '5교시');
@@ -1558,14 +1560,14 @@ test('교시 이름 바꾸기: 검사·취소(Esc)·Enter로 저장, 그 교시 
   await A.page.waitForFunction(() => document.querySelector('#toast > span')?.textContent.startsWith('교시 이름을 바꿨어요'));
   assert.equal(await A.text('#toast > span'), '교시 이름을 바꿨어요: 4교시 오타 → 4교시 해부학');
   assert.equal(await A.text('#toast button'), '되돌리기');
-  assert.equal(await A.page.$('#per-name'), null);
+  assert.equal(await A.has('#per-name'), false);
   assert.match(await A.text('[data-act="pick-period"].on'), /4교시 해부학 ·저장됨/, '고른 교시와 출결은 그대로');
   assert.ok(await A.page.$(`.call.late:has([data-sid="${await sid('김민서')}"])`));
   assert.deepEqual(await q(`select detail from ledger where date = '2026-01-08'`), [{ detail: '4교시 해부학' }]);
   // 다른 버튼을 누르면 입력칸이 닫힌다
   await A.click('[data-act="per-ren"]');
   await A.click('[data-act="attview"][data-v="list"]');
-  assert.equal(await A.page.$('#per-name'), null);
+  assert.equal(await A.has('#per-name'), false);
   await A.page.fill('#attDate', TODAY);
 });
 
@@ -1583,7 +1585,7 @@ test('교시 삭제(부총대): 확인 뒤 지우면 출결은 사라지고 그 
   await C.reload();
   await C.page.fill('#attDate', '2026-01-07');
   await C.click('[data-act="pick-period"]:has-text("7교시 삭제용")');
-  assert.equal(await C.page.$('[data-act="per-del"]'), null);
+  assert.equal(await C.has('[data-act="per-del"]'), false);
   await C.page.fill('#attDate', TODAY);
   // 처리하지 않은 출석 요청이 있으면 버튼 대신 안내 (서버도 거절한다). 고치던 출결은 그대로
   const pdel = (await one(`select id from periods where label = '7교시 삭제용'`)).id;
@@ -1593,7 +1595,7 @@ test('교시 삭제(부총대): 확인 뒤 지우면 출결은 사라지고 그 
   await A.page.fill('#attDate', '2026-01-07');
   await A.click('[data-act="pick-period"]:has-text("7교시 삭제용")');
   assert.match(await A.text('.per-del'), /처리하지 않은 출석 요청·공결 신청이 있어서/);
-  assert.equal(await A.page.$('[data-act="per-del"]'), null);
+  assert.equal(await A.has('[data-act="per-del"]'), false);
   await db.query(`select review_attendance($1, (select id from attendance_requests where period_id = $2), false, '확인')`, [await A.token(), pdel]);
   await A.reload();
   await A.tab('attend');
@@ -1604,10 +1606,10 @@ test('교시 삭제(부총대): 확인 뒤 지우면 출결은 사라지고 그 
   assert.match(await A.text('.att-confirm'), /7교시 삭제용을\(를\) 지울까요\? .*자봉 1건은 "교시 삭제"로 무효 처리돼요/);
   await A.fits('교시 삭제 확인');
   await A.click('[data-act="per-del-no"]');
-  assert.equal(await A.page.$('[data-act="per-del-yes"]'), null);
+  assert.equal(await A.has('[data-act="per-del-yes"]'), false);
   await A.click('[data-act="per-del"]');
   await A.click('[data-act="attview"][data-v="list"]');
-  assert.equal(await A.page.$('[data-act="per-del-yes"]'), null, '다른 버튼을 누르면 확인창이 닫힌다');
+  assert.equal(await A.has('[data-act="per-del-yes"]'), false, '다른 버튼을 누르면 확인창이 닫힌다');
   await A.click('[data-act="per-del"]');
   assert.equal(await A.toast('[data-act="per-del-yes"]'), '교시를 지웠어요: 7교시 삭제용 · 자봉 1건 무효 처리');
   assert.equal(await A.text('#toast button'), '되돌리기');
@@ -1622,6 +1624,239 @@ test('교시 삭제(부총대): 확인 뒤 지우면 출결은 사라지고 그 
   await A.click('[data-act="back"]');
   await A.tab('attend');
   await A.page.fill('#attDate', TODAY);
+});
+
+// ───────── 지각 다시 부르기 ─────────
+test('지각 다시 부르기(부총대): 지각만 번호순으로 모아 누르면 지각↔출석, 출석이 돼도 목록에 남고, 결석·공결은 건드리지 않는다, 끝내기·저장', async () => {
+  await A.tab('attend');
+  await A.page.fill('#attDate', '2026-01-12');
+  await A.page.fill('#newPeriod', '1교시 재호명');
+  assert.equal(await A.toast('[data-act="add-period"]'), '교시를 추가했어요');
+  await A.click('[data-act="attview"][data-v="grid"]');
+  const st = await q(`select id, no, name from students where active order by no`);
+  assert.ok(st.length >= 6);
+  assert.equal(await A.has('[data-act="recall-start"]'), false, '지각이 없으면 버튼도 없다');
+  const cyc = (i) => A.click(`[data-act="cyc"][data-sid="${st[i].id}"]`);
+  // 번호순이 아닌 차례로 지각을 매긴다 (모아 보일 때는 번호순)
+  await cyc(4);
+  await cyc(0);
+  await cyc(2);
+  await cyc(1); await cyc(1); // 결석
+  await cyc(3); await cyc(3); await cyc(3); // 공결
+  assert.equal(await A.text('[data-act="recall-start"]'), '지각 다시 부르기 (3명)');
+  await A.click('[data-act="recall-start"]');
+  const tiles = () => A.page.$$eval('.att.recall button', (b) => b.map((x) => [x.firstChild.textContent, x.className, x.querySelector('small').textContent]));
+  assert.deepEqual(await tiles(), [[String(st[0].no), 'late', '지각'], [String(st[2].no), 'late', '지각'], [String(st[4].no), 'late', '지각']]);
+  const bar = () => A.text('.recall-bar span');
+  assert.equal(await bar(), '지각 다시 부르기 · 지각 3명 중 0명 출석');
+  assert.equal(await A.has('[data-act="cyc"]'), false, '다시 부르는 동안에는 다른 학생 칸이 없다');
+  assert.equal(await A.has('[data-act="recall-start"]'), false);
+  await A.fits('지각 다시 부르기');
+  const tog = (i) => A.click(`[data-act="recall-tog"][data-sid="${st[i].id}"]`);
+  await tog(2);
+  assert.deepEqual((await tiles())[1], [String(st[2].no), 'present', '출석']);
+  assert.equal(await bar(), '지각 다시 부르기 · 지각 3명 중 1명 출석');
+  assert.equal((await tiles()).length, 3, '출석이 돼도 목록에 남는다');
+  await tog(2);
+  assert.deepEqual((await tiles())[1], [String(st[2].no), 'late', '지각'], '잘못 눌렀으면 한 번 더 → 지각');
+  await tog(0);
+  await tog(4);
+  assert.equal(await bar(), '지각 다시 부르기 · 지각 3명 중 2명 출석');
+  assert.match(await A.text('.att-foot'), /지각 1 · 결석 1 · 공결 1/, '아래 합계도 바로');
+  // 끝내기 → 원래 한눈에 보기, 바꾼 출결은 그대로
+  await A.click('[data-act="recall-end"]');
+  assert.equal(await A.has('.recall-bar'), false);
+  const cls = (i) => A.page.$eval(`[data-act="cyc"][data-sid="${st[i].id}"]`, (b) => b.className);
+  assert.deepEqual([await cls(0), await cls(1), await cls(2), await cls(3), await cls(4)], ['present', 'absent', 'late', 'excused', 'present']);
+  assert.equal(await A.text('[data-act="recall-start"]'), '지각 다시 부르기 (1명)');
+  // 다시 시작하면 지금 지각인 학생만, 그 화면에서 바로 저장
+  await A.click('[data-act="recall-start"]');
+  assert.deepEqual((await tiles()).map((t) => t[0]), [String(st[2].no)]);
+  await tog(2);
+  assert.equal(await bar(), '지각 다시 부르기 · 지각 1명 중 1명 출석');
+  assert.equal(await A.toast('[data-act="att-save"]'), '저장했어요 · 새 자봉 1건');
+  assert.equal(await A.has('.recall-bar'), false, '저장하면 끝난다');
+  const pid = (await one(`select id from periods where date = '2026-01-12' and label = '1교시 재호명'`)).id;
+  assert.deepEqual(
+    (await q(`select student_id as id, status from attendance where period_id = $1 order by status`, [pid])),
+    [{ id: st[1].id, status: 'absent' }, { id: st[3].id, status: 'excused' }],
+  );
+  assert.deepEqual(await q(`select student_id as id, item from ledger where period_id = $1 and voided_at is null`, [pid]), [{ id: st[1].id, item: '결석' }]);
+});
+
+test('지각 다시 부르기: 보기·교시·날짜를 바꾸거나 전원 출석으로 되돌리면 끝나고, 새로 그려도·빠르게 눌러도 그대로', async () => {
+  const st = await q(`select id, no from students where active order by no`);
+  const cyc = (i) => A.click(`[data-act="cyc"][data-sid="${st[i].id}"]`);
+  const tog = (i) => A.click(`[data-act="recall-tog"][data-sid="${st[i].id}"]`);
+  const inRecall = async () => !!(await A.page.$('.recall-bar'));
+  // 저장된 지각(손대지 않은 초안)에서 시작해도, 다시 부르며 바꾼 값은 새로 그려도(다른 기기 변경 알림) 남는다
+  await cyc(5);
+  assert.equal(await A.toast('[data-act="att-save"]'), '저장했어요 · 새 자봉 1건');
+  await A.click('[data-act="recall-start"]');
+  await tog(5);
+  await A.page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await A.page.waitForTimeout(400);
+  assert.ok(await inRecall());
+  assert.equal(await A.page.$eval(`[data-act="recall-tog"][data-sid="${st[5].id}"]`, (b) => b.className), 'present');
+  assert.match(await A.text('.att-foot'), /변경 사항 있음/);
+  await A.click('[data-act="recall-end"]');
+  await cyc(5); // 다시 지각 (저장된 값과 같음)
+  // 보기를 바꾸면 끝난다 (호명 목록에도 시작 버튼이 있다)
+  await A.click('[data-act="recall-start"]');
+  assert.ok(await inRecall());
+  await A.click('[data-act="attview"][data-v="list"]');
+  assert.ok(!(await inRecall()));
+  assert.ok(await A.page.$('.calls'), '누른 보기로');
+  assert.equal(await A.text('[data-act="recall-start"]'), '지각 다시 부르기 (1명)');
+  await A.click('[data-act="recall-start"]');
+  assert.ok(await inRecall(), '호명 목록에서도 시작');
+  // 교시를 바꾸면 끝나고, 돌아와도 다시 열리지 않는다
+  await A.click('[data-act="pick-period"]:has-text("아침 출석")');
+  assert.ok(!(await inRecall()));
+  await A.click('[data-act="pick-period"]:has-text("1교시 재호명")');
+  assert.ok(!(await inRecall()));
+  // 날짜를 바꿔도 끝난다. 고치던 출결은 남는다
+  await A.click('[data-act="recall-start"]');
+  await A.page.fill('#attDate', '2026-01-13');
+  assert.ok(!(await inRecall()));
+  await A.page.fill('#attDate', '2026-01-12');
+  await A.click('[data-act="pick-period"]:has-text("1교시 재호명")');
+  assert.ok(await A.page.$(`.call.late:has([data-sid="${st[5].id}"])`), '고치던 지각은 그대로');
+  await A.click('[data-act="recall-start"]');
+  await tog(5);
+  // 빠르게 9번 누르면 홀수 번 → 출석에서 지각으로
+  for (let i = 0; i < 9; i++) await A.page.click(`[data-act="recall-tog"][data-sid="${st[5].id}"]`, { delay: 0 });
+  await A.page.waitForFunction(() => !document.body.style.cursor);
+  assert.equal(await A.page.$eval(`[data-act="recall-tog"][data-sid="${st[5].id}"]`, (b) => b.className), 'late');
+  assert.equal(await A.text('.recall-bar span'), '지각 다시 부르기 · 지각 1명 중 0명 출석');
+  // 전원 출석으로 되돌리면 끝난다
+  await A.click('[data-act="att-clear"]');
+  await A.toast('[data-act="att-clear-yes"]');
+  assert.ok(!(await inRecall()));
+  assert.equal(await A.has('[data-act="recall-start"]'), false);
+  // 다른 탭에 갔다 와도 끝나 있다(같은 교시면 그대로 이어진다)
+  await A.click('[data-act="attview"][data-v="grid"]');
+  await cyc(5);
+  await A.click('[data-act="recall-start"]');
+  await A.tab('board');
+  await A.tab('attend');
+  assert.ok(await inRecall(), '같은 교시로 돌아오면 이어서');
+  await A.click('[data-act="recall-end"]');
+  await A.click('[data-act="att-clear"]');
+  await A.toast('[data-act="att-clear-yes"]');
+  await A.page.fill('#attDate', TODAY);
+});
+
+test('지각 다시 부르기(총대, 폰 터치): 한 번 탭에 바뀌고, 요청을 보내면 끝난다', async () => {
+  const T = await open({ touch: true, width: 360, height: 740 });
+  await T.login('총대단', '총대', pw.총대);
+  await T.tab('attend');
+  await T.page.fill('#attDate', '2026-01-12');
+  await T.page.fill('#newPeriod', '2교시 재호명');
+  assert.equal(await T.toast('[data-act="add-period"]'), '교시를 추가했어요');
+  const st = await q(`select id, no from students where active order by no`);
+  for (const i of [0, 1, 2]) await T.click(`[data-act="setst"][data-sid="${st[i].id}"][data-v="late"]`);
+  await T.click(`[data-act="setst"][data-sid="${st[3].id}"][data-v="absent"]`);
+  await T.page.tap('[data-act="recall-start"]');
+  await T.page.waitForSelector('.recall-bar');
+  await T.fits('총대 지각 다시 부르기 (360px)');
+  await T.page.tap(`[data-act="recall-tog"][data-sid="${st[1].id}"]`);
+  await T.page.waitForFunction(() => !document.body.style.cursor);
+  assert.equal(await T.page.$eval(`[data-act="recall-tog"][data-sid="${st[1].id}"]`, (b) => b.className), 'present', '한 번 탭');
+  assert.equal(await T.text('.recall-bar span'), '지각 다시 부르기 · 지각 3명 중 1명 출석');
+  assert.equal(await T.toast('[data-act="att-request"]'), '출석 요청을 보냈어요 · 부총대 확인을 기다려요');
+  assert.equal(await T.has('.recall-bar'), false, '요청을 보내면 끝난다');
+  const r = await one(`select a.statuses from attendance_requests a join periods p on p.id = a.period_id where p.label = '2교시 재호명'`);
+  assert.deepEqual(r.statuses, { [st[0].id]: 'late', [st[2].id]: 'late', [st[3].id]: 'absent' });
+  // 뒤 테스트에 영향이 없게 요청을 반려해 둔다
+  await db.query(`select review_attendance($1, (select a.id from attendance_requests a join periods p on p.id = a.period_id where p.label = '2교시 재호명'), false, '테스트')`, [await A.token()]);
+  await T.page.context().close();
+});
+
+test('지각 다시 부르기: 아직 없는 아침 출석에서 저장이 실패해도 표시가 남고 이어서 저장된다', async () => {
+  const st = await q(`select id, no from students where active order by no`);
+  await A.tab('attend');
+  await A.page.fill('#attDate', '2026-01-14');
+  assert.match(await A.text('[data-act="pick-period"].on'), /아침 출석/);
+  await A.click('[data-act="attview"][data-v="grid"]');
+  await A.click(`[data-act="cyc"][data-sid="${st[0].id}"]`);
+  await A.click(`[data-act="cyc"][data-sid="${st[1].id}"]`);
+  await A.click('[data-act="recall-start"]');
+  await A.click(`[data-act="recall-tog"][data-sid="${st[0].id}"]`);
+  // 교시는 만들어졌는데 출석 저장이 실패한 경우
+  await A.page.route('**/rest/v1/rpc/save_attendance', (r) => r.abort(), { times: 1 });
+  await A.toast('[data-act="att-save"]');
+  assert.ok(await A.page.$('.recall-bar'), '다시 부르기는 그대로');
+  const cls = (i) => A.page.$eval(`[data-act="recall-tog"][data-sid="${st[i].id}"]`, (b) => b.className);
+  assert.deepEqual([await cls(0), await cls(1)], ['present', 'late'], '누른 값이 사라지지 않는다');
+  assert.equal(await A.text('.recall-bar span'), '지각 다시 부르기 · 지각 2명 중 1명 출석');
+  await A.click(`[data-act="recall-tog"][data-sid="${st[1].id}"]`);
+  await A.click(`[data-act="recall-tog"][data-sid="${st[1].id}"]`);
+  assert.match(await A.text('.att-foot'), /지각 1 · 결석 0/);
+  assert.equal(await A.toast('[data-act="att-save"]'), '저장했어요 · 새 자봉 1건');
+  assert.deepEqual(
+    await q(`select a.student_id as id, a.status from attendance a join periods p on p.id = a.period_id where p.date = '2026-01-14' and p.morning`),
+    [{ id: st[1].id, status: 'late' }],
+  );
+});
+
+test('지각 다시 부르기: 그사이 다른 기기에서 결석이 된 학생은 눌러도 바뀌지 않고, 되돌리기로 초안을 비우면 끝난다', async () => {
+  const st = await q(`select id, no from students where active order by no`);
+  const tok = await A.token();
+  await A.page.fill('#newPeriod', '3교시 재호명');
+  assert.equal(await A.toast('[data-act="add-period"]'), '교시를 추가했어요');
+  await A.click(`[data-act="cyc"][data-sid="${st[2].id}"]`);
+  await A.click(`[data-act="cyc"][data-sid="${st[3].id}"]`);
+  assert.equal(await A.toast('[data-act="att-save"]'), '저장했어요 · 새 자봉 2건');
+  await A.click('[data-act="recall-start"]');
+  const pid = (await one(`select id from periods where date = '2026-01-14' and label = '3교시 재호명'`)).id;
+  await db.query(`select save_attendance($1, $2, $3::jsonb)`, [tok, pid, JSON.stringify({ [st[2].id]: 'absent', [st[3].id]: 'late' })]);
+  await A.page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  const tile = (i) => `[data-act="recall-tog"][data-sid="${st[i].id}"]`;
+  await A.page.waitForFunction((sel) => document.querySelector(sel)?.className === 'absent', tile(2));
+  assert.equal(await A.page.getAttribute(tile(2), 'aria-disabled'), 'true');
+  await A.page.evaluate(() => (document.getElementById('toast').hidden = true));
+  await A.page.click(tile(2), { force: true }); // 흐리게 보이지만 눌리기는 한다
+  await A.page.waitForSelector('#toast:not([hidden])');
+  assert.equal((await A.text('#toast > span')).trim(), '결석·공결인 학생은 호명 목록에서 바꾸세요');
+  assert.equal(await A.page.$eval(tile(2), (b) => b.className), 'absent', '결석은 그대로');
+  await A.click(tile(3));
+  assert.equal(await A.toast('[data-act="att-save"]'), '저장했어요 · 새 자봉 0건');
+  assert.deepEqual(await q(`select student_id as id, status from attendance where period_id = $1`, [pid]), [{ id: st[2].id, status: 'absent' }]);
+  // 이름 바꾸기 → 안내의 되돌리기(초안을 비운다) → 다시 부르기도 끝난다
+  await A.click(`[data-act="cyc"][data-sid="${st[4].id}"]`);
+  await A.click('[data-act="recall-start"]');
+  await A.click('[data-act="per-ren"]');
+  await A.page.fill('#per-name', '3교시 재호명 바꿈');
+  await A.toast('[data-act="per-ren-save"]');
+  assert.ok(await A.page.$('.recall-bar'), '이름을 바꿔도 이어진다');
+  await A.click('#toast button');
+  await A.page.waitForFunction(() => document.querySelector('#toast > span')?.textContent.startsWith('되돌렸어요'));
+  assert.equal(await A.has('.recall-bar'), false, '되돌리기로 초안을 비우면 끝난다');
+  assert.equal((await one(`select label from periods where id = $1`, [pid])).label, '3교시 재호명');
+  await A.page.fill('#attDate', TODAY);
+});
+
+test('지각 다시 부르기(폰): 아래쪽에서 시작해도 막대가 머리에 가리지 않고 학생 칸이 화면에 보인다', async () => {
+  const T = await open({ touch: true, width: 360, height: 640 });
+  await T.login('부총대', '부총대', pw.부총대);
+  await T.tab('attend');
+  await T.page.fill('#attDate', '2026-01-12');
+  await T.click('[data-act="pick-period"]:has-text("1교시 재호명")');
+  const st = await q(`select id from students where active order by no`);
+  await T.click(`[data-act="setst"][data-sid="${st[0].id}"][data-v="late"]`);
+  await T.page.$eval('[data-act="recall-start"]', (b) => b.scrollIntoView({ block: 'end' }));
+  await T.page.tap('[data-act="recall-start"]');
+  await T.page.waitForSelector('.recall-bar');
+  const [barTop, headBottom, tileBottom, vh] = await T.page.evaluate(() => [
+    document.querySelector('.recall-bar').getBoundingClientRect().top,
+    document.querySelector('header.top').getBoundingClientRect().bottom,
+    document.querySelector('.att.recall button').getBoundingClientRect().bottom,
+    window.innerHeight,
+  ]);
+  assert.ok(barTop >= headBottom - 1, `막대가 머리에 가리지 않는다 (${barTop} / ${headBottom})`);
+  assert.ok(tileBottom <= vh, `첫 학생 칸이 화면 안 (${tileBottom} / ${vh})`);
+  await T.page.context().close();
 });
 
 test('서버에 못 닿으면 "불러오지 못했어요"와 다시 시도', async () => {
@@ -1683,6 +1918,19 @@ test('좁은 폰(320px): 모든 역할의 모든 탭이 가로로 넘치지 않�
   await N.fits('320 항목 추천');
   await N.click('[data-act="pr-open"][data-fk="recForm"]');
   await N.fits('320 불러오기 창');
+  // 출석: 지각 다시 부르기 (한눈에 보기·호명 목록 둘 다), 교시 이름 바꾸기 칸
+  await N.page.click('h1');
+  await N.tab('attend');
+  await N.page.fill('#attDate', '2026-01-12');
+  await N.click('[data-act="pick-period"]:has-text("1교시 재호명")');
+  const st = await q(`select id from students where active order by no`);
+  for (const i of [0, 2, 4, 5]) await N.click(`[data-act="setst"][data-sid="${st[i].id}"][data-v="late"]`);
+  await N.click('[data-act="recall-start"]');
+  await N.fits('320 지각 다시 부르기');
+  await N.click(`[data-act="recall-tog"][data-sid="${st[0].id}"]`);
+  await N.fits('320 지각 다시 부르기 누른 뒤');
+  await N.click('[data-act="per-ren"]');
+  await N.fits('320 교시 이름 바꾸기');
   await N.page.context().close();
 });
 
