@@ -33,10 +33,10 @@ select pg_temp.ok((select count(*) from presets where owner = '부총대') = 6 a
 select pg_temp.ok(
   (select array_agg(p.proname::text order by p.proname::text) from pg_proc p where p.pronamespace = 'public'::regnamespace and has_function_privilege('anon', p.oid, 'execute'))
   = (select array_agg(x order by x) from unnest(array['public_state', 'create_excuse', 'login', 'recover', 'private_state', 'logout', 'get_photo',
-      'create_request', 'change_pw', 'reset_pw', 'new_recovery', 'ensure_period', 'delete_period', 'save_attendance', 'request_attendance', 'review_attendance',
+      'create_request', 'change_pw', 'reset_pw', 'new_recovery', 'ensure_period', 'delete_period', 'rename_period', 'save_attendance', 'request_attendance', 'review_attendance',
       'add_entries', 'edit_entry', 'void_entry', 'review_request', 'review_excuse', 'roster_apply', 'my_presets_save', 'my_periods_save', 'purge', 'backup_dump',
       'restore_backup', 'history_move', 'history_drop', 'history_restore', 'ops_list']) x),
-  '브라우저(anon)에 열린 함수가 정확히 화면이 쓰는 31개');
+  '브라우저(anon)에 열린 함수가 정확히 화면이 쓰는 32개');
 select pg_temp.ok(not exists (select 1 from pg_proc p where p.pronamespace = 'public'::regnamespace
   and has_function_privilege('anon', p.oid, 'execute') <> has_function_privilege('authenticated', p.oid, 'execute')), 'anon과 authenticated 권한이 같음');
 select pg_temp.ok(not exists (select 1 from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname !~ '^_'
@@ -715,5 +715,38 @@ select pg_temp.ok(not exists (
   select 1 from pg_proc p where p.pronamespace = 'public'::regnamespace and p.prolang = (select oid from pg_language where lanname = 'plpgsql')
     and p.prosrc like '%perform _op(%' and p.prosrc not like '%perform _wlock();%'), '작업을 남기는 함수는 모두 쓰기 잠금');
 \echo 17. 2차 검토 통과
+
+-- ───────── 18. 교시 이름 바꾸기 ─────────
+set role anon;
+select ensure_period(:'t', '2026-06-10', '1교시 오타', false) as rp \gset
+select ensure_period(:'t', '2026-06-10', '2교시', false) as rp2 \gset
+select save_attendance(:'t', :'rp', format('{"%s":"late","%s":"absent"}', :'d1', :'d2')::jsonb);
+select pg_temp.expect_msg(format('select rename_period(%L, %L, %L)', :'t', :'rp', '  '), '교시 이름을 입력하세요', '빈 이름');
+select pg_temp.expect_msg(format('select rename_period(%L, %L, %L)', :'t', :'rp', repeat('가', 41)), '교시 이름은 40자까지예요', '41자');
+select pg_temp.expect_msg(format('select rename_period(%L, %L, %L)', :'t', :'rp', '2교시'), '그 날짜에 같은 이름의 교시가 이미 있어요', '같은 날 같은 이름');
+select pg_temp.expect_msg(format('select rename_period(%L, %L, %L)', :'t', :'rp', '1교시 오타'), '지금 이름과 같아요', '같은 이름');
+select pg_temp.expect_msg(format('select rename_period(%L, %L, %L)', :'ct', :'rp', '1교시 해부학'), '%부총대만 이름을 바꿀 수 있어요', '저장된 교시는 총대가 못 바꿈');
+select pg_temp.expect(format('select rename_period(%L, %L, %L)', :'ot', :'rp', '1교시 해부학'), '42501', '출석 권한 없는 직책');
+select pg_temp.expect_msg(format('select rename_period(%L, %L, %L)', :'t', gen_random_uuid(), 'x'), '교시를 찾을 수 없어요', '없는 교시');
+select ensure_period(:'t', '2026-06-10', '아침 출석', true) as rpm \gset
+select pg_temp.expect_msg(format('select rename_period(%L, %L, %L)', :'t', :'rpm', 'x'), '아침 출석은 이름을 바꿀 수 없어요', '아침 출석');
+select rename_period(:'t', :'rp', ' 1교시 해부학 ');
+set role postgres;
+select pg_temp.ok((select label from periods where id = :'rp') = '1교시 해부학', '이름 다듬어 바꿈');
+select pg_temp.ok((select count(*) from ledger where period_id = :'rp' and detail = '1교시 해부학') = 2 and not exists (select 1 from ledger where detail = '1교시 오타'), '그 교시 자봉의 세부내용도 함께');
+select pg_temp.ok((select summary from ops order by id desc limit 1) = '교시 이름 바꾸기: 6/10 1교시 오타 → 1교시 해부학', '작업 요약');
+-- 총대가 만든 저장 전 교시는 총대도 바꾼다
+set role anon;
+select ensure_period(:'ct', '2026-06-10', '3교시 오타', false) as rp3 \gset
+select rename_period(:'ct', :'rp3', '3교시 생리학');
+set role postgres;
+select pg_temp.ok((select label from periods where id = :'rp3') = '3교시 생리학', '총대: 저장 전 교시 이름 바꿈');
+-- 되돌리면 이름·세부내용이 모두 돌아온다
+select max(id) as opren from ops where kind = 'rename_period' and actor = '부총대' \gset
+set role anon;
+select history_drop(:'t', :opren, false);
+set role postgres;
+select pg_temp.ok((select label from periods where id = :'rp') = '1교시 오타' and (select count(*) from ledger where period_id = :'rp' and detail = '1교시 오타') = 2, '이름 바꾸기 되돌리기');
+\echo 18. 교시 이름 바꾸기 통과
 
 \echo 모든 서버 함수 테스트 통과

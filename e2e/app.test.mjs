@@ -873,6 +873,7 @@ test('총대: 출석 탭(아침 출석 없음), 교시 추가, 출석 요청·�
   await C.page.fill('#newPeriod', '2교시 생리학');
   assert.equal(await C.toast('[data-act="add-period"]'), '교시를 추가했어요');
   assert.ok(await C.page.$('[data-act="per-del"]'), '내가 만든 저장 전 교시는 지우기 버튼이 있다');
+  assert.ok(await C.page.$('[data-act="per-ren"]'), '이름 바꾸기 버튼도 있다');
   await C.click(`[data-act="setst"][data-sid="${await sid('김민서')}"][data-v="late"]`);
   await C.click(`[data-act="setst"][data-sid="${await sid('서지호')}"][data-v="absent"]`);
   assert.equal(await C.page.$('[data-act="att-save"]'), null, '총대단은 저장 대신 요청');
@@ -1491,6 +1492,47 @@ test('자봉 면제: 관리에서 지정·해제, 면제 학생은 자봉이 빠
   assert.equal(await A.toast('#exempt-card [data-act="stu-exempt"]'), '6번 자봉 면제를 풀었어요');
   assert.match(await A.text('#exempt-card'), /지정한 학생이 없어요/);
   assert.ok(!(await one(`select exempt from students where name = '서지호'`)).exempt);
+});
+
+test('교시 이름 바꾸기: 검사·취소(Esc)·Enter로 저장, 그 교시 자봉의 세부내용도 함께, 같은 날 같은 이름은 막는다', async () => {
+  await A.tab('attend');
+  await A.click('[data-act="attview"][data-v="list"]');
+  await A.page.fill('#attDate', '2026-01-08');
+  assert.equal(await A.page.$('[data-act="per-ren"]'), null, '아직 만들지 않은 아침 출석에는 없다');
+  await A.page.fill('#newPeriod', '5교시');
+  await A.toast('[data-act="add-period"]');
+  await A.page.fill('#newPeriod', '4교시 오타');
+  await A.toast('[data-act="add-period"]');
+  await A.click(`[data-act="setst"][data-sid="${await sid('김민서')}"][data-v="late"]`);
+  assert.equal(await A.toast('[data-act="att-save"]'), '저장했어요 · 새 자봉 1건');
+  await A.click('[data-act="per-ren"]');
+  assert.equal(await A.page.inputValue('#per-name'), '4교시 오타');
+  assert.equal(await A.page.evaluate(() => document.activeElement.id), 'per-name', '누르면 바로 이름 칸으로');
+  await A.fits('교시 이름 바꾸기');
+  await A.page.fill('#per-name', '');
+  assert.equal(await A.toast('[data-act="per-ren-save"]'), '교시 이름을 입력하세요');
+  await A.page.press('#per-name', 'Escape');
+  assert.equal(await A.page.$('#per-name'), null, 'Esc로 취소');
+  // 같은 날 같은 이름: 서버가 막고, 적던 이름은 남는다
+  await A.click('[data-act="per-ren"]');
+  await A.page.fill('#per-name', '5교시');
+  assert.equal(await A.toast('[data-act="per-ren-save"]'), '그 날짜에 같은 이름의 교시가 이미 있어요');
+  assert.equal(await A.page.inputValue('#per-name'), '5교시');
+  await A.page.fill('#per-name', '4교시 해부학');
+  await A.page.evaluate(() => (document.getElementById('toast').hidden = true));
+  await A.page.press('#per-name', 'Enter');
+  await A.page.waitForFunction(() => document.querySelector('#toast > span')?.textContent.startsWith('교시 이름을 바꿨어요'));
+  assert.equal(await A.text('#toast > span'), '교시 이름을 바꿨어요: 4교시 오타 → 4교시 해부학');
+  assert.equal(await A.text('#toast button'), '되돌리기');
+  assert.equal(await A.page.$('#per-name'), null);
+  assert.match(await A.text('[data-act="pick-period"].on'), /4교시 해부학 ·저장됨/, '고른 교시와 출결은 그대로');
+  assert.ok(await A.page.$(`.call.late:has([data-sid="${await sid('김민서')}"])`));
+  assert.deepEqual(await q(`select detail from ledger where date = '2026-01-08'`), [{ detail: '4교시 해부학' }]);
+  // 다른 버튼을 누르면 입력칸이 닫힌다
+  await A.click('[data-act="per-ren"]');
+  await A.click('[data-act="attview"][data-v="list"]');
+  assert.equal(await A.page.$('#per-name'), null);
+  await A.page.fill('#attDate', TODAY);
 });
 
 test('교시 삭제(부총대): 확인 뒤 지우면 출결은 사라지고 그 교시의 자봉은 무효로 남는다, 총대단은 저장된 교시를 못 지운다', async () => {

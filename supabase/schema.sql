@@ -701,6 +701,32 @@ begin
   return n;
 end $$;
 
+-- 교시 이름 바꾸기. 지울 수 있는 사람과 같다: 부총대는 어느 교시든, 출석을 체크하는 총대단은 아직 저장 안 됐고
+-- 다른 사람의 요청도 없는 교시만. 아침 출석은 바꾸지 않는다. 그 교시로 준 자봉의 세부내용(교시 이름)도 함께 바꾼다.
+create or replace function rename_period(p_token uuid, p_id uuid, p_label text) returns void
+language plpgsql security definer set search_path = public as $$
+declare who text := _session_attend(p_token); per periods; lbl text := trim(coalesce(p_label, ''));
+begin
+  perform _wlock();
+  select * into per from periods where id = p_id for update;
+  if not found then raise exception '교시를 찾을 수 없어요'; end if;
+  if per.morning then raise exception '아침 출석은 이름을 바꿀 수 없어요'; end if;
+  if lbl = '' then raise exception '교시 이름을 입력하세요'; end if;
+  if length(lbl) > 40 then raise exception '교시 이름은 40자까지예요'; end if;
+  if lbl = per.label then raise exception '지금 이름과 같아요'; end if;
+  if not exists (select 1 from accounts where role = who and is_admin) and (per.saved_at is not null
+      or exists (select 1 from ledger where period_id = p_id)
+      or exists (select 1 from attendance_requests where period_id = p_id and requested_by <> who)) then
+    raise exception '출석이 저장됐거나 다른 사람의 출석 요청이 있는 교시는 부총대만 이름을 바꿀 수 있어요';
+  end if;
+  if exists (select 1 from periods where date = per.date and label = lbl) then
+    raise exception '그 날짜에 같은 이름의 교시가 이미 있어요';
+  end if;
+  perform _op(who, 'rename_period', format('교시 이름 바꾸기: %s %s → %s', to_char(per.date, 'FMMM/FMDD'), per.label, lbl));
+  update periods set label = lbl where id = p_id;
+  update ledger set detail = lbl where period_id = p_id and src = 'att' and detail = per.label;
+end $$;
+
 -- 한 교시의 출결을 저장한다. p_statuses = {학생 id: 'late'|'absent'|'excused'} (없으면 출석)
 -- 한 교시의 출결을 반영한다. p_by는 저장(승인)한 사람, p_requested_by는 출석 요청을 보낸 사람
 create or replace function _apply_attendance(p_period uuid, p_statuses jsonb, p_by text, p_requested_by text) returns int
@@ -1276,7 +1302,7 @@ do $$ declare f text; begin
     foreach f in array array[
       'public_state()', 'create_excuse(uuid,uuid,text,text)', 'login(text,text)', 'recover(text,text,text)',
       'private_state(uuid)', 'logout(uuid)', 'get_photo(uuid,uuid)', 'create_request(uuid,date,uuid[],text,text,numeric,text,text)',
-      'change_pw(uuid,text,text)', 'reset_pw(uuid,text,text)', 'new_recovery(uuid,text)', 'ensure_period(uuid,date,text,boolean)', 'delete_period(uuid,uuid)',
+      'change_pw(uuid,text,text)', 'reset_pw(uuid,text,text)', 'new_recovery(uuid,text)', 'ensure_period(uuid,date,text,boolean)', 'delete_period(uuid,uuid)', 'rename_period(uuid,uuid,text)',
       'save_attendance(uuid,uuid,jsonb)', 'request_attendance(uuid,uuid,jsonb)', 'review_attendance(uuid,uuid,boolean,text)', 'add_entries(uuid,date,uuid[],text,text,numeric)', 'edit_entry(uuid,uuid,date,text,text,numeric,text)',
       'void_entry(uuid,uuid,text)', 'review_request(uuid,uuid,boolean,text)', 'review_excuse(uuid,uuid,boolean,text)',
       'roster_apply(uuid,jsonb,jsonb,date)', 'my_presets_save(uuid,jsonb)', 'my_periods_save(uuid,jsonb)', 'purge(uuid,date)', 'backup_dump()', 'restore_backup(uuid,jsonb)', 'history_move(uuid,bigint,boolean)', 'history_drop(uuid,bigint,boolean)', 'history_restore(uuid,bigint,boolean)', 'ops_list(uuid,integer)'
