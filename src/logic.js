@@ -226,6 +226,20 @@ export function planRoster(S, text, replace) {
   return { changes, adjs, errors: [...new Set(errors)], same };
 }
 
+// 엑셀 "리액션" 시트의 줄 (서버 reaction_export). 이름은 넣지 않고, 제외된 학생 번호는 구분한다.
+const RX_RESULT = { pending: '대기', approved: '승인', rejected: '반려' };
+export function exportReactions(rows) {
+  return rows.map((r) => ({
+    date: r.date,
+    no: r.active ? r.no : `${r.no} (제외)`,
+    period: r.period,
+    q: r.q,
+    a: r.a,
+    result: RX_RESULT[r.status] + (r.merit ? ' · 상점 반영' : ''),
+    note: r.status === 'rejected' ? r.note || '' : '',
+  }));
+}
+
 // 리액션 이월 붙여넣기: 줄마다 "번호 [이름] 이월횟수"(0~2). 지금과 다른 학생만 돌려준다 (서버 reaction_adjust).
 export function planReactAdj(S, text) {
   const items = [];

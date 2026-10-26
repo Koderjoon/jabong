@@ -1,10 +1,11 @@
 // 내보내기 엑셀 파일 (요약 · 날짜별 내역 · 수정 이력)
 import writeExcelFile from 'write-excel-file/universal';
-import { exportSheets } from './logic.js';
+import { exportSheets, exportReactions } from './logic.js';
 
 const head = (labels) => labels.map((value) => ({ value, fontWeight: 'bold', backgroundColor: '#E8EEF0' }));
 
-export async function downloadExport(S, from, to, fileName) {
+// reactions: 서버 reaction_export가 준 그 기간의 리액션 (없으면 빈 시트)
+export async function downloadExport(S, from, to, fileName, reactions = []) {
   const { summary, rows, revisions } = exportSheets(S, from, to);
   const sheets = [
     {
@@ -24,6 +25,11 @@ export async function downloadExport(S, from, to, fileName) {
       sheet: '수정 이력',
       data: [head(['수정 시각', '날짜', '번호', '바뀐 내용', '사유']), ...revisions.map((r) => [r.at, r.date, r.no, r.change, r.reason])],
       columns: [{ width: 17 }, { width: 12 }, { width: 6 }, { width: 36 }, { width: 24 }],
+    },
+    {
+      sheet: '리액션',
+      data: [head(['날짜', '번호', '교시', '질문', '대답', '결과', '반려 사유']), ...exportReactions(reactions).map((r) => [r.date, r.no, r.period, r.q, r.a, r.result, r.note])],
+      columns: [{ width: 12 }, { width: 8 }, { width: 16 }, { width: 36 }, { width: 36 }, { width: 14 }, { width: 20 }],
     },
   ];
   const blob = await writeExcelFile(sheets).toBlob();

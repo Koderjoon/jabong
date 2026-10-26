@@ -1046,6 +1046,18 @@ language sql stable security definer set search_path = public as $$
     limit least(greatest(coalesce(p_limit, 30), 1), 300)) t
 $$;
 
+-- 내보내기(엑셀)용 리액션 내역 (부총대): 기간 안의 실제 리액션 (이월 줄 제외), 날짜·신청 순
+create or replace function reaction_export(p_token uuid, p_from date, p_to date) returns json
+language plpgsql stable security definer set search_path = public as $$
+begin
+  perform _session(p_token, true);
+  return (select coalesce(json_agg(json_build_object('date', x.date, 'no', s.no, 'active', s.active, 'period', x.period,
+      'q', x.question, 'a', x.answer, 'status', x.status, 'merit', x.merit is not null and x.merit <> _merit_cleared(), 'note', x.review_note)
+      order by x.date, x.created_at, x.id), '[]')
+    from reactions x join students s on s.id = x.student_id
+    where not x.adj and x.date between p_from and p_to);
+end $$;
+
 -- 이월 맞추기 (부총대): p_list = [{sid, n}], n은 0~2. 모자라면 조정 줄(adj)을 넣고, 넘치면 조정 줄부터 지우고
 -- 그래도 넘치면 오래된 실제 리액션을 이월에서 뺀다(_merit_cleared). 3이 되면 상점이 되니 2까지만 받는다.
 create or replace function reaction_adjust(p_token uuid, p_list jsonb) returns int
@@ -1483,7 +1495,7 @@ end $$;
 
 create or replace function purge(p_token uuid, p_cut date) returns json
 language plpgsql security definer set search_path = public as $$
-declare who text := _session(p_token, true); old_n int; carry_n int := 0; r record;
+declare who text := _session(p_token, true); old_n int; carry_n int := 0; rx_n int := 0; r record;
 begin
   perform _wlock();
   if exists (select 1 from excuses x join ledger l on l.id = x.ledger_id where x.status = 'pending' and l.date <= p_cut)
@@ -1504,11 +1516,17 @@ begin
   end loop;
   delete from excuses where ledger_id is null;
   delete from requests where status <> 'pending' and date <= p_cut;
-  -- 승인 리액션은 남긴다: 상점이 아직 안 된 것은 이월, 된 것은 받은 상점 수를 세는 데 쓴다
-  delete from reactions where date <= p_cut and status = 'rejected';
+  -- 리액션: 정리할 기간의 내역(질문·대답)은 모두 지우고, 학생별 이월(상점이 아직 안 된 승인 리액션 수)만
+  -- 그 수만큼 이월 줄(adj)로 남긴다. 자봉 점수가 "이월" 한 줄로 남는 것과 같다.
+  create temp table _rx on commit drop as
+    select student_id, count(*) as n from reactions where date <= p_cut and status = 'approved' and merit is null group by student_id;
+  select count(*) into rx_n from reactions where date <= p_cut and not adj;
+  delete from reactions where date <= p_cut;
+  insert into reactions (student_id, date, period, question, answer, status, adj, reviewed_by, reviewed_at, created_at)
+  select student_id, p_cut, '이월', '정리 이월', '', 'approved', true, who, now(), p_cut::timestamptz from _rx, generate_series(1, n);
   delete from periods where date <= p_cut;
   delete from photos p where not exists (select 1 from requests where photo_id = p.id) and not exists (select 1 from excuses where photo_id = p.id);
-  return json_build_object('old', old_n, 'carry', carry_n);
+  return json_build_object('old', old_n, 'carry', carry_n, 'reactions', rx_n);
 end $$;
 
 -- 처음 한 번만: 모든 직책의 비밀번호를 정하고 복구 코드를 돌려준다. SQL Editor에서만 실행할 수 있다.
@@ -1531,7 +1549,7 @@ do $$ declare f text; begin
   if exists (select 1 from pg_roles where rolname = 'anon') then
     execute 'revoke execute on all functions in schema public from public, anon, authenticated';
     foreach f in array array[
-      'public_state()', 'create_excuse(uuid,uuid,text,text)', 'create_excuse_day(uuid,date,text,text)', 'create_reaction(uuid,text,text,text)', 'my_reactions(uuid)', 'reaction_feed(integer)', 'reaction_adjust(uuid,jsonb)', 'review_reaction(uuid,uuid[],boolean,text)', 'login(text,text)', 'recover(text,text,text)',
+      'public_state()', 'create_excuse(uuid,uuid,text,text)', 'create_excuse_day(uuid,date,text,text)', 'create_reaction(uuid,text,text,text)', 'my_reactions(uuid)', 'reaction_feed(integer)', 'reaction_adjust(uuid,jsonb)', 'reaction_export(uuid,date,date)', 'review_reaction(uuid,uuid[],boolean,text)', 'login(text,text)', 'recover(text,text,text)',
       'private_state(uuid)', 'logout(uuid)', 'get_photo(uuid,uuid)', 'create_request(uuid,date,uuid[],text,text,numeric,text,text)',
       'change_pw(uuid,text,text)', 'reset_pw(uuid,text,text)', 'new_recovery(uuid,text)', 'ensure_period(uuid,date,text,boolean)', 'delete_period(uuid,uuid)', 'rename_period(uuid,uuid,text)',
       'save_attendance(uuid,uuid,jsonb)', 'request_attendance(uuid,uuid,jsonb)', 'review_attendance(uuid,uuid,boolean,text)', 'add_entries(uuid,date,uuid[],text,text,numeric)', 'edit_entry(uuid,uuid,date,text,text,numeric,text)',

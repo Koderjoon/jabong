@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { genNotice, planRoster, planReactAdj, rosterOps, parseNums, expRange, exportSheets, bal, dupNums, excusable, suggestItems, suggestDetails, suggestPeriods, suggestTexts, reasonEvents } from '../src/logic.js';
+import { genNotice, planRoster, planReactAdj, exportReactions, rosterOps, parseNums, expRange, exportSheets, bal, dupNums, excusable, suggestItems, suggestDetails, suggestPeriods, suggestTexts, reasonEvents } from '../src/logic.js';
 
 // 학생 70명과 기록을 만드는 도우미
 function state() {
@@ -347,4 +347,13 @@ test('리액션 이월 붙여넣기: 번호·(이름)·횟수, 제목 줄 건너
   assert.match(bad.errors[4], /"8".*번호와 이월 횟수/);
   S.students[9].active = false;
   assert.match(planReactAdj(S, '10\t1').errors[0], /10번은 명단에 없어요/, '제외된 학생');
+});
+
+test('엑셀 리액션 시트: 결과·상점 반영, 반려 사유는 반려일 때만, 제외된 학생 번호 구분', () => {
+  const rows = exportReactions([
+    { date: '2026-10-26', no: 3, active: true, period: '1교시', q: '질문', a: '대답', status: 'approved', merit: true, note: null },
+    { date: '2026-10-26', no: 4, active: false, period: '2교시', q: 'q', a: 'a', status: 'rejected', merit: false, note: '중복' },
+    { date: '2026-10-27', no: 5, active: true, period: '3교시', q: 'q', a: 'a', status: 'pending', merit: false, note: '남은 사유' },
+  ]);
+  assert.deepEqual(rows.map((r) => [r.no, r.result, r.note]), [[3, '승인 · 상점 반영', ''], ['4 (제외)', '반려', '중복'], [5, '대기', '']]);
 });

@@ -730,6 +730,7 @@ test('내보내기: 엑셀 파일(이름·요청자 없음, 시트 3개), 기간
   assert.match(x['xl/workbook.xml'], /요약/);
   assert.match(x['xl/workbook.xml'], /날짜별 내역/);
   assert.match(x['xl/workbook.xml'], /수정 이력/);
+  assert.match(x['xl/workbook.xml'], /리액션/, '리액션 시트');
   assert.match(all, /소치 실습/);
   assert.match(all, /오기/, '수정 이력 사유');
   for (const name of ['김민서', '이도윤', '박하준', '부총대']) assert.doesNotMatch(all, new RegExp(name), `엑셀에 ${name}이(가) 없어야 한다`);
@@ -1966,6 +1967,16 @@ test('리액션 이월 맞추기(부총대, 붙여넣기)와 전체 리액션 �
   assert.equal(await S.has('[data-act="rx-more"]'), false);
   assert.match(await S.text('#rx-feed .rx-feed:last-child'), /옛 질문 1/, '가장 오래된 것이 맨 아래');
   await db.query(`delete from reactions where question like '옛 질문%'`);
+  // 엑셀 내보내기에 리액션 내역이 들어간다 (전체 기간)
+  await A.tab('notice');
+  await A.click('[data-act="exp-range"][data-v="all"]');
+  const file = await A.download('[data-act="exp-make"]');
+  const xl = Object.values(unzip(fs.readFileSync(file))).join('\n');
+  assert.match(xl, /하악신경 분지는\?/);
+  assert.match(xl, /승인 · 상점 반영/);
+  assert.match(xl, /수업 내용과 달라요/, '반려 사유');
+  assert.doesNotMatch(xl, /부총대 조정/, '이월 줄은 안 들어간다');
+  assert.doesNotMatch(xl, /박하준/, '이름은 안 들어간다');
 });
 
 test('서버에 못 닿으면 "불러오지 못했어요"와 다시 시도', async () => {

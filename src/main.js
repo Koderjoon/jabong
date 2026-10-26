@@ -785,7 +785,7 @@ function vPurge() {
   const n = new Set(old.filter(live).map((e) => e.sid)).size;
   const ready = UI.fullBackup && old.length && UI.purgeTyped.trim() === '정리';
   return `<div class="card"><h2>보관 후 정리</h2>
-  <p class="hint" style="margin:0">기준 날짜까지의 기록을 학생마다 <b>"이월" 한 줄</b>로 합쳐서 서버를 가볍게 해요. 현재 자봉 점수는 그대로예요. 지워진 기록은 앱에서 다시 볼 수 없으니, 먼저 전체 기간 파일로 받아두세요.</p>
+  <p class="hint" style="margin:0">기준 날짜까지의 기록을 학생마다 <b>"이월" 한 줄</b>로 합쳐서 서버를 가볍게 해요. 현재 자봉 점수는 그대로예요. 그 기간의 <b>리액션 내역도 모두 지우고</b>, 학생별 리액션 이월 횟수만 남겨요. 지워진 기록은 앱에서 다시 볼 수 없으니, 먼저 전체 기간 파일로 받아두세요.</p>
   <p class="hint" style="margin:0">기록은 글자라서 몇 년을 써도 수 MB라, 보통은 1년에 한 번이면 충분해요.</p>
   <label class="fld"><span>기준 날짜 (이 날까지 정리)</span><input type="date" id="purge-cut" value="${esc(cut)}" data-bind="purgeCut" data-rerender="1" style="width:auto"></label>
   ${cut ? `<div class="note">정리 대상: 기록 ${old.length}건 → 이월 ${n}건${old.some((e) => e.voided) ? ` (무효 ${old.filter((e) => e.voided).length}건 포함)` : ''}</div>` : ''}
@@ -1751,10 +1751,19 @@ const A = {
   },
   'exp-make': async () => {
     const [from, to, label] = L.expRange(S, UI.exp, TODAY);
-    await downloadExport(S, from, to, `25학번_자봉_${label}.xlsx`);
-    if (UI.exp.range === 'all') UI.fullBackup = true;
+    // 리액션 내역은 상태에 다 싣지 않으니 따로 받아 온다. 서버가 아직 옛 버전이면 리액션 시트만 비운다
+    let rx = [];
+    let rxOk = true;
+    try {
+      rx = await rpc('reaction_export', { p_token: token(), p_from: from, p_to: to });
+    } catch (e) {
+      if (e.code === '28000') throw e;
+      rxOk = false;
+    }
+    await downloadExport(S, from, to, `25학번_자봉_${label}.xlsx`, rx);
+    if (UI.exp.range === 'all' && rxOk) UI.fullBackup = true;
     render();
-    return toast('엑셀 파일을 만들었어요');
+    return toast(rxOk ? '엑셀 파일을 만들었어요' : '엑셀 파일을 만들었어요 (리액션은 불러오지 못해 빠졌어요. 서버 반영을 확인하세요)');
   },
   purge: async () => {
     if (!UI.fullBackup || UI.purgeTyped.trim() !== '정리') return toast('전체 기간 파일과 확인 입력이 필요해요');
@@ -1766,7 +1775,7 @@ const A = {
     clearDrafts();
     await refresh();
     render();
-    return toast(`기록 ${r.old}건을 이월 ${r.carry}건으로 정리했어요`);
+    return toast(`기록 ${r.old}건을 이월 ${r.carry}건으로 정리했어요${r.reactions ? ` · 리액션 ${r.reactions}건 지움` : ''}`);
   },
   'stu-add': async () => {
     const no = Math.max(0, ...active().map((s) => s.no)) + 1;

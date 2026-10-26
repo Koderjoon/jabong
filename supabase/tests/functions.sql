@@ -32,11 +32,11 @@ select pg_temp.ok((select count(*) from presets where owner = '부총대') = 6 a
 -- ───────── 1. 노출과 권한 ─────────
 select pg_temp.ok(
   (select array_agg(p.proname::text order by p.proname::text) from pg_proc p where p.pronamespace = 'public'::regnamespace and has_function_privilege('anon', p.oid, 'execute'))
-  = (select array_agg(x order by x) from unnest(array['public_state', 'create_excuse', 'create_excuse_day', 'create_reaction', 'my_reactions', 'reaction_feed', 'reaction_adjust', 'review_reaction', 'login', 'recover', 'private_state', 'logout', 'get_photo',
+  = (select array_agg(x order by x) from unnest(array['public_state', 'create_excuse', 'create_excuse_day', 'create_reaction', 'my_reactions', 'reaction_feed', 'reaction_adjust', 'reaction_export', 'review_reaction', 'login', 'recover', 'private_state', 'logout', 'get_photo',
       'create_request', 'change_pw', 'reset_pw', 'new_recovery', 'ensure_period', 'delete_period', 'rename_period', 'save_attendance', 'request_attendance', 'review_attendance',
       'add_entries', 'edit_entry', 'void_entry', 'review_request', 'review_excuse', 'roster_apply', 'my_presets_save', 'my_periods_save', 'purge', 'backup_dump',
       'restore_backup', 'history_move', 'history_drop', 'history_restore', 'ops_list']) x),
-  '브라우저(anon)에 열린 함수가 정확히 화면이 쓰는 38개');
+  '브라우저(anon)에 열린 함수가 정확히 화면이 쓰는 39개');
 select pg_temp.ok(not exists (select 1 from pg_proc p where p.pronamespace = 'public'::regnamespace
   and has_function_privilege('anon', p.oid, 'execute') <> has_function_privilege('authenticated', p.oid, 'execute')), 'anon과 authenticated 권한이 같음');
 select pg_temp.ok(not exists (select 1 from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname !~ '^_'
@@ -1005,5 +1005,35 @@ select create_reaction(:'rs6', '1교시', 'q1', 'a');
 select create_reaction(:'rs6', '1교시', 'q2', 'a');
 select pg_temp.ok(create_reaction(:'rs6', '1교시', 'q3', 'a') is not null, '이월 줄이 있어도 오늘 3번 다 낼 수 있다');
 \echo 22. 리액션 이월 맞추기·전체 내역 통과
+
+-- ───────── 23. 리액션 내보내기·정리 ─────────
+set role anon;
+select pg_temp.expect(format('select reaction_export(%L, %L, %L)', :'ct', '2000-01-01', '2100-01-01'), '42501', '내보내기는 부총대만');
+set role postgres;
+select pg_temp.ok(json_array_length(reaction_export(:'t', '2000-01-01', '2100-01-01')) = (select count(*) from reactions where not adj), '기간 안의 실제 리액션 전부 (이월 줄 제외)');
+select pg_temp.ok(json_array_length(reaction_export(:'t', '2000-01-01', '2000-01-02')) = 0, '기간 밖은 없음');
+select pg_temp.ok(exists (select 1 from json_array_elements(reaction_export(:'t', '2000-01-01', '2100-01-01')) r where r ->> 'note' = '수업 내용 아님' and r ->> 'status' = 'rejected'), '반려 사유도');
+-- 정리: 그 기간 리액션 내역은 모두 지우고, 학생별 이월 횟수만 남긴다
+select coalesce(array_agg(id)::text, '{}') as pend from reactions where status = 'pending' \gset
+set role anon;
+select case when cardinality(:'pend'::uuid[]) > 0 then review_reaction(:'t', :'pend'::uuid[], false, '정리 전') end;
+set role postgres;
+-- 앞 절에서 남은 대기 공결·출석 요청은 정리를 막으니 치운다 (정리는 작업 내역을 비우므로 직접 바꿔도 된다)
+update excuses set status = 'rejected', review_note = '정리 전' where status = 'pending';
+update attendance_requests set status = 'rejected', review_note = '정리 전' where status = 'pending';
+create temp table prog_before as select student_id, count(*) n from reactions where status = 'approved' and merit is null group by student_id;
+select count(*) as rx_real from reactions where not adj \gset
+select pg_temp.ok(:rx_real > 0 and (select count(*) from prog_before) > 0, '정리 전: 리액션과 이월이 있다');
+set role anon;
+select purge(:'t', (now() at time zone 'Asia/Seoul')::date) as pr \gset
+set role postgres;
+select pg_temp.ok((:'pr'::json ->> 'reactions')::int = :rx_real, '지운 리액션 수');
+select pg_temp.ok(not exists (select 1 from reactions where not adj), '리액션 내역은 모두 지움');
+select pg_temp.ok(json_array_length(reaction_feed(300)) = 0, '전체 내역도 비었다');
+select pg_temp.ok(not exists (
+  select 1 from prog_before b full join (select student_id, count(*) n from reactions where status = 'approved' and merit is null group by student_id) a using (student_id)
+  where a.n is distinct from b.n), '학생별 이월 횟수는 그대로');
+select pg_temp.ok((select count(*) from json_each(public_state() -> 'reactProg')) = (select count(*) from prog_before), '공개 이월 수도 그대로');
+\echo 23. 리액션 내보내기·정리 통과
 
 \echo 모든 서버 함수 테스트 통과
