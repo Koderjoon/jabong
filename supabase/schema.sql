@@ -84,6 +84,8 @@ create table if not exists ledger (
   voided_at timestamptz,
   void_reason text
 );
+alter table ledger drop constraint if exists ledger_src_check;
+alter table ledger add constraint ledger_src_check check (src in ('att', 'manual', 'request', 'import', 'carry', 'reaction'));
 create index if not exists ledger_student on ledger (student_id);
 create index if not exists ledger_date on ledger (date);
 create index if not exists ledger_period on ledger (period_id);
@@ -144,6 +146,25 @@ create table if not exists excuses (
 );
 
 -- 총대단이 보낸 출석 요청. 부총대가 승인하면 그 교시의 출석으로 저장된다.
+-- 리액션 상점 신청: 학생이 수업 중 대답한 것을 그날 안에 적어 내고, 부총대가 승인한다.
+-- 승인된 리액션 3개마다 상점 1점(-1, src 'reaction'). 남는 것은 다음으로 이월된다.
+create table if not exists reactions (
+  id uuid primary key default gen_random_uuid(),
+  student_id uuid not null references students on delete cascade,
+  date date not null,
+  period text not null,
+  question text not null,
+  answer text not null,
+  status text not null default 'pending' check (status in ('pending', 'approved', 'rejected')),
+  -- 이 리액션이 들어간 상점 기록 id (3개씩 묶인다). 외래키가 아니다: 정리로 그 기록이 지워져도 "이미 상점이 됨"은 남아야 한다
+  merit uuid,
+  reviewed_by text,
+  review_note text,
+  created_at timestamptz not null default now(),
+  reviewed_at timestamptz
+);
+create index if not exists reactions_student_date on reactions (student_id, date);
+
 -- 하루 전체 공결: 그날의 지각·결석마다 한 줄씩 만들고 같은 grp로 묶는다 (승인·반려도 묶음째)
 alter table excuses add column if not exists grp uuid;
 create index if not exists excuses_grp on excuses (grp) where grp is not null;
@@ -272,6 +293,7 @@ alter table photos enable row level security;
 alter table requests enable row level security;
 alter table excuses enable row level security;
 alter table attendance_requests enable row level security;
+alter table reactions enable row level security;
 alter table ops enable row level security;
 alter table op_changes enable row level security;
 alter table accounts enable row level security;
@@ -296,7 +318,7 @@ begin
 end $$;
 
 do $$ declare t text; begin
-  foreach t in array array['students','presets','periods','attendance','ledger','ledger_revisions','requests','excuses','attendance_requests'] loop
+  foreach t in array array['students','presets','periods','attendance','ledger','ledger_revisions','requests','excuses','attendance_requests','reactions'] loop
     execute format('drop trigger if exists bump on %I', t);
     execute format('create trigger bump after insert or update or delete on %I for each statement execute function _bump()', t);
   end loop;
@@ -319,7 +341,7 @@ begin
 end $$;
 
 do $$ declare t text; begin
-  foreach t in array array['students','presets','periods','attendance','ledger','ledger_private','ledger_revisions','requests','excuses','attendance_requests'] loop
+  foreach t in array array['students','presets','periods','attendance','ledger','ledger_private','ledger_revisions','requests','excuses','attendance_requests','reactions'] loop
     execute format('drop trigger if exists zz_log on %I', t);
     execute format('create trigger zz_log after insert or update or delete on %I for each row execute function _log_change()', t);
   end loop;
@@ -509,6 +531,16 @@ language sql stable security definer set search_path = public as $$
         'id', a.id, 'pid', a.period_id, 'statuses', a.statuses, 'by', a.requested_by, 'status', a.status,
         'note', a.review_note, 'reviewer', a.reviewed_by, 'at', _kst(a.created_at), 'reviewedAt', _kst(a.reviewed_at)
       ) order by a.created_at), '[]') from attendance_requests a) else '[]'::json end,
+    -- 리액션: 대기 중인 것과 최근 30일 것만 (전부 보내면 학기 말에 무거워진다). 이월 중인 개수는 학생별로 따로.
+    'reactions', (select coalesce(json_agg(json_build_object(
+        'id', x.id, 'sid', x.student_id, 'date', x.date, 'period', x.period, 'q', x.question, 'a', x.answer,
+        'status', x.status, 'note', x.review_note, 'merit', x.merit is not null, 'at', _kst(x.created_at),
+        'reviewer', case when p_private then x.reviewed_by end, 'reviewedAt', _kst(x.reviewed_at)
+      ) order by x.created_at, x.id), '[]') from reactions x
+      where x.status = 'pending' or x.date >= (now() at time zone 'Asia/Seoul')::date - 30),
+    'reactProg', (select coalesce(json_object_agg(student_id, n), '{}') from
+      (select student_id, count(*) as n from reactions where status = 'approved' and merit is null group by student_id) t),
+    'today', to_char(now() at time zone 'Asia/Seoul', 'YYYY-MM-DD'),
     'accounts', (select json_agg(json_build_object('role', role, 'admin', is_admin, 'attend', is_admin or can_attend) order by sort) from accounts),
     -- 맨 위 작업 (부총대 화면의 "되돌리기" 버튼이 방금 한 작업인지 알아보는 데 쓴다)
     'lastOp', case when p_private then (select json_build_object('id', id, 'actor', actor, 'undoable', undoable, 'undone', undone, 'dropped', dropped)
@@ -564,6 +596,33 @@ begin
   insert into excuses (student_id, ledger_id, reason, photo_id, grp)
   select p_student, i, left(coalesce(trim(p_reason), ''), 500), ph, g from unnest(ids) with ordinality u(i, o) order by o;
   return array_length(ids, 1);
+end $$;
+
+-- 리액션 신청 (학생, 로그인 없음). 날짜는 서버의 한국 시각 오늘로 정한다 → 그날 안에만 낼 수 있다.
+-- 하루 3번까지(반려된 것은 세지 않는다), 같은 날 같은 교시·같은 질문은 한 번.
+create or replace function create_reaction(p_student uuid, p_period text, p_question text, p_answer text) returns uuid
+language plpgsql security definer set search_path = public as $$
+declare
+  d date := (now() at time zone 'Asia/Seoul')::date; nid uuid; sno int;
+  per text := trim(coalesce(p_period, '')); q text := trim(coalesce(p_question, '')); a text := trim(coalesce(p_answer, ''));
+begin
+  perform _wlock();
+  select no into sno from students where id = p_student and active;
+  if sno is null then raise exception '번호를 확인하세요'; end if;
+  if per = '' then raise exception '교시를 적어 주세요'; end if;
+  if q = '' then raise exception '질문을 적어 주세요'; end if;
+  if a = '' then raise exception '내 대답을 적어 주세요'; end if;
+  if length(per) > 40 then raise exception '교시는 40자까지예요'; end if;
+  if length(q) > 300 or length(a) > 300 then raise exception '질문과 대답은 300자까지예요'; end if;
+  if (select count(*) from reactions where student_id = p_student and date = d and status <> 'rejected') >= 3 then
+    raise exception '리액션은 하루 3번까지 신청할 수 있어요';
+  end if;
+  if exists (select 1 from reactions where student_id = p_student and date = d and status <> 'rejected' and period = per and question = q) then
+    raise exception '이미 신청한 리액션이에요';
+  end if;
+  perform _op(sno || '번 학생', 'create_reaction', format('리액션 신청: %s번 %s %s', sno, to_char(d, 'FMMM/FMDD'), per));
+  insert into reactions (student_id, date, period, question, answer) values (p_student, d, per, q, a) returning id into nid;
+  return nid;
 end $$;
 
 create or replace function login(p_role text, p_pw text) returns json
@@ -945,6 +1004,39 @@ begin
   end loop;
 end $$;
 
+-- 리액션 승인·반려 (부총대, 여러 건 한 번에). 승인할 때마다 그 학생의 아직 상점이 안 된 승인 리액션을 세어
+-- 3개가 모이면 상점 1점(-1)을 만들고 그 3개에 표시한다. 만든 상점 수를 돌려준다.
+create or replace function review_reaction(p_token uuid, p_ids uuid[], p_approve boolean, p_note text) returns int
+language plpgsql security definer set search_path = public as $$
+declare who text := _session(p_token, true); r reactions; g uuid[]; mid uuid; n int := 0; oid bigint;
+begin
+  perform _wlock();
+  if coalesce(array_length(p_ids, 1), 0) = 0 then raise exception '고른 리액션이 없어요'; end if;
+  if not p_approve and coalesce(trim(p_note), '') = '' then raise exception '반려 사유를 입력하세요'; end if;
+  if exists (select 1 from unnest(p_ids) i where not exists (select 1 from reactions where id = i and status = 'pending')) then
+    raise exception '이미 처리된 리액션이 있어요. 새로 불러온 뒤 다시 해보세요';
+  end if;
+  oid := _op(who, 'review_reaction', format('리액션 %s: %s', case when p_approve then '승인' else '반려' end,
+    (select string_agg(format('%s번 %s건', no, c), ' · ' order by no) from
+      (select s.no, count(*) c from reactions x join students s on s.id = x.student_id where x.id = any (p_ids) group by s.no) t)));
+  for r in select * from reactions where id = any (p_ids) order by created_at, id for update loop
+    if p_approve then
+      update reactions set status = 'approved', reviewed_by = who, reviewed_at = now() where id = r.id;
+      select array_agg(id) into g from (select id from reactions where student_id = r.student_id and status = 'approved' and merit is null
+        order by created_at, id limit 3) t;
+      if array_length(g, 1) = 3 then
+        mid := _entry(r.date, r.student_id, '리액션 상점', '', -1, 'reaction', null, null, who, null, who);
+        update reactions set merit = mid where id = any (g);
+        n := n + 1;
+      end if;
+    else
+      update reactions set status = 'rejected', review_note = trim(p_note), reviewed_by = who, reviewed_at = now() where id = r.id;
+    end if;
+  end loop;
+  if n > 0 then update ops set summary = summary || format(' (상점 %s점)', n) where id = oid; end if;
+  return n;
+end $$;
+
 -- 명단 변경을 한 번에 적용한다.
 -- p_ops: [{op:'add',name,no} | {op:'renum'|'restore',id,no} | {op:'remove',id} | {op:'rename',id,name} | {op:'exempt',id,on}]
 -- p_adjs: [{name, to}]  — 해당 학생의 자봉이 to가 되도록 차이만큼 기록을 더한다
@@ -1050,7 +1142,8 @@ create or replace function _dump() returns jsonb language sql stable security de
       'ledger_revisions', (select coalesce(jsonb_agg(to_jsonb(x)), '[]') from ledger_revisions x),
       'requests', (select coalesce(jsonb_agg(to_jsonb(x)), '[]') from requests x),
       'excuses', (select coalesce(jsonb_agg(to_jsonb(x)), '[]') from excuses x),
-      'attendance_requests', (select coalesce(jsonb_agg(to_jsonb(x)), '[]') from attendance_requests x)
+      'attendance_requests', (select coalesce(jsonb_agg(to_jsonb(x)), '[]') from attendance_requests x),
+      'reactions', (select coalesce(jsonb_agg(to_jsonb(x)), '[]') from reactions x)
     ))
 $$;
 
@@ -1285,6 +1378,8 @@ begin
     || jsonb_build_object('photo_id', case when exists (select 1 from photos where id::text = e ->> 'photo_id') then e -> 'photo_id' end))).*
     from jsonb_array_elements(coalesce(t -> 'excuses', '[]')) e;
   insert into attendance_requests select * from jsonb_populate_recordset(null::attendance_requests, t -> 'attendance_requests');
+  -- 리액션이 생기기 전 백업에는 없다
+  insert into reactions select * from jsonb_populate_recordset(null::reactions, coalesce(t -> 'reactions', '[]'));
   return json_build_object('students', (select count(*) from students), 'ledger', (select count(*) from ledger), 'createdAt', p_data ->> 'createdAt');
 end $$;
 
@@ -1294,8 +1389,9 @@ declare who text := _session(p_token, true); old_n int; carry_n int := 0; r reco
 begin
   perform _wlock();
   if exists (select 1 from excuses x join ledger l on l.id = x.ledger_id where x.status = 'pending' and l.date <= p_cut)
-     or exists (select 1 from attendance_requests a join periods p on p.id = a.period_id where a.status = 'pending' and p.date <= p_cut) then
-    raise exception '정리할 기간에 아직 처리하지 않은 공결 신청이나 출석 요청이 있어요. 요청함에서 먼저 처리하세요';
+     or exists (select 1 from attendance_requests a join periods p on p.id = a.period_id where a.status = 'pending' and p.date <= p_cut)
+     or exists (select 1 from reactions where status = 'pending' and date <= p_cut) then
+    raise exception '정리할 기간에 아직 처리하지 않은 공결 신청이나 출석 요청, 리액션 신청이 있어요. 요청함에서 먼저 처리하세요';
   end if;
   -- 정리하면 그 전 작업은 되돌릴 수 없으니 작업 로그를 비운다
   delete from ops where true;
@@ -1310,6 +1406,8 @@ begin
   end loop;
   delete from excuses where ledger_id is null;
   delete from requests where status <> 'pending' and date <= p_cut;
+  -- 상점이 아직 안 된 승인 리액션은 남긴다 (이월)
+  delete from reactions where date <= p_cut and (status = 'rejected' or merit is not null);
   delete from periods where date <= p_cut;
   delete from photos p where not exists (select 1 from requests where photo_id = p.id) and not exists (select 1 from excuses where photo_id = p.id);
   return json_build_object('old', old_n, 'carry', carry_n);
@@ -1335,7 +1433,7 @@ do $$ declare f text; begin
   if exists (select 1 from pg_roles where rolname = 'anon') then
     execute 'revoke execute on all functions in schema public from public, anon, authenticated';
     foreach f in array array[
-      'public_state()', 'create_excuse(uuid,uuid,text,text)', 'create_excuse_day(uuid,date,text,text)', 'login(text,text)', 'recover(text,text,text)',
+      'public_state()', 'create_excuse(uuid,uuid,text,text)', 'create_excuse_day(uuid,date,text,text)', 'create_reaction(uuid,text,text,text)', 'review_reaction(uuid,uuid[],boolean,text)', 'login(text,text)', 'recover(text,text,text)',
       'private_state(uuid)', 'logout(uuid)', 'get_photo(uuid,uuid)', 'create_request(uuid,date,uuid[],text,text,numeric,text,text)',
       'change_pw(uuid,text,text)', 'reset_pw(uuid,text,text)', 'new_recovery(uuid,text)', 'ensure_period(uuid,date,text,boolean)', 'delete_period(uuid,uuid)', 'rename_period(uuid,uuid,text)',
       'save_attendance(uuid,uuid,jsonb)', 'request_attendance(uuid,uuid,jsonb)', 'review_attendance(uuid,uuid,boolean,text)', 'add_entries(uuid,date,uuid[],text,text,numeric)', 'edit_entry(uuid,uuid,date,text,text,numeric,text)',

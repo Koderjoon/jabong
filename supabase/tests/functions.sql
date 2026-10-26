@@ -32,11 +32,11 @@ select pg_temp.ok((select count(*) from presets where owner = '부총대') = 6 a
 -- ───────── 1. 노출과 권한 ─────────
 select pg_temp.ok(
   (select array_agg(p.proname::text order by p.proname::text) from pg_proc p where p.pronamespace = 'public'::regnamespace and has_function_privilege('anon', p.oid, 'execute'))
-  = (select array_agg(x order by x) from unnest(array['public_state', 'create_excuse', 'create_excuse_day', 'login', 'recover', 'private_state', 'logout', 'get_photo',
+  = (select array_agg(x order by x) from unnest(array['public_state', 'create_excuse', 'create_excuse_day', 'create_reaction', 'review_reaction', 'login', 'recover', 'private_state', 'logout', 'get_photo',
       'create_request', 'change_pw', 'reset_pw', 'new_recovery', 'ensure_period', 'delete_period', 'rename_period', 'save_attendance', 'request_attendance', 'review_attendance',
       'add_entries', 'edit_entry', 'void_entry', 'review_request', 'review_excuse', 'roster_apply', 'my_presets_save', 'my_periods_save', 'purge', 'backup_dump',
       'restore_backup', 'history_move', 'history_drop', 'history_restore', 'ops_list']) x),
-  '브라우저(anon)에 열린 함수가 정확히 화면이 쓰는 33개');
+  '브라우저(anon)에 열린 함수가 정확히 화면이 쓰는 35개');
 select pg_temp.ok(not exists (select 1 from pg_proc p where p.pronamespace = 'public'::regnamespace
   and has_function_privilege('anon', p.oid, 'execute') <> has_function_privilege('authenticated', p.oid, 'execute')), 'anon과 authenticated 권한이 같음');
 select pg_temp.ok(not exists (select 1 from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname !~ '^_'
@@ -520,7 +520,7 @@ select backup_dump()::text as dump \gset
 select pg_temp.ok(position('$2a$' in :'dump') = 0 and position('$2b$' in :'dump') = 0 and position('data:image' in :'dump') = 0
   and position('recovery' in :'dump') = 0 and position(:'t' in :'dump') = 0, '백업에 비밀번호·복구 코드·로그인·사진 없음');
 select pg_temp.ok((select array_agg(k order by k) from json_object_keys(:'dump'::json -> 'tables') k) = array['attendance', 'attendance_requests', 'excuses', 'ledger',
-  'ledger_private', 'ledger_revisions', 'periods', 'presets', 'requests', 'students'], '백업에 모든 데이터 표');
+  'ledger_private', 'ledger_revisions', 'periods', 'presets', 'reactions', 'requests', 'students'], '백업에 모든 데이터 표');
 set role postgres;
 create or replace function pg_temp.sig_all() returns text language sql as $$
   select md5(concat_ws('|',
@@ -533,7 +533,8 @@ create or replace function pg_temp.sig_all() returns text language sql as $$
     (select string_agg(to_jsonb(x)::text, ',' order by x.id) from ledger_revisions x),
     (select string_agg((to_jsonb(x) - 'photo_id')::text, ',' order by x.id) from requests x),
     (select string_agg((to_jsonb(x) - 'photo_id')::text, ',' order by x.id) from excuses x),
-    (select string_agg(to_jsonb(x)::text, ',' order by x.id) from attendance_requests x)))
+    (select string_agg(to_jsonb(x)::text, ',' order by x.id) from attendance_requests x),
+    (select string_agg(to_jsonb(x)::text, ',' order by x.id) from reactions x)))
 $$;
 select pg_temp.sig_all() as sig_before \gset
 set role anon;
@@ -636,7 +637,7 @@ select pg_temp.expect(format('select history_restore(%L, %s, false)', :'t', :op_
 select pg_temp.expect_msg(format('select history_restore(%L, %s, false)', :'t', :op_per), '%수 없어요%', '다시 살리기 멈춤 안내는 한국어');
 -- 정리할 기간에 처리 안 한 공결 신청이 있으면 멈춘다
 select create_excuse(:'g', (select id from json_to_recordset(private_state(:'t') -> 'ledger') as x(id uuid, sid uuid, item text, voided json) where sid = :'g' and item = '결석' and voided is null limit 1), '', null) as px \gset
-select pg_temp.expect_msg(format('select purge(%L, %L)', :'t', '2026-05-31'), '정리할 기간에 아직 처리하지 않은 공결 신청이나 출석 요청이 있어요%', '대기 중 공결이 있으면 정리 안 함');
+select pg_temp.expect_msg(format('select purge(%L, %L)', :'t', '2026-05-31'), '정리할 기간에 아직 처리하지 않은 공결 신청이나 출석 요청%', '대기 중 공결이 있으면 정리 안 함');
 select review_excuse(:'t', :'px', false, '확인');
 -- 학생 표에 칸이 생기기 전의 작업 기록도 schema.sql을 다시 실행하면 뒤로 갈 수 있다
 set role postgres;
@@ -805,5 +806,98 @@ select history_drop(:'t', :opx, false);
 set role postgres;
 select pg_temp.ok(pg_temp.bal(:'d1') = :db1 and (select bool_and(status = 'pending') from excuses where grp is not null and student_id = :'d1'), '하루 공결 승인 되돌리기');
 \echo 19. 하루 전체 공결 통과
+
+-- ───────── 20. 리액션 상점 ─────────
+set role postgres;
+select id as rs3 from students where active order by no offset 2 limit 1 \gset
+select pg_temp.bal(:'d1') as rb1 \gset
+set role anon;
+select pg_temp.expect_msg(format('select create_reaction(%L, %L, %L, %L)', gen_random_uuid(), '1교시', 'q', 'a'), '번호를 확인하세요', '없는 학생');
+select pg_temp.expect_msg(format('select create_reaction(%L, %L, %L, %L)', :'d1', ' ', 'q', 'a'), '교시를 적어 주세요', '교시 없음');
+select pg_temp.expect_msg(format('select create_reaction(%L, %L, %L, %L)', :'d1', '1교시', '', 'a'), '질문을 적어 주세요', '질문 없음');
+select pg_temp.expect_msg(format('select create_reaction(%L, %L, %L, %L)', :'d1', '1교시', 'q', '  '), '내 대답을 적어 주세요', '대답 없음');
+select pg_temp.expect_msg(format('select create_reaction(%L, %L, %L, %L)', :'d1', '1교시', repeat('가', 301), 'a'), '질문과 대답은 300자까지예요', '긴 질문');
+select pg_temp.expect_msg(format('select create_reaction(%L, %L, %L, %L)', :'d1', repeat('가', 41), 'q', 'a'), '교시는 40자까지예요', '긴 교시');
+select create_reaction(:'d1', ' 1교시 해부학 ', ' 하악신경 분지는? ', ' 설신경 ') as rx1 \gset
+select pg_temp.expect_msg(format('select create_reaction(%L, %L, %L, %L)', :'d1', '1교시 해부학', '하악신경 분지는?', '다른 대답'), '이미 신청한 리액션이에요', '같은 교시·질문');
+select create_reaction(:'d1', '1교시 해부학', '다른 질문', '대답') as rx2 \gset
+select create_reaction(:'d1', '2교시', '질문', '대답') as rx3 \gset
+select pg_temp.expect_msg(format('select create_reaction(%L, %L, %L, %L)', :'d1', '3교시', 'q', 'a'), '리액션은 하루 3번까지 신청할 수 있어요', '하루 3번');
+set role postgres;
+select pg_temp.ok((select bool_and(date = (now() at time zone 'Asia/Seoul')::date and status = 'pending') from reactions where student_id = :'d1'), '날짜는 서버의 한국 오늘');
+select pg_temp.ok((select period || '/' || question || '/' || answer from reactions where id = :'rx1') = '1교시 해부학/하악신경 분지는?/설신경', '앞뒤 공백 다듬기');
+select pg_temp.ok((select summary from ops order by id desc limit 1) like '리액션 신청: %번 %/% 2교시', '신청 작업 요약');
+select pg_temp.ok((select count(*) from json_array_elements(public_state() -> 'reactions')) = 3 and (public_state() ->> 'today') = to_char(now() at time zone 'Asia/Seoul', 'YYYY-MM-DD'), '공개 상태에 리액션과 오늘');
+set role anon;
+-- 승인·반려는 부총대만, 반려 사유 필수
+select pg_temp.expect(format('select review_reaction(%L, array[%L]::uuid[], true, null)', :'ct', :'rx1'), '42501', '총대는 승인 못 함');
+select pg_temp.expect_msg(format('select review_reaction(%L, array[]::uuid[], true, null)', :'t'), '고른 리액션이 없어요', '빈 목록');
+select pg_temp.expect_msg(format('select review_reaction(%L, array[%L]::uuid[], false, %L)', :'t', :'rx1', ' '), '반려 사유를 입력하세요', '반려 사유');
+-- 하나 반려하면 그날 한 번 더 낼 수 있다
+select review_reaction(:'t', array[:'rx3']::uuid[], false, '수업 내용 아님');
+select pg_temp.expect_msg(format('select review_reaction(%L, array[%L]::uuid[], true, null)', :'t', :'rx3'), '이미 처리된 리액션이 있어요%', '이미 처리');
+select create_reaction(:'d1', '3교시', '세 번째 질문', '대답') as rx4 \gset
+-- 두 건 승인: 아직 2개라 상점 없음 (이월)
+select pg_temp.ok(review_reaction(:'t', array[:'rx1', :'rx2']::uuid[], true, null) = 0, '2개면 상점 없음');
+set role postgres;
+select pg_temp.ok(pg_temp.bal(:'d1') = :rb1 and ((public_state() -> 'reactProg') ->> :'d1')::int = 2, '이월 2');
+-- 세 번째 승인으로 상점 1점
+set role anon;
+select pg_temp.ok(review_reaction(:'t', array[:'rx4']::uuid[], true, null) = 1, '3개째에 상점 1');
+set role postgres;
+select pg_temp.ok(pg_temp.bal(:'d1') = :rb1 - 1, '상점 -1');
+select pg_temp.ok((select count(*) from ledger where student_id = :'d1' and item = '리액션 상점' and points = -1 and src = 'reaction' and voided_at is null) = 1, '리액션 상점 기록');
+select pg_temp.ok((select count(distinct merit) = 1 and count(*) = 3 from reactions where student_id = :'d1' and status = 'approved'), '3개가 한 상점으로 묶임');
+select pg_temp.ok(((public_state() -> 'reactProg') ->> :'d1') is null, '이월 0');
+select pg_temp.ok((select summary from ops order by id desc limit 1) like '리액션 승인: %번 1건 (상점 1점)', '승인 요약에 상점');
+-- 여러 학생 한 번에: 다른 학생 2개 + 1개 → 그 학생 1점, 이월 0
+set role anon;
+select create_reaction(:'d2', '1교시', 'a', 'b') as ry1 \gset
+select create_reaction(:'d2', '1교시', 'c', 'd') as ry2 \gset
+select create_reaction(:'d2', '2교시', 'e', 'f') as ry3 \gset
+select create_reaction(:'rs3', '2교시', 'e', 'f') as rz1 \gset
+select pg_temp.ok(review_reaction(:'t', array[:'ry1', :'rz1', :'ry2', :'ry3']::uuid[], true, null) = 1, '여러 학생 한 번에');
+set role postgres;
+select pg_temp.ok(((public_state() -> 'reactProg') ->> :'rs3')::int = 1 and ((public_state() -> 'reactProg') ->> :'d2') is null, '학생별로 따로 센다');
+select pg_temp.ok((select summary from ops order by id desc limit 1) ~ '^리액션 승인: \d+번 3건 · \d+번 1건 \(상점 1점\)$', '여러 학생 요약');
+-- 이 작업만 되돌리기 → 대기로, 상점도 사라진다
+select max(id) as opr from ops where kind = 'review_reaction' \gset
+select pg_temp.bal(:'d2') as rb2 \gset
+set role anon;
+select history_drop(:'t', :opr, false);
+set role postgres;
+select pg_temp.ok(pg_temp.bal(:'d2') = :rb2 + 1 and (select bool_and(status = 'pending' and merit is null) from reactions where student_id in (:'d2', :'rs3')), '승인 되돌리기');
+set role anon;
+select history_restore(:'t', :opr, false);
+set role postgres;
+select pg_temp.ok(pg_temp.bal(:'d2') = :rb2, '다시 살리기');
+-- 날짜를 넘어 이월: 어제 승인된 1개 + 오늘 1개(이미 승인) + 오늘 새로 1개 → 상점
+insert into reactions (student_id, date, period, question, answer, status, created_at)
+values (:'rs3', (now() at time zone 'Asia/Seoul')::date - 1, '1교시', '어제 질문', '어제 대답', 'approved', now() - interval '1 day');
+select pg_temp.bal(:'rs3') as rb3 \gset
+select pg_temp.ok(((public_state() -> 'reactProg') ->> :'rs3')::int = 2, '어제 것까지 이월 2');
+set role anon;
+select create_reaction(:'rs3', '4교시', '오늘 질문', '오늘 대답') as rz3 \gset
+select pg_temp.ok(review_reaction(:'t', array[:'rz3']::uuid[], true, null) = 1, '날짜를 넘어 3개째에 상점');
+set role postgres;
+select pg_temp.ok(pg_temp.bal(:'rs3') = :rb3 - 1 and (select count(*) from reactions where student_id = :'rs3' and merit is not null and date < (now() at time zone 'Asia/Seoul')::date) = 1, '어제 것도 함께 묶임');
+-- 대기 중인 리액션이 있으면 정리하지 않는다
+set role anon;
+select create_reaction(:'rs3', '3교시', 'x', 'y') as rz2 \gset
+select pg_temp.expect_msg(format('select purge(%L, %L)', :'t', (now() at time zone 'Asia/Seoul')::date), '%리액션 신청%', '대기 리액션이 있으면 정리 안 함');
+select review_reaction(:'t', array[:'rz2']::uuid[], false, 'x');
+-- 백업에 들어가고, 리액션 없는 옛 백업도 되살아난다
+set role postgres;
+select pg_temp.ok((backup_dump() -> 'tables' -> 'reactions') is not null and jsonb_array_length(backup_dump() -> 'tables' -> 'reactions') = (select count(*) from reactions), '백업에 리액션');
+select backup_dump() as rdump \gset
+set role anon;
+select restore_backup(:'t', :'rdump'::jsonb - '{}'::text[] #- '{tables,reactions}');
+set role postgres;
+select pg_temp.ok(not exists (select 1 from reactions), '리액션 없는 옛 백업');
+set role anon;
+select restore_backup(:'t', :'rdump'::jsonb);
+set role postgres;
+select pg_temp.ok((select count(*) from reactions) = jsonb_array_length(:'rdump'::jsonb -> 'tables' -> 'reactions'), '리액션 되살리기');
+\echo 20. 리액션 상점 통과
 
 \echo 모든 서버 함수 테스트 통과

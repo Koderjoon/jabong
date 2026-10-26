@@ -206,7 +206,7 @@ let S, A, O, C; // 학생, 부총대, 총대단(학습부장), 출석 권한 총
 // ───────── 학생 첫 화면 ─────────
 test('학생 첫 화면: 명단 없음, 탭 2개', async () => {
   S = await open();
-  assert.deepEqual(await S.tabs(), ['현황판', '공결 신청']);
+  assert.deepEqual(await S.tabs(), ['현황판', '공결 신청', '리액션']);
   assert.match(await S.text(), /아직 명단이 없어요/);
   assert.equal(await S.text('#subbar'), '');
   await S.fits('학생 현황판');
@@ -756,7 +756,7 @@ test('총대단 로그인: 탭, 비밀번호 바꾸기(검사·성공·다시 �
   assert.equal(await O.has('#pw-cur'), false);
   pw.학습부장 = '5678';
   assert.equal(await O.toast('[data-act="logout"]'), '로그아웃했어요');
-  assert.deepEqual(await O.tabs(), ['현황판', '공결 신청']);
+  assert.deepEqual(await O.tabs(), ['현황판', '공결 신청', '리액션']);
   await O.login('총대단', '학습부장', '5678');
   assert.deepEqual(await O.tabs(), ['요청하기', '요청 현황', '현황판']);
 });
@@ -1236,7 +1236,7 @@ test('관리: 다른 직책 비밀번호 재설정 → 그 직책은 다음 동�
   await O.page.fill('#reqForm-item', '확인');
   await O.page.type('#reqForm-find', '1 ');
   assert.equal(await O.toast('[data-act="req-add"]'), '로그인이 끊겼어요. 다시 로그인해 주세요');
-  assert.deepEqual(await O.tabs(), ['현황판', '공결 신청']);
+  assert.deepEqual(await O.tabs(), ['현황판', '공결 신청', '리액션']);
   await O.login('총대단', '학습부장', 'qwer');
 });
 
@@ -1826,13 +1826,95 @@ test('지각 다시 부르기: 그사이 다른 기기에서 결석이 된 학�
   await A.page.fill('#attDate', TODAY);
 });
 
+// ───────── 리액션 상점 ─────────
+test('리액션 상점: 학생은 오늘 것만 하루 3번(검사·교시 고르기·중복), 부총대는 학생별로 반려·모두 승인, 3번째 승인에 상점 1점(이월)', async () => {
+  const me = await one(`select id, no from students where name = '박하준'`);
+  const before = (await balances())['박하준'];
+  await db.query(`select ensure_period($1, $2, '1교시 리액션', false)`, [await A.token(), TODAY]);
+  await S.reload();
+  await S.tab('react');
+  await S.page.fill('#rx-no', String(me.no));
+  assert.match(await S.text('#rx-prog'), /다음 상점까지 0\/3/);
+  await S.fits('리액션 탭');
+  assert.equal(await S.toast('[data-act="rx-add"]'), '교시를 적어 주세요');
+  // 오늘 교시는 눌러서 넣는다
+  await S.click('[data-act="rx-per"]:has-text("1교시 리액션")');
+  assert.equal(await S.page.inputValue('#rx-period'), '1교시 리액션');
+  assert.equal(await S.toast('[data-act="rx-add"]'), '질문을 적어 주세요');
+  await S.page.fill('#rx-q', '하악신경 분지는?');
+  assert.equal(await S.toast('[data-act="rx-add"]'), '내 대답을 적어 주세요');
+  await S.page.fill('#rx-a', '설신경, 하치조신경');
+  assert.equal(await S.toast('[data-act="rx-add"]'), '신청했어요 · 부총대 확인을 기다려요 (오늘 1/3)');
+  assert.equal(await S.page.inputValue('#rx-q'), '', '질문·대답은 비우고');
+  assert.equal(await S.page.inputValue('#rx-period'), '1교시 리액션', '교시는 남긴다');
+  assert.match(await S.text('#rx-prog'), /확인 대기 1번/);
+  assert.match(await S.text(), /대기.*1교시 리액션 · Q\. 하악신경 분지는\? · A\. 설신경, 하치조신경/s);
+  await S.page.fill('#rx-q', '하악신경 분지는?');
+  await S.page.fill('#rx-a', '다시');
+  assert.equal(await S.toast('[data-act="rx-add"]'), '이미 신청한 리액션이에요');
+  await S.page.fill('#rx-q', '설골상근은?');
+  await S.page.fill('#rx-a', '이복근 등');
+  await S.toast('[data-act="rx-add"]');
+  await S.page.fill('#rx-period', '3교시 생리학');
+  await S.page.fill('#rx-q', '심박출량 공식?');
+  await S.page.fill('#rx-a', '1회 박출량 × 심박수');
+  assert.equal(await S.toast('[data-act="rx-add"]'), '신청했어요 · 부총대 확인을 기다려요 (오늘 3/3)');
+  assert.match(await S.text(), /오늘은 3번 모두 신청했어요/);
+  assert.equal(await S.has('#rx-q'), false);
+  const rows = await q(`select date::text as d, status from reactions where student_id = $1`, [me.id]);
+  assert.deepEqual(rows.map((r) => r.d), [TODAY, TODAY, TODAY], '날짜는 오늘');
+  // 부총대: 학생별 카드, 반려는 사유 필수
+  await A.reload();
+  await A.tab('inbox');
+  assert.match(await A.text('h1 + .sub'), /리액션 3건/);
+  const card = `.rx-card:has(b:text-matches("^${me.no}번"))`;
+  assert.match(await A.text(card), /이월 0\/3 · 대기 3건/);
+  await A.fits('리액션 요청함');
+  const item = `${card} .rx-item:has-text("심박출량")`;
+  assert.equal(await A.toast(`${item} [data-act="rx-no"]`), '반려 사유를 입력하세요');
+  await A.page.fill(`${item} input`, '수업 내용과 달라요');
+  assert.equal(await A.toast(`${item} [data-act="rx-no"]`), '반려했어요');
+  assert.equal(await A.toast(`${card} [data-act="rx-ok"]:has-text("2건 모두 승인")`), '2건 승인했어요');
+  assert.equal((await balances())['박하준'], before, '2번이면 아직 상점 없음');
+  assert.equal(await A.has(card), false);
+  // 학생: 이월 2/3, 반려 사유, 반려된 만큼 한 번 더 낼 수 있다
+  await S.reload();
+  await S.tab('react');
+  await S.page.fill('#rx-no', String(me.no));
+  assert.match(await S.text('#rx-prog'), /다음 상점까지 2\/3/);
+  assert.match(await S.text(), /반려 사유: 수업 내용과 달라요/);
+  await S.page.fill('#rx-period', '4교시');
+  await S.page.fill('#rx-q', '질문');
+  await S.page.fill('#rx-a', '대답');
+  assert.equal(await S.toast('[data-act="rx-add"]'), '신청했어요 · 부총대 확인을 기다려요 (오늘 3/3)');
+  // 세 번째 승인 → 상점 1점
+  await A.reload();
+  await A.tab('inbox');
+  assert.match(await A.text(card), /이월 2\/3 · 대기 1건/);
+  assert.equal(await A.toast(`${card} [data-act="rx-ok"]`), '1건 승인했어요 · 상점 1점이 생겼어요');
+  assert.equal(await A.text('#toast button'), '되돌리기');
+  assert.equal((await balances())['박하준'], before - 1);
+  assert.deepEqual(await q(`select item, points::float as p, src from ledger where student_id = $1 and src = 'reaction'`, [me.id]), [{ item: '리액션 상점', p: -1, src: 'reaction' }]);
+  assert.match(await A.text(), /리액션 승인 · 상점 반영/, '처리한 내역');
+  await S.reload();
+  await S.tab('react');
+  await S.page.fill('#rx-no', String(me.no));
+  assert.match(await S.text('#rx-prog'), /다음 상점까지 0\/3/);
+  assert.match(await S.text('#rx-prog'), /리액션 상점 1점 받음/);
+  await S.fits('리액션 탭 (내역)');
+  // 공지에도 상점으로
+  await A.tab('notice');
+  await A.click('[data-act="notice-preset"][data-v="one"]');
+  assert.match(await A.page.inputValue('#notice-text'), new RegExp(`리액션 상점\\(-1\\): ${me.no}`));
+});
+
 test('서버에 못 닿으면 "불러오지 못했어요"와 다시 시도', async () => {
   const R = await open({ beforeGoto: (ctx) => ctx.route('**/rest/v1/rpc/public_state', (r) => r.abort()) });
   assert.match(await R.text(), /불러오지 못했어요/);
   await R.page.context().unroute('**/rest/v1/rpc/public_state');
   await R.click('[data-act="reload"]');
   await R.page.waitForSelector('#board-grid');
-  assert.deepEqual(await R.tabs(), ['현황판', '공결 신청']);
+  assert.deepEqual(await R.tabs(), ['현황판', '공결 신청', '리액션']);
   await R.page.context().close();
 });
 
@@ -1846,13 +1928,13 @@ test('새로고침해도 로그인 유지, 서버에서 로그인이 지워지�
   await A.page.click('#tabs [data-tab="history"]');
   await A.page.waitForSelector('#toast:not([hidden])');
   assert.equal((await A.text('#toast > span')).trim(), '로그인이 끊겼어요. 다시 로그인해 주세요');
-  assert.deepEqual(await A.tabs(), ['현황판', '공결 신청']);
+  assert.deepEqual(await A.tabs(), ['현황판', '공결 신청', '리액션']);
 });
 
 // ───────── 좁은 폰(320px)에서 모든 화면 ─────────
 test('좁은 폰(320px): 모든 역할의 모든 탭이 가로로 넘치지 않는다', async () => {
   const N = await open({ width: 320, height: 640 });
-  for (const t of ['board', 'excuse']) {
+  for (const t of ['board', 'excuse', 'react']) {
     await N.tab(t);
     await N.fits(`320 학생 ${t}`);
   }

@@ -22,8 +22,8 @@ export function startServer({ port, dist, database }) {
       for await (const c of req) body += c;
       const args = body ? JSON.parse(body) : {};
       const keys = Object.keys(args);
-      // uuid[] 인자(p_sids)는 Postgres 배열로, 나머지 객체·배열은 jsonb로 넘긴다
-      const vals = keys.map((k) => (args[k] !== null && typeof args[k] === 'object' && k !== 'p_sids' ? JSON.stringify(args[k]) : args[k]));
+      // uuid[] 인자(p_sids, p_ids)는 Postgres 배열로, 나머지 객체·배열은 jsonb로 넘긴다
+      const vals = keys.map((k) => (args[k] !== null && typeof args[k] === 'object' && !['p_sids', 'p_ids'].includes(k) ? JSON.stringify(args[k]) : args[k]));
       const client = await pool.connect();
       try {
         await client.query('begin');

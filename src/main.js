@@ -25,7 +25,7 @@ const blankForm = () => ({ date: TODAY, preset: '', item: '', points: 1, detail:
 const UI = {
   role: 'student', tab: 'board', sid: null, user: null, sort: 'no', q: '',
   attDate: TODAY, attPid: null, attView: 'list', draft: {}, touched: {}, newPeriod: '', attConfirm: false, perDel: null, perEdit: null, recalled: {},
-  recForm: blankForm(), reqForm: blankForm(), exForm: blankForm(), excForm: { no: '', eid: '', reason: '', photo: '' },
+  recForm: blankForm(), reqForm: blankForm(), exForm: blankForm(), excForm: { no: '', eid: '', reason: '', photo: '' }, reactForm: { no: '', period: '', q: '', a: '' },
   recFilter: '', editId: null, voidId: null, openRev: {}, photos: {},
   noticeFrom: null, noticeTo: null, noticeText: null,
   doneLimit: 20,
@@ -61,7 +61,7 @@ function setMyNo(no) {
 const myStudent = () => (UI.myNo ? S.students.find((x) => x.active && x.no === UI.myNo) : null);
 
 const TABS = {
-  student: [['board', '현황판'], ['excuse', '공결 신청']],
+  student: [['board', '현황판'], ['excuse', '공결 신청'], ['react', '리액션']],
   officer: [['request', '요청하기'], ['reqs', '요청 현황'], ['board', '현황판']],
   admin: [['attend', '출석'], ['record', '자봉'], ['inbox', '요청함'], ['notice', '공지'], ['history', '작업 내역'], ['manage', '관리'], ['board', '현황판']],
 };
@@ -71,7 +71,7 @@ const tabsOf = (role) => (role === 'officer' && UI.user && canAttend() ? [['atte
 const STATUS = { pending: '대기', approved: '승인', rejected: '반려' };
 // 하루 전체 공결 신청은 여러 줄이어도 한 건으로 센다
 const pendingCount = () =>
-  [S.requests, S.attRequests || []].reduce((n, l) => n + l.filter((x) => x.status === 'pending').length, 0) + excGroups(S.excuses.filter((x) => x.status === 'pending')).length;
+  [S.requests, S.attRequests || [], S.reactions || []].reduce((n, l) => n + l.filter((x) => x.status === 'pending').length, 0) + excGroups(S.excuses.filter((x) => x.status === 'pending')).length;
 
 // 안내 문구. undo(작업 id)를 주면 "되돌리기" 버튼을 붙이고 조금 더 오래 보여 준다.
 function toast(msg, undo) {
@@ -466,6 +466,39 @@ function vExcuse() {
   }).join('')}` : ''}`;
 }
 
+// 리액션 상점 신청: 수업 중 대답한 것을 그날 안에 적어 낸다. 부총대가 승인한 것 3개마다 상점 1점 (남는 것은 이월).
+// 날짜는 서버가 정한 오늘(S.today)이다. 하루 3번까지(반려된 것은 세지 않는다).
+const REACT_MAX = 3;
+const rxText = (r) => `${md(r.date)} ${esc(r.period)} · Q. ${esc(r.q)} · A. ${esc(r.a)}`;
+function vReact() {
+  const f = UI.reactForm;
+  const s = S.students.find((x) => x.active && x.no === Number(f.no));
+  const today = S.today || TODAY;
+  const mine = s ? (S.reactions || []).filter((r) => r.sid === s.id) : [];
+  const usedToday = mine.filter((r) => r.date === today && r.status !== 'rejected').length;
+  const prog = s ? S.reactProg?.[s.id] || 0 : 0;
+  const merits = s ? S.ledger.filter((e) => e.sid === s.id && e.src === 'reaction' && !e.voided).length : 0;
+  const pending = mine.filter((r) => r.status === 'pending').length;
+  const pers = [...new Set(S.periods.filter((p) => p.date === today && !p.morning).map((p) => p.label))];
+  const form =
+    usedToday >= REACT_MAX
+      ? `<p class="note">오늘은 ${REACT_MAX}번 모두 신청했어요. 내일 또 신청하세요.</p>`
+      : `<label class="fld"><span>교시</span><input id="rx-period" value="${esc(f.period)}" placeholder="예: 2교시 구강해부학" autocomplete="off" data-bind="reactForm.period"></label>
+  ${pers.length ? `<div class="chips">${pers.map((l) => `<button type="button" class="chip" data-act="rx-per" data-v="${esc(l)}">${esc(l)}</button>`).join('')}</div>` : ''}
+  <label class="fld"><span>질문</span><input id="rx-q" value="${esc(f.q)}" placeholder="교수님이 하신 질문" autocomplete="off" data-bind="reactForm.q"></label>
+  <label class="fld"><span>내 대답</span><textarea id="rx-a" data-bind="reactForm.a" placeholder="내가 한 대답">${esc(f.a)}</textarea></label>
+  <button class="btn" data-act="rx-add">신청하기 (오늘 ${usedToday}/${REACT_MAX})</button>`;
+  return `<div><h1>리액션 상점</h1><p class="sub">수업 중 대답한 것을 적어 내면 부총대가 확인해요. 승인된 대답 ${REACT_MAX}번마다 상점 1점이고, 남는 것은 다음으로 이어져요. <b>오늘(${mdw(today)}) 한 것만</b> 하루 ${REACT_MAX}번까지 신청할 수 있어요.</p></div>
+  <div class="card"><label class="fld"><span>내 번호</span><input id="rx-no" inputmode="numeric" value="${esc(f.no)}" data-bind="reactForm.no" data-rerender="1" placeholder="예: 56"></label>
+  ${s
+    ? `<div class="rx-prog" id="rx-prog"><div><b>${s.no}번</b> · 다음 상점까지 <b>${prog}/${REACT_MAX}</b> <span class="dots">${'●'.repeat(prog)}${'○'.repeat(REACT_MAX - prog)}</span></div>
+    <div class="note">리액션 상점 ${merits}점 받음${pending ? ` · 확인 대기 ${pending}번` : ''}</div></div>${form}`
+    : f.no ? '<p class="note">없는 번호예요.</p>' : ''}</div>
+  ${mine.length ? `<h2>${s.no}번 신청 내역</h2>${[...mine].reverse().map((r) => `<div class="card"><div class="req-top"><span class="pill ${r.status}">${STATUS[r.status]}${r.merit ? ' · 상점 반영' : ''}</span><span class="note">${esc(r.at)}</span></div>
+    <div class="req-body">${rxText(r)}</div>${r.note ? `<div class="note">반려 사유: ${esc(r.note)}</div>` : ''}</div>`).join('')}
+    <p class="hint">최근 30일 것만 보여요.</p>` : ''}`;
+}
+
 // 출석: 날짜마다 "아침 출석"은 항상 맨 앞에 있다. 아직 서버에 없는 교시는 v: 로 시작하는 임시 id를 쓴다.
 // 아침 출석은 부총대만 한다. 총대단 화면에는 나오지 않고, 총대단은 교시를 추가해서 체크한다.
 function periodsOf(date) {
@@ -600,7 +633,10 @@ function vInbox() {
   const rq = S.requests.filter((r) => r.status === 'pending');
   const ex = excGroups(S.excuses.filter((x) => x.status === 'pending'));
   const ar = (S.attRequests || []).filter((a) => a.status === 'pending');
-  return `<div><h1>요청함</h1><p class="sub">출석 요청 ${ar.length}건 · 총대단 요청 ${rq.length}건 · 공결 신청 ${ex.length}건</p></div>
+  const rx = (S.reactions || []).filter((r) => r.status === 'pending');
+  // 리액션은 학생별로 모은다 (번호순)
+  const rxBy = [...new Set(rx.map((r) => r.sid))].sort((a, b) => noOf(a) - noOf(b)).map((sid) => rx.filter((r) => r.sid === sid));
+  return `<div><h1>요청함</h1><p class="sub">출석 요청 ${ar.length}건 · 총대단 요청 ${rq.length}건 · 공결 신청 ${ex.length}건 · 리액션 ${rx.length}건</p></div>
   ${ar.length ? `<h2>출석 요청</h2>${ar.map((a) => attReqCard(a, true)).join('')}` : ''}
   <h2>총대단 요청</h2>${rq.map((r) => reqCard(r, true)).join('') || '<p class="empty">대기 중인 요청이 없어요.</p>'}
   <h2>공결 신청</h2>${ex.map((g) => {
@@ -609,6 +645,16 @@ function vInbox() {
     <div class="req-body"><b>${noOf(x.sid)}번 ${esc(stu(x.sid)?.name || '')}</b> · ${excText(g, true)}</div>${x.reason ? `<div class="note">사유: ${esc(x.reason)}</div>` : '<div class="note">사유 없음</div>'}${x.photo ? photoView(x.photo) : '<div class="note">증빙 사진 없음</div>'}
     <input id="note-${x.id}" placeholder="반려 사유 (반려할 때 필수)" autocomplete="off" data-suggest="note"><div class="btns"><button class="btn ok small" data-act="exc-ok" data-id="${x.id}">${g.length > 1 ? `${g.length}건 모두 승인` : '승인'} (자봉 무효 처리)</button><button class="btn danger small" data-act="exc-no" data-id="${x.id}">반려</button></div></div>`;
   }).join('') || '<p class="empty">대기 중인 공결 신청이 없어요.</p>'}
+  <h2>리액션 신청</h2>${rxBy.map((g) => {
+    const sid = g[0].sid;
+    const prog = S.reactProg?.[sid] || 0;
+    return `<div class="card rx-card"><div class="req-top"><b>${noOf(sid)}번 ${esc(stu(sid)?.name || '')}</b><span class="note">이월 ${prog}/${REACT_MAX} · 대기 ${g.length}건</span></div>
+    ${g.map((r) => `<div class="rx-item"><div class="req-body">${rxText(r)}</div><div class="note">${esc(r.at)}</div>
+      <input id="note-rx-${r.id}" placeholder="반려 사유 (반려할 때 필수)" autocomplete="off" data-suggest="note">
+      <div class="btns"><button class="btn ok small" data-act="rx-ok" data-ids="${r.id}">승인</button><button class="btn danger small" data-act="rx-no" data-id="${r.id}">반려</button></div></div>`).join('')}
+    ${g.length > 1 ? `<button class="btn ok" data-act="rx-ok" data-ids="${g.map((r) => r.id).join(',')}">${noOf(sid)}번 ${g.length}건 모두 승인</button>` : ''}</div>`;
+  }).join('') || '<p class="empty">대기 중인 리액션 신청이 없어요.</p>'}
+  ${rx.length > 1 && rxBy.length > 1 ? `<button class="btn ok" data-act="rx-ok" data-ids="${rx.map((r) => r.id).join(',')}">리액션 ${rx.length}건 모두 승인</button>` : ''}
   ${vDone()}`;
 }
 
@@ -618,10 +664,16 @@ function vDone() {
     ...S.requests.filter((r) => r.status !== 'pending').map((r) => ({ kind: 'req', at: r.reviewedAt || r.at, r })),
     ...excGroups(S.excuses.filter((x) => x.status !== 'pending')).map((g) => ({ kind: 'exc', at: g[0].reviewedAt || g[0].at, x: g[0], g })),
     ...(S.attRequests || []).filter((a) => a.status !== 'pending').map((a) => ({ kind: 'att', at: a.reviewedAt || a.at, a })),
+    ...(S.reactions || []).filter((r) => r.status !== 'pending').map((r) => ({ kind: 'rx', at: r.reviewedAt || r.at, r })),
   ].sort((a, b) => b.at.localeCompare(a.at));
   const shown = items.slice(0, UI.doneLimit);
   const card = (it) => {
     if (it.kind === 'att') return attReqCard(it.a, false);
+    if (it.kind === 'rx') {
+      const r = it.r;
+      return `<div class="card"><div class="req-top"><span class="pill ${r.status}">리액션 ${STATUS[r.status]}${r.merit ? ' · 상점 반영' : ''}</span><span class="note">${esc(r.reviewer || '')} · ${esc(it.at)}</span></div>
+      <div class="req-body"><b>${noOf(r.sid)}번 ${esc(stu(r.sid)?.name || '')}</b> · ${rxText(r)}</div>${r.note ? `<div class="note">반려 사유: ${esc(r.note)}</div>` : ''}</div>`;
+    }
     if (it.kind === 'req') {
       const r = it.r;
       return `<div class="card"><div class="req-top"><span class="pill ${r.status}">총대단 요청 ${STATUS[r.status]}</span><span class="note">${esc(r.reviewer || '')} · ${esc(it.at)}</span></div>
@@ -922,7 +974,7 @@ function render() {
       : locked
         ? '<div class="mocknote">총대단과 부총대는 자기 직책의 비밀번호로 로그인해요.</div>'
         : `<div class="who"><b style="color:var(--ink)">${esc(UI.user)}</b>로 로그인됨 ${UI.role === 'officer' ? '<button class="btn ghost small" data-act="pw-open">비밀번호 바꾸기</button> ' : ''}<button class="btn ghost small" data-act="logout">로그아웃</button></div>`;
-  const V = { board: vBoard, excuse: vExcuse, request: vRequest, reqs: vReqs, attend: vAttend, record: vRecord, inbox: vInbox, notice: vNotice, history: vHistory, manage: vManage };
+  const V = { board: vBoard, excuse: vExcuse, react: vReact, request: vRequest, reqs: vReqs, attend: vAttend, record: vRecord, inbox: vInbox, notice: vNotice, history: vHistory, manage: vManage };
   const codeCard =
     !locked && UI.role === 'admin' && UI.newCode
       ? `<div class="card" style="border-color:var(--warn)"><h2>새 복구 코드</h2><div class="mono" style="font-size:22px;letter-spacing:.06em">${esc(UI.newCode)}</div>
@@ -1286,6 +1338,7 @@ const A = {
   tab: (d) => {
     if (d.tab === 'history') UI.hist = { ...UI.hist, list: null, preview: null };
     if (d.tab === 'excuse' && !UI.excForm.no && myStudent()) UI.excForm.no = String(UI.myNo);
+    if (d.tab === 'react' && !UI.reactForm.no && myStudent()) UI.reactForm.no = String(UI.myNo);
     UI.tab = d.tab;
     UI.sid = null;
     window.scrollTo(0, 0);
@@ -1542,6 +1595,33 @@ const A = {
   },
   'exc-no': async (d) => {
     await run('review_excuse', { p_id: d.id, p_approve: false, p_note: val('note-' + d.id) }, '반려했어요');
+    return true;
+  },
+  'rx-per': (d) => {
+    UI.reactForm.period = d.v;
+  },
+  'rx-add': async () => {
+    const f = UI.reactForm;
+    const s = S.students.find((x) => x.active && x.no === Number(f.no));
+    if (!s) return toast('번호를 확인하세요');
+    if (!f.period.trim()) return toast('교시를 적어 주세요');
+    if (!f.q.trim()) return toast('질문을 적어 주세요');
+    if (!f.a.trim()) return toast('내 대답을 적어 주세요');
+    await rpc('create_reaction', { p_student: s.id, p_period: f.period.trim(), p_question: f.q.trim(), p_answer: f.a.trim() });
+    UI.reactForm = { no: f.no, period: f.period, q: '', a: '' };
+    await refresh();
+    render();
+    const used = (S.reactions || []).filter((r) => r.sid === s.id && r.date === S.today && r.status !== 'rejected').length;
+    return toast(`신청했어요 · 부총대 확인을 기다려요 (오늘 ${used}/${REACT_MAX})`);
+  },
+  'rx-ok': async (d) => {
+    const ids = d.ids.split(',');
+    await run('review_reaction', { p_ids: ids, p_approve: true, p_note: null }, (m) => `${ids.length}건 승인했어요${m ? ` · 상점 ${m}점이 생겼어요` : ''}`);
+    UI.noticeText = null;
+    return true;
+  },
+  'rx-no': async (d) => {
+    await run('review_reaction', { p_ids: [d.id], p_approve: false, p_note: val('note-rx-' + d.id) }, '반려했어요');
     return true;
   },
   'exc-add': async () => {

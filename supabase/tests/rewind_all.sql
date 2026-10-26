@@ -18,7 +18,8 @@ create or replace function pg_temp.sig() returns text language sql as $$
     (select string_agg(to_jsonb(x)::text, ',' order by x.id) from ledger_revisions x),
     (select string_agg(to_jsonb(x)::text, ',' order by x.id) from requests x),
     (select string_agg(to_jsonb(x)::text, ',' order by x.id) from excuses x),
-    (select string_agg(to_jsonb(x)::text, ',' order by x.id) from attendance_requests x)))
+    (select string_agg(to_jsonb(x)::text, ',' order by x.id) from attendance_requests x),
+    (select string_agg(to_jsonb(x)::text, ',' order by x.id) from reactions x)))
 $$;
 create temp table sigs (op bigint primary key, sig text not null);
 create or replace function pg_temp.snap() returns void language sql as $$
@@ -57,6 +58,14 @@ select pg_temp.snap();
 select save_attendance(:'t', :'pday', format('{"%s":"absent"}', :'s1')::jsonb); select pg_temp.snap();
 select create_excuse_day(:'s1', '2026-04-03', '하루 병원', null); select pg_temp.snap();
 select review_excuse(:'t', (select id from excuses where reason = '하루 병원' limit 1), true, null); select pg_temp.snap();
+select create_reaction(:'s1', '1교시', '질문1', '대답1') as ra1 \gset
+select pg_temp.snap();
+select create_reaction(:'s1', '1교시', '질문2', '대답2') as ra2 \gset
+select pg_temp.snap();
+select create_reaction(:'s1', '2교시', '질문3', '대답3') as ra3 \gset
+select pg_temp.snap();
+select review_reaction(:'t', array[:'ra1', :'ra2']::uuid[], true, null); select pg_temp.snap();
+select review_reaction(:'t', array[:'ra3']::uuid[], true, null); select pg_temp.snap();
 select delete_period(:'t', :'pdel'); select pg_temp.snap();
 select my_presets_save(:'t', '[{"name":"매점","points":-1}]'); select pg_temp.snap();
 select ensure_period(:'t', '2026-04-02', '아침 출석', true) as p1 \gset
@@ -104,9 +113,9 @@ select roster_apply(:'t', format('[{"op":"exempt","id":"%s","on":true}]', :'s2')
 select save_attendance(:'t', :'p2', format('{"%s":"late"}', :'s2')::jsonb); select pg_temp.snap();
 
 select pg_temp.ok((select count(*) from sigs) = (select count(*) from ops) + 1, '작업마다 시점 하나 (+ 맨 처음)');
-select pg_temp.ok((select array_agg(distinct kind order by kind) from ops) = array['add_entries', 'create_excuse', 'create_excuse_day', 'create_request', 'delete_period', 'edit_entry', 'ensure_period',
-  'my_periods_save', 'my_presets_save', 'rename_period', 'request_attendance', 'review_attendance', 'review_excuse', 'review_request', 'roster_apply', 'save_attendance', 'void_entry'],
-  '데이터를 바꾸는 함수 17종 모두 사용');
+select pg_temp.ok((select array_agg(distinct kind order by kind) from ops) = array['add_entries', 'create_excuse', 'create_excuse_day', 'create_reaction', 'create_request', 'delete_period', 'edit_entry', 'ensure_period',
+  'my_periods_save', 'my_presets_save', 'rename_period', 'request_attendance', 'review_attendance', 'review_excuse', 'review_reaction', 'review_request', 'roster_apply', 'save_attendance', 'void_entry'],
+  '데이터를 바꾸는 함수 19종 모두 사용');
 select max(op) as last from sigs \gset
 select count(*) as nops from ops \gset
 \echo 시나리오 준비 (작업 :nops 개)
