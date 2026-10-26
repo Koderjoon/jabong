@@ -32,11 +32,11 @@ select pg_temp.ok((select count(*) from presets where owner = '부총대') = 6 a
 -- ───────── 1. 노출과 권한 ─────────
 select pg_temp.ok(
   (select array_agg(p.proname::text order by p.proname::text) from pg_proc p where p.pronamespace = 'public'::regnamespace and has_function_privilege('anon', p.oid, 'execute'))
-  = (select array_agg(x order by x) from unnest(array['public_state', 'create_excuse', 'create_excuse_day', 'create_reaction', 'my_reactions', 'review_reaction', 'login', 'recover', 'private_state', 'logout', 'get_photo',
+  = (select array_agg(x order by x) from unnest(array['public_state', 'create_excuse', 'create_excuse_day', 'create_reaction', 'my_reactions', 'reaction_feed', 'reaction_adjust', 'review_reaction', 'login', 'recover', 'private_state', 'logout', 'get_photo',
       'create_request', 'change_pw', 'reset_pw', 'new_recovery', 'ensure_period', 'delete_period', 'rename_period', 'save_attendance', 'request_attendance', 'review_attendance',
       'add_entries', 'edit_entry', 'void_entry', 'review_request', 'review_excuse', 'roster_apply', 'my_presets_save', 'my_periods_save', 'purge', 'backup_dump',
       'restore_backup', 'history_move', 'history_drop', 'history_restore', 'ops_list']) x),
-  '브라우저(anon)에 열린 함수가 정확히 화면이 쓰는 36개');
+  '브라우저(anon)에 열린 함수가 정확히 화면이 쓰는 38개');
 select pg_temp.ok(not exists (select 1 from pg_proc p where p.pronamespace = 'public'::regnamespace
   and has_function_privilege('anon', p.oid, 'execute') <> has_function_privilege('authenticated', p.oid, 'execute')), 'anon과 authenticated 권한이 같음');
 select pg_temp.ok(not exists (select 1 from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname !~ '^_'
@@ -942,5 +942,68 @@ select pg_temp.expect_msg(format('select rename_period(%L, %L, %L)', :'t', :'ap1
 select pg_temp.expect_msg(format('select ensure_period(%L, %L, %L, true)', :'t', '2026-07-01', '1교시'), '같은 이름의 교시가 이미 있어요%', '아침/교시가 다른 같은 이름');
 select pg_temp.ok(ensure_period(:'t', '2026-07-01', '아침 출석', true) is not null and ensure_period(:'t', '2026-07-01', '아침 출석', true) = ensure_period(:'t', '2026-07-01', '아침 출석', true), '아침 출석은 그대로');
 \echo 21. 3차 검토 통과
+
+-- ───────── 22. 리액션 이월 맞추기·전체 내역 ─────────
+set role postgres;
+select id as rs5 from students where active order by no offset 4 limit 1 \gset
+select no as rs5no from students where id = :'rs5' \gset
+set role anon;
+select pg_temp.expect(format('select reaction_adjust(%L, %L)', :'ct', format('[{"sid":"%s","n":1}]', :'rs5')), '42501', '총대는 못 함');
+select pg_temp.expect_msg(format('select reaction_adjust(%L, %L)', :'t', '[]'), '맞출 학생이 없어요', '빈 목록');
+select pg_temp.expect_msg(format('select reaction_adjust(%L, %L)', :'t', format('[{"sid":"%s","n":3}]', :'rs5')), '이월 횟수는 0~2번이에요%', '3번');
+select pg_temp.expect_msg(format('select reaction_adjust(%L, %L)', :'t', format('[{"sid":"%s","n":-1}]', :'rs5')), '이월 횟수는 0~2번이에요%', '음수');
+select pg_temp.expect_msg(format('select reaction_adjust(%L, %L)', :'t', format('[{"sid":"%s","n":"x"}]', :'rs5')), '이월 횟수는 0~2번이에요%', '글자');
+select pg_temp.expect_msg(format('select reaction_adjust(%L, %L)', :'t', format('[{"sid":"%s","n":1}]', gen_random_uuid())), '명단에 없는 학생이 있어요', '없는 학생');
+select pg_temp.ok(reaction_adjust(:'t', format('[{"sid":"%s","n":2}]', :'rs5')::jsonb) = 1, '0 → 2');
+set role postgres;
+select pg_temp.ok((select summary from ops order by id desc limit 1) = format('리액션 이월 맞추기: %s번 0→2', :'rs5no'), '작업 요약');
+select pg_temp.ok((my_reactions(:'rs5') ->> 'prog')::int = 2 and json_array_length(my_reactions(:'rs5') -> 'rows') = 0 and (my_reactions(:'rs5') ->> 'today')::int = 0, '이월 2, 조정 줄은 내역·오늘 횟수에 안 보임');
+select pg_temp.ok(((public_state() -> 'reactProg') ->> :'rs5')::int = 2, '공개 이월 수');
+select pg_temp.ok(not exists (select 1 from json_array_elements(reaction_feed(300)) r where r ->> 'q' = '부총대 조정'), '전체 내역에 조정 줄 없음');
+select pg_temp.ok(not exists (select 1 from json_array_elements(private_state(:'t') -> 'reactions') r where r ->> 'q' = '부총대 조정'), '요청함 처리 내역에도 없음');
+set role anon;
+select pg_temp.expect_msg(format('select reaction_adjust(%L, %L)', :'t', format('[{"sid":"%s","n":2}]', :'rs5')), '바뀌는 것이 없어요', '그대로');
+-- 실제 리액션 1번이 더해지면 3 → 상점
+select create_reaction(:'rs5', '1교시', '진짜 질문', '진짜 대답') as rr1 \gset
+select pg_temp.ok(review_reaction(:'t', array[:'rr1']::uuid[], true, null) = 1, '이월 2 + 1 → 상점');
+set role postgres;
+select pg_temp.ok((my_reactions(:'rs5') ->> 'prog')::int = 0 and (my_reactions(:'rs5') ->> 'merits')::int = 1, '이월 0, 상점 1');
+-- 줄일 때는 조정 줄부터 지우고, 모자라면 실제 리액션을 이월에서 뺀다 (상점 수는 그대로)
+set role anon;
+select reaction_adjust(:'t', format('[{"sid":"%s","n":1}]', :'rs5')::jsonb);
+select create_reaction(:'rs5', '2교시', '진짜 질문2', '대답') as rr2 \gset
+select review_reaction(:'t', array[:'rr2']::uuid[], true, null);
+set role postgres;
+select pg_temp.ok((my_reactions(:'rs5') ->> 'prog')::int = 2, '조정 1 + 실제 1 = 2');
+set role anon;
+select reaction_adjust(:'t', format('[{"sid":"%s","n":1}]', :'rs5')::jsonb);
+set role postgres;
+select pg_temp.ok((select count(*) from reactions where student_id = :'rs5' and adj and merit is null) = 0
+  and (select count(*) from reactions where student_id = :'rs5' and merit = '00000000-0000-0000-0000-000000000000') = 0
+  and (my_reactions(:'rs5') ->> 'prog')::int = 1, '조정 줄부터 지움');
+set role anon;
+select reaction_adjust(:'t', format('[{"sid":"%s","n":0}, {"sid":"%s","n":0}]', :'rs5', :'rs4')::jsonb);
+set role postgres;
+select pg_temp.ok((my_reactions(:'rs5') ->> 'prog')::int = 0 and (my_reactions(:'rs4') ->> 'prog')::int = 0, '실제 리액션도 이월에서 뺌');
+select pg_temp.ok((my_reactions(:'rs5') ->> 'merits')::int = 1 and (select bool_or((r ->> 'cleared')::boolean) from json_array_elements(my_reactions(:'rs5') -> 'rows') r), '상점 수는 그대로, 뺀 것은 표시');
+-- 되돌리면 이월이 돌아온다
+select max(id) as opadj from ops where kind = 'reaction_adjust' \gset
+set role anon;
+select history_drop(:'t', :opadj, false);
+set role postgres;
+select pg_temp.ok((my_reactions(:'rs5') ->> 'prog')::int = 1 and (my_reactions(:'rs4') ->> 'prog')::int = 2, '이월 맞추기 되돌리기');
+-- 전체 내역: 최신순, 번호, 반려 사유 없음, 개수 제한
+select pg_temp.ok((select (reaction_feed(1) -> 0 ->> 'id')::uuid) = :'rr2' and json_array_length(reaction_feed(2)) = 2, '최신순·개수');
+select pg_temp.ok((reaction_feed(300) -> 0 ->> 'no')::int = :'rs5no' and not exists (select 1 from jsonb_array_elements(reaction_feed(300)::jsonb) r where r ? 'note'), '번호만, 반려 사유 없음');
+select pg_temp.ok(json_array_length(reaction_feed(100000)) <= 300 and json_array_length(reaction_feed(null)) <= 30, '많아야 300, 기본 30');
+-- 부총대가 넣은 이월 줄은 그날 학생의 "하루 3번"에 들어가지 않는다
+set role postgres;
+select id as rs6 from students where active order by no offset 5 limit 1 \gset
+set role anon;
+select reaction_adjust(:'t', format('[{"sid":"%s","n":2}]', :'rs6')::jsonb);
+select create_reaction(:'rs6', '1교시', 'q1', 'a');
+select create_reaction(:'rs6', '1교시', 'q2', 'a');
+select pg_temp.ok(create_reaction(:'rs6', '1교시', 'q3', 'a') is not null, '이월 줄이 있어도 오늘 3번 다 낼 수 있다');
+\echo 22. 리액션 이월 맞추기·전체 내역 통과
 
 \echo 모든 서버 함수 테스트 통과

@@ -164,6 +164,8 @@ create table if not exists reactions (
   reviewed_at timestamptz
 );
 create index if not exists reactions_student_date on reactions (student_id, date);
+-- adj: 부총대가 이월 횟수를 맞추려고 넣은 줄 (엑셀로 정리하던 이월을 옮길 때). 실제 리액션이 아니라 내역에는 안 보인다.
+alter table reactions add column if not exists adj boolean not null default false;
 
 -- 하루 전체 공결: 그날의 지각·결석마다 한 줄씩 만들고 같은 grp로 묶는다 (승인·반려도 묶음째)
 alter table excuses add column if not exists grp uuid;
@@ -220,6 +222,10 @@ create index if not exists op_changes_row on op_changes (tbl, row_key);
 update op_changes set before = case when before is not null and not before ? 'exempt' then before || '{"exempt": false}' else before end,
   after = case when after is not null and not after ? 'exempt' then after || '{"exempt": false}' else after end
 where tbl = 'students' and ((before is not null and not before ? 'exempt') or (after is not null and not after ? 'exempt'));
+-- 리액션 표에 adj 칸이 생기기 전의 작업 기록도
+update op_changes set before = case when before is not null and not before ? 'adj' then before || '{"adj": false}' else before end,
+  after = case when after is not null and not after ? 'adj' then after || '{"adj": false}' else after end
+where tbl = 'reactions' and ((before is not null and not before ? 'adj') or (after is not null and not after ? 'adj'));
 -- 공결 표에 grp 칸이 생기기 전의 작업 기록도
 update op_changes set before = case when before is not null and not before ? 'grp' then before || '{"grp": null}' else before end,
   after = case when after is not null and not after ? 'grp' then after || '{"grp": null}' else after end
@@ -538,7 +544,7 @@ language sql stable security definer set search_path = public as $$
         'status', x.status, 'note', x.review_note, 'merit', x.merit is not null, 'at', _kst(x.created_at),
         'reviewer', x.reviewed_by, 'reviewedAt', _kst(x.reviewed_at)
       ) order by x.created_at, x.id), '[]') from reactions x
-      where x.status = 'pending' or x.reviewed_at >= now() - interval '14 days') else '[]'::json end,
+      where not x.adj and (x.status = 'pending' or x.reviewed_at >= now() - interval '14 days')) else '[]'::json end,
     'reactProg', (select coalesce(json_object_agg(student_id, n), '{}') from
       (select student_id, count(*) as n from reactions where status = 'approved' and merit is null group by student_id) t),
     'ver', (select version from app_version where id = 1),
@@ -616,7 +622,7 @@ begin
   if a = '' then raise exception '내 대답을 적어 주세요'; end if;
   if length(per) > 40 then raise exception '교시는 40자까지예요'; end if;
   if length(q) > 300 or length(a) > 300 then raise exception '질문과 대답은 300자까지예요'; end if;
-  if (select count(*) from reactions where student_id = p_student and date = d and status <> 'rejected') >= 3 then
+  if (select count(*) from reactions where student_id = p_student and date = d and status <> 'rejected' and not adj) >= 3 then
     raise exception '리액션은 하루 3번까지 신청할 수 있어요';
   end if;
   if exists (select 1 from reactions where student_id = p_student and date = d and status <> 'rejected' and period = per and question = q) then
@@ -1013,16 +1019,77 @@ begin
 end $$;
 
 -- 학생 화면의 리액션: 그 학생의 대기 중인 것과 최근 30일 것, 오늘 낸 수, 이월 수, 받은 리액션 상점 수 (로그인 없음)
+-- 이월을 줄일 때 실제 리액션에 붙이는 표시 ("상점은 안 됐지만 이월에서 뺌")
+create or replace function _merit_cleared() returns uuid language sql immutable as $$ select '00000000-0000-0000-0000-000000000000'::uuid $$;
+
 create or replace function my_reactions(p_student uuid) returns json
 language sql stable security definer set search_path = public as $$
   select json_build_object(
     'rows', (select coalesce(json_agg(json_build_object('id', id, 'date', date, 'period', period, 'q', question, 'a', answer,
-        'status', status, 'note', review_note, 'merit', merit is not null, 'at', _kst(created_at)) order by created_at desc, id desc), '[]')
-      from reactions where student_id = p_student and (status = 'pending' or date >= (now() at time zone 'Asia/Seoul')::date - 30)),
-    'today', (select count(*) from reactions where student_id = p_student and date = (now() at time zone 'Asia/Seoul')::date and status <> 'rejected'),
+        'status', status, 'note', review_note, 'merit', merit is not null and merit <> _merit_cleared(), 'cleared', merit = _merit_cleared(),
+        'at', _kst(created_at)) order by created_at desc, id desc), '[]')
+      from reactions where student_id = p_student and not adj and (status = 'pending' or date >= (now() at time zone 'Asia/Seoul')::date - 30)),
+    'today', (select count(*) from reactions where student_id = p_student and date = (now() at time zone 'Asia/Seoul')::date and status <> 'rejected' and not adj),
     'prog', (select count(*) from reactions where student_id = p_student and status = 'approved' and merit is null),
-    'merits', (select count(distinct merit) from reactions where student_id = p_student and merit is not null))
+    'merits', (select count(distinct merit) from reactions where student_id = p_student and merit is not null and merit <> _merit_cleared()))
 $$;
+
+-- 누구나 보는 리액션 내역 (최신순, 번호만). 부총대가 맞춘 이월 줄은 빼고, 반려 사유는 싣지 않는다.
+create or replace function reaction_feed(p_limit int) returns json
+language sql stable security definer set search_path = public as $$
+  select coalesce(json_agg(t.r order by t.ord desc, t.r ->> 'id' desc), '[]') from (
+    select json_build_object('id', x.id, 'no', s.no, 'active', s.active, 'date', x.date, 'period', x.period, 'q', x.question, 'a', x.answer,
+      'status', x.status, 'merit', x.merit is not null and x.merit <> _merit_cleared(), 'at', _kst(x.created_at)) as r, x.created_at as ord
+    from reactions x join students s on s.id = x.student_id
+    where not x.adj
+    order by x.created_at desc, x.id desc
+    limit least(greatest(coalesce(p_limit, 30), 1), 300)) t
+$$;
+
+-- 이월 맞추기 (부총대): p_list = [{sid, n}], n은 0~2. 모자라면 조정 줄(adj)을 넣고, 넘치면 조정 줄부터 지우고
+-- 그래도 넘치면 오래된 실제 리액션을 이월에서 뺀다(_merit_cleared). 3이 되면 상점이 되니 2까지만 받는다.
+create or replace function reaction_adjust(p_token uuid, p_list jsonb) returns int
+language plpgsql security definer set search_path = public as $$
+declare
+  who text := _session(p_token, true); x jsonb; sid uuid; want int; cur int; k int; n int := 0; parts text[] := '{}';
+  d date := (now() at time zone 'Asia/Seoul')::date; sno int;
+begin
+  perform _wlock();
+  if jsonb_typeof(coalesce(p_list, 'null')) <> 'array' or jsonb_array_length(p_list) = 0 then raise exception '맞출 학생이 없어요'; end if;
+  for x in select * from jsonb_array_elements(p_list) loop
+    if coalesce(x ->> 'n', '') !~ '^[0-9]+$' or (x ->> 'n')::int > 2 then
+      raise exception '이월 횟수는 0~2번이에요 (3번이 모이면 상점이 되니, 이미 받은 상점은 자봉 점수로 넣어 주세요)';
+    end if;
+    select no into sno from students where id = (x ->> 'sid')::uuid and active;
+    if sno is null then raise exception '명단에 없는 학생이 있어요'; end if;
+    cur := (select count(*) from reactions where student_id = (x ->> 'sid')::uuid and status = 'approved' and merit is null);
+    if cur <> (x ->> 'n')::int then parts := parts || format('%s번 %s→%s', sno, cur, x ->> 'n'); end if;
+  end loop;
+  if cardinality(parts) = 0 then raise exception '바뀌는 것이 없어요'; end if;
+  perform _op(who, 'reaction_adjust', '리액션 이월 맞추기: ' || array_to_string(parts, ' · '));
+  for x in select * from jsonb_array_elements(p_list) loop
+    sid := (x ->> 'sid')::uuid;
+    want := (x ->> 'n')::int;
+    cur := (select count(*) from reactions where student_id = sid and status = 'approved' and merit is null);
+    if want = cur then continue; end if;
+    n := n + 1;
+    if want > cur then
+      insert into reactions (student_id, date, period, question, answer, status, adj, reviewed_by, reviewed_at)
+      select sid, d, '이월', '부총대 조정', '', 'approved', true, who, now() from generate_series(1, want - cur);
+    else
+      k := cur - want;
+      with g as (select id from reactions where student_id = sid and status = 'approved' and merit is null and adj order by created_at desc, id desc limit k)
+      delete from reactions where id in (select id from g);
+      get diagnostics cur = row_count;
+      if k > cur then
+        update reactions set merit = _merit_cleared() where id in (
+          select id from reactions where student_id = sid and status = 'approved' and merit is null order by created_at, id limit k - cur);
+      end if;
+    end if;
+  end loop;
+  return n;
+end $$;
+
 
 -- 리액션 승인·반려 (부총대, 여러 건 한 번에). 승인할 때마다 그 학생의 아직 상점이 안 된 승인 리액션을 세어
 -- 3개가 모이면 상점 1점(-1)을 만들고 그 3개에 표시한다. 만든 상점 수를 돌려준다.
@@ -1464,7 +1531,7 @@ do $$ declare f text; begin
   if exists (select 1 from pg_roles where rolname = 'anon') then
     execute 'revoke execute on all functions in schema public from public, anon, authenticated';
     foreach f in array array[
-      'public_state()', 'create_excuse(uuid,uuid,text,text)', 'create_excuse_day(uuid,date,text,text)', 'create_reaction(uuid,text,text,text)', 'my_reactions(uuid)', 'review_reaction(uuid,uuid[],boolean,text)', 'login(text,text)', 'recover(text,text,text)',
+      'public_state()', 'create_excuse(uuid,uuid,text,text)', 'create_excuse_day(uuid,date,text,text)', 'create_reaction(uuid,text,text,text)', 'my_reactions(uuid)', 'reaction_feed(integer)', 'reaction_adjust(uuid,jsonb)', 'review_reaction(uuid,uuid[],boolean,text)', 'login(text,text)', 'recover(text,text,text)',
       'private_state(uuid)', 'logout(uuid)', 'get_photo(uuid,uuid)', 'create_request(uuid,date,uuid[],text,text,numeric,text,text)',
       'change_pw(uuid,text,text)', 'reset_pw(uuid,text,text)', 'new_recovery(uuid,text)', 'ensure_period(uuid,date,text,boolean)', 'delete_period(uuid,uuid)', 'rename_period(uuid,uuid,text)',
       'save_attendance(uuid,uuid,jsonb)', 'request_attendance(uuid,uuid,jsonb)', 'review_attendance(uuid,uuid,boolean,text)', 'add_entries(uuid,date,uuid[],text,text,numeric)', 'edit_entry(uuid,uuid,date,text,text,numeric,text)',

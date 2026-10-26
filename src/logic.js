@@ -226,6 +226,33 @@ export function planRoster(S, text, replace) {
   return { changes, adjs, errors: [...new Set(errors)], same };
 }
 
+// 리액션 이월 붙여넣기: 줄마다 "번호 [이름] 이월횟수"(0~2). 지금과 다른 학생만 돌려준다 (서버 reaction_adjust).
+export function planReactAdj(S, text) {
+  const items = [];
+  const errors = [];
+  const seen = new Set();
+  text.split('\n').forEach((raw, i) => {
+    const line = raw.normalize('NFKC').trim();
+    if (!line) return;
+    const cells = line.split(/[\t,\s]+/).filter(Boolean);
+    if (!/^\d+$/.test(cells[0] || '')) {
+      if (!/번호|이월|횟수/.test(line)) errors.push(`${i + 1}번째 줄 "${line}": 번호와 이월 횟수를 적어 주세요`);
+      return;
+    }
+    if (cells.length < 2) return void errors.push(`${i + 1}번째 줄 "${line}": 번호와 이월 횟수를 적어 주세요`);
+    const no = Number(cells[0]);
+    const n = cells[cells.length - 1];
+    if (!/^[0-2]$/.test(n)) return void errors.push(`${i + 1}번째 줄 "${line}": 이월 횟수는 0~2번이에요 (3번이면 상점이 되니, 받은 상점은 자봉 점수로 넣어 주세요)`);
+    const st = S.students.find((x) => x.active && x.no === no);
+    if (!st) return void errors.push(`${no}번은 명단에 없어요`);
+    if (seen.has(no)) return void errors.push(`${no}번이 두 번 있어요`);
+    seen.add(no);
+    const from = S.reactProg?.[st.id] || 0;
+    if (from !== Number(n)) items.push({ sid: st.id, no, from, to: Number(n) });
+  });
+  return { items, errors: [...new Set(errors)] };
+}
+
 // 서버 roster_apply()에 보낼 작업 목록
 export function rosterOps(plan) {
   const ops = plan.changes.map((c) =>

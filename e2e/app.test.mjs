@@ -1923,6 +1923,51 @@ test('리액션 상점: 학생은 오늘 것만 하루 3번(검사·교시 고�
   assert.match(await A.page.inputValue('#notice-text'), new RegExp(`리액션 상점\\(-1\\): ${me.no}`));
 });
 
+test('리액션 이월 맞추기(부총대, 붙여넣기)와 전체 리액션 내역(누구나, 최신순·더 보기)', async () => {
+  const st = await q(`select id, no from students where active order by no`);
+  const [x, y, z] = [st[0], st[1], st[3]];
+  await A.tab('manage');
+  assert.match(await A.text('#rxadj-card'), /지금 이월: 없음/);
+  await A.page.fill('#rxadj-text', `${x.no}\t3\n999\t1`);
+  assert.match(await A.text('#rxadj-preview .warn'), /0~2번[\s\S]*999번은 명단에 없어요/);
+  assert.ok(await A.page.$eval('[data-act="rxadj-apply"]', (b) => b.disabled), '오류가 있으면 못 누른다');
+  await A.page.fill('#rxadj-text', `번호\t이름\t이월\n${x.no}\t아무개\t2\n${y.no}\t1\n${z.no}\t0`);
+  assert.deepEqual(await A.page.$$eval('#rxadj-preview .mrow .mono.note', (e) => e.map((n) => n.textContent)), ['0 → 2', '0 → 1'], '0 → 0은 빠진다');
+  assert.equal(await A.text('[data-act="rxadj-apply"]'), '2명 이월 맞추기');
+  await A.fits('리액션 이월 맞추기');
+  assert.equal(await A.toast('[data-act="rxadj-apply"]'), '2명의 리액션 이월을 맞췄어요');
+  assert.equal(await A.page.inputValue('#rxadj-text'), '');
+  assert.match(await A.text('#rxadj-cur'), new RegExp(`${x.no}번 2, ${y.no}번 1`));
+  assert.equal(await A.text('#toast button'), '되돌리기');
+  // 학생: 내 번호 → 이월 2/3 (조정 줄은 신청 내역에 안 보인다)
+  await S.reload();
+  await S.tab('react');
+  await S.page.fill('#rx-no', String(x.no));
+  assert.match(await S.text('#rx-prog'), /다음 상점까지 2\/3/);
+  assert.doesNotMatch(await S.text(), /부총대 조정/);
+  // 전체 내역: 번호를 안 넣어도 최신순으로
+  await S.page.fill('#rx-no', '');
+  await S.page.waitForSelector('#rx-feed .rx-feed');
+  const me = await one(`select no from students where name = '박하준'`);
+  assert.match(await S.text('#rx-feed .rx-feed:first-child'), new RegExp(`${me.no}번[\\s\\S]*4교시 · Q\\. 질문 · A\\. 대답`), '가장 최근 것이 맨 위');
+  assert.equal(await S.has('[data-act="rx-more"]'), false, '30개가 안 되면 더 보기 없음');
+  await S.fits('전체 리액션 내역');
+  // 30개가 넘으면 더 보기
+  await db.query(`insert into reactions (student_id, date, period, question, answer, status, created_at)
+    select $1, current_date - 40, '옛 교시', '옛 질문 ' || k, '옛 대답', 'approved', now() - interval '40 days' + k * interval '1 minute' from generate_series(1, 35) k`, [z.id]);
+  await S.reload();
+  await S.tab('react');
+  await S.page.waitForSelector('#rx-feed .rx-feed');
+  assert.equal((await S.page.$$('#rx-feed .rx-feed')).length, 30);
+  await S.click('[data-act="rx-more"]');
+  await S.page.waitForFunction(() => document.querySelectorAll('#rx-feed .rx-feed').length > 30);
+  const total = (await one(`select count(*)::int as n from reactions where not adj`)).n;
+  assert.equal((await S.page.$$('#rx-feed .rx-feed')).length, total);
+  assert.equal(await S.has('[data-act="rx-more"]'), false);
+  assert.match(await S.text('#rx-feed .rx-feed:last-child'), /옛 질문 1/, '가장 오래된 것이 맨 아래');
+  await db.query(`delete from reactions where question like '옛 질문%'`);
+});
+
 test('서버에 못 닿으면 "불러오지 못했어요"와 다시 시도', async () => {
   const R = await open({ beforeGoto: (ctx) => ctx.route('**/rest/v1/rpc/public_state', (r) => r.abort()) });
   assert.match(await R.text(), /불러오지 못했어요/);

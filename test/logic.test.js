@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { genNotice, planRoster, rosterOps, parseNums, expRange, exportSheets, bal, dupNums, excusable, suggestItems, suggestDetails, suggestPeriods, suggestTexts, reasonEvents } from '../src/logic.js';
+import { genNotice, planRoster, planReactAdj, rosterOps, parseNums, expRange, exportSheets, bal, dupNums, excusable, suggestItems, suggestDetails, suggestPeriods, suggestTexts, reasonEvents } from '../src/logic.js';
 
 // 학생 70명과 기록을 만드는 도우미
 function state() {
@@ -330,4 +330,21 @@ test('명단 붙여넣기: "현재 명단 복사"로 나온 이름 없는 학생
   assert.equal(p.same, 70);
   // 그 번호에 이름 없는 학생이 없으면 전처럼 알린다
   assert.match(planRoster(S, '5\t\t0', false).errors[0], /번호와 이름이 모두 있어야 해요/);
+});
+
+test('리액션 이월 붙여넣기: 번호·(이름)·횟수, 제목 줄 건너뛰기, 0~2만, 없는 번호·두 번, 바뀌는 학생만', () => {
+  const S = state();
+  S.reactProg = { s3: 1, s5: 2 };
+  const p = planReactAdj(S, '번호\t이름\t이월\n3\t학생3\t2\n5 2\n７\t１\n\n12,0');
+  assert.deepEqual(p.errors, []);
+  assert.deepEqual(p.items, [{ sid: 's3', no: 3, from: 1, to: 2 }, { sid: 's7', no: 7, from: 0, to: 1 }], '5번은 그대로, 12번은 0→0이라 빠짐');
+  const bad = planReactAdj(S, '3\t3\n99\t1\n4\t1\n4\t2\n이상한 줄\n8');
+  assert.equal(bad.errors.length, 5);
+  assert.match(bad.errors[0], /0~2번/);
+  assert.match(bad.errors[1], /99번은 명단에 없어요/);
+  assert.match(bad.errors[2], /4번이 두 번 있어요/);
+  assert.match(bad.errors[3], /이상한 줄.*번호와 이월 횟수/);
+  assert.match(bad.errors[4], /"8".*번호와 이월 횟수/);
+  S.students[9].active = false;
+  assert.match(planReactAdj(S, '10\t1').errors[0], /10번은 명단에 없어요/, '제외된 학생');
 });

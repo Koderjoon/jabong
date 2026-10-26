@@ -39,7 +39,7 @@ const UI = {
     }
   })(),
   exp: { range: 'month', from: '', to: '' }, fullBackup: false, purgeCut: '', purgeTyped: '',
-  rosterText: '', rosterReplace: false, recover: false, newCode: null,
+  rosterText: '', rosterReplace: false, rxAdjText: '', rxFeedN: 30, recover: false, newCode: null,
   // 학생이 정해 둔 "내 번호" (이 기기에만 기억한다)
   myNo: (() => {
     try {
@@ -481,21 +481,43 @@ function rxData(sid) {
   rpc('my_reactions', { p_student: sid })
     .then((d) => (want.data = d))
     .catch(() => (want.data = want.data || { rows: [], today: 0, prog: 0, merits: 0 }))
-    .finally(() => {
-      if (rxLoad !== want || UI.tab !== 'react') return;
-      // 번호 칸(숫자, 다시 그려도 되는 칸)을 치는 중이면 커서를 지키며 바로, 글자 칸이면 다 친 뒤에 다시 그린다
-      const a = document.activeElement;
-      if (a?.dataset?.rerender) rerenderKeep(a);
-      else softRender();
-    });
+    .finally(() => rxLoad === want && rxLoaded());
   return want.data;
+}
+// 받아 오면 다시 그린다. 번호 칸(숫자, 다시 그려도 되는 칸)을 치는 중이면 커서를 지키며 바로, 글자 칸이면 다 친 뒤에
+function rxLoaded() {
+  if (UI.tab !== 'react') return;
+  const a = document.activeElement;
+  if (a?.dataset?.rerender) rerenderKeep(a);
+  else softRender();
+}
+// 누구나 보는 전체 리액션 내역 (최신순). 처음 30개, "더 보기"로 300개까지.
+let rxFeed = null; // { ver, n, data }
+function feedData() {
+  const n = UI.rxFeedN;
+  if (rxFeed && rxFeed.ver === S.ver && rxFeed.n === n) return rxFeed.data;
+  const want = { ver: S.ver, n, data: rxFeed?.data || null };
+  rxFeed = want;
+  rpc('reaction_feed', { p_limit: n })
+    .then((d) => (want.data = d))
+    .catch(() => (want.data = want.data || []))
+    .finally(() => rxFeed === want && rxLoaded());
+  return want.data;
+}
+function vReactFeed() {
+  const F = feedData();
+  return `<h2>전체 리액션 내역</h2><p class="sub" style="margin-top:-12px">모든 학생의 리액션이 최신순으로 보여요.</p>
+  <div id="rx-feed">${F
+    ? F.map((r) => `<div class="card rx-feed"><div class="req-top"><span class="pill ${r.status}">${STATUS[r.status]}${r.merit ? ' · 상점 반영' : ''}</span><span class="note">${r.no}번${r.active ? '' : ' (제외)'} · ${esc(r.at)}</span></div><div class="req-body">${rxText(r)}</div></div>`).join('') || '<p class="empty">아직 리액션이 없어요.</p>'
+    : '<p class="note">불러오는 중…</p>'}</div>
+  ${F && F.length >= UI.rxFeedN && UI.rxFeedN < 300 ? '<button class="btn ghost" data-act="rx-more">더 보기</button>' : ''}`;
 }
 function vReact() {
   const f = UI.reactForm;
   const s = S.students.find((x) => x.active && x.no === Number(f.no));
   const today = S.today || TODAY;
   const R = s ? rxData(s.id) : null;
-  if (s && !R) return `<div><h1>리액션 상점</h1></div><div class="card"><label class="fld"><span>내 번호</span><input id="rx-no" inputmode="numeric" value="${esc(f.no)}" data-bind="reactForm.no" data-rerender="1"></label><p class="note">불러오는 중…</p></div>`;
+  if (s && !R) return `<div><h1>리액션 상점</h1></div><div class="card"><label class="fld"><span>내 번호</span><input id="rx-no" inputmode="numeric" value="${esc(f.no)}" data-bind="reactForm.no" data-rerender="1"></label><p class="note">불러오는 중…</p></div>${vReactFeed()}`;
   const mine = R ? R.rows : [];
   const usedToday = R ? R.today : 0;
   const prog = R ? R.prog : 0;
@@ -516,9 +538,10 @@ function vReact() {
     ? `<div class="rx-prog" id="rx-prog"><div><b>${s.no}번</b> · 다음 상점까지 <b>${prog}/${REACT_MAX}</b> <span class="dots">${'●'.repeat(prog)}${'○'.repeat(REACT_MAX - prog)}</span></div>
     <div class="note">리액션 상점 ${merits}점 받음${pending ? ` · 확인 대기 ${pending}번` : ''}</div></div>${form}`
     : f.no ? '<p class="note">없는 번호예요.</p>' : ''}</div>
-  ${mine.length ? `<h2>${s.no}번 신청 내역</h2>${mine.map((r) => `<div class="card"><div class="req-top"><span class="pill ${r.status}">${STATUS[r.status]}${r.merit ? ' · 상점 반영' : ''}</span><span class="note">${esc(r.at)}</span></div>
+  ${mine.length ? `<h2>${s.no}번 신청 내역</h2>${mine.map((r) => `<div class="card"><div class="req-top"><span class="pill ${r.status}">${STATUS[r.status]}${r.merit ? ' · 상점 반영' : ''}${r.cleared ? ' · 이월에서 뺌' : ''}</span><span class="note">${esc(r.at)}</span></div>
     <div class="req-body">${rxText(r)}</div>${r.note ? `<div class="note">반려 사유: ${esc(r.note)}</div>` : ''}</div>`).join('')}
-    <p class="hint">최근 30일 것만 보여요.</p>` : ''}`;
+    <p class="hint">최근 30일 것만 보여요.</p>` : ''}
+  ${vReactFeed()}`;
 }
 
 // 출석: 날짜마다 "아침 출석"은 항상 맨 앞에 있다. 아직 서버에 없는 교시는 v: 로 시작하는 임시 id를 쓴다.
@@ -809,6 +832,7 @@ function vManage() {
   <input type="password" id="rc-pw" placeholder="내 비밀번호 확인" autocomplete="current-password"><button class="btn ghost" data-act="rc-new">새 복구 코드 만들기</button></div>
 
   ${vExempt()}
+  ${vReactAdj()}
 
   ${vBackup()}
 
@@ -887,6 +911,22 @@ function vHistory() {
   <div class="card" style="gap:0">${list || '<p class="empty">아직 작업이 없어요.</p>'}
   ${!complete ? '<button class="btn ghost" data-act="hist-more" style="margin-top:10px">더 보기</button>' : ''}</div>
   <p class="hint">"뒤로 감" 줄은 앞으로 가기나 "이 시점으로"로 다시 적용할 수 있어요. 다만 뒤로 간 상태에서 새 작업(기록, 승인 등)을 하면 그 줄들은 사라져요. "이 작업만 되돌리기"는 그 작업 하나만 빼 두고, "다시 살리기"로 언제든 되살릴 수 있어요. 뒤의 작업이 같은 기록을 바꿨으면 할 수 없다고 알려줘요. 이동하기 전에 무엇이 바뀌는지 먼저 보여줘요. 보관 후 정리나 백업에서 되살리기 너머로는 갈 수 없어요.</p>`;
+}
+
+// 리액션 이월 맞추기: 엑셀로 정리하던 이월(다음 상점까지 모은 횟수 0~2)을 붙여넣어 옮긴다 (서버 reaction_adjust)
+function vReactAdj() {
+  const plan = UI.rxAdjText.trim() ? L.planReactAdj(S, UI.rxAdjText) : null;
+  const cur = active().filter((s) => S.reactProg?.[s.id]).map((s) => `${s.no}번 ${S.reactProg[s.id]}`);
+  return `<div class="card" id="rxadj-card"><h2>리액션 이월 맞추기</h2>
+  <p class="hint" style="margin:0">엑셀로 정리하던 리액션 이월(다음 상점까지 모은 횟수, 0~2번)을 옮겨요. <b>번호·이월 횟수</b> 열을 복사해 붙여넣으면, 적은 학생만 그 횟수로 맞춰져요. 이미 받은 상점은 자봉 점수(명단 붙여넣기·직접 주기)로 넣어 주세요.</p>
+  <p class="note" style="margin:0" id="rxadj-cur">지금 이월: ${cur.join(', ') || '없음'}</p>
+  <textarea id="rxadj-text" data-bind="rxAdjText" data-region="rxadj-preview" placeholder="번호&#9;이월&#10;3&#9;2&#10;12&#9;1" style="min-height:90px;font-family:var(--mono)">${esc(UI.rxAdjText)}</textarea>
+  <div id="rxadj-preview" style="display:flex;flex-direction:column;gap:8px">${plan
+    ? `${plan.errors.length ? `<div class="warn">${plan.errors.map(esc).join('<br>')}</div>` : ''}${plan.items.length
+        ? `<div class="mlist">${plan.items.map((x) => `<div class="mrow"><span class="mono">${x.no}번</span><span class="grow">${esc(stu(x.sid)?.name || '')}</span><span class="mono note">${x.from} → ${x.to}</span></div>`).join('')}</div>`
+        : '<p class="note" style="margin:0">바뀌는 학생이 없어요.</p>'}
+    <button class="btn" data-act="rxadj-apply" ${plan.errors.length || !plan.items.length ? 'disabled' : ''}>${plan.items.length}명 이월 맞추기</button>`
+    : ''}</div></div>`;
 }
 
 // 자봉 면제: 지정한 학생은 출석·기록·요청으로 들어오는 +점수가 쌓이지 않고 상점(−)만 받는다 (서버 _entry)
@@ -1621,6 +1661,17 @@ const A = {
   },
   'exc-no': async (d) => {
     await run('review_excuse', { p_id: d.id, p_approve: false, p_note: val('note-' + d.id) }, '반려했어요');
+    return true;
+  },
+  'rx-more': () => {
+    UI.rxFeedN = Math.min(300, UI.rxFeedN + 30);
+  },
+  'rxadj-apply': async () => {
+    const plan = L.planReactAdj(S, UI.rxAdjText);
+    if (plan.errors.length || !plan.items.length) return toast(plan.errors[0] || '바뀌는 학생이 없어요');
+    await run('reaction_adjust', { p_list: plan.items.map((x) => ({ sid: x.sid, n: x.to })) }, `${plan.items.length}명의 리액션 이월을 맞췄어요`);
+    UI.rxAdjText = '';
+    render();
     return true;
   },
   'rx-per': (d) => {
