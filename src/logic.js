@@ -324,8 +324,10 @@ export function exportSheets(S, from, to) {
     .sort((a, b) => b.active - a.active || a.no - b.no)
     .map((st) => {
       const l = S.ledger.filter((x) => x.sid === st.id && live(x));
-      const start = l.filter((x) => x.date < from).reduce((a, x) => a + Number(x.points), 0);
-      const ch = l.filter((x) => x.date >= from && x.date <= to).reduce((a, x) => a + Number(x.points), 0);
+      // 보관 후 정리의 "이월" 줄은 그 전의 기록을 합친 것이라, 기간 안에 있어도 기간 시작 점수로 센다
+      const opening = (x) => x.date < from || (x.src === 'carry' && x.date <= to);
+      const start = l.filter(opening).reduce((a, x) => a + Number(x.points), 0);
+      const ch = l.filter((x) => !opening(x) && x.date >= from && x.date <= to).reduce((a, x) => a + Number(x.points), 0);
       return { no: st.active ? st.no : `${st.no} (제외)`, start, change: ch, end: start + ch, now: l.reduce((a, x) => a + Number(x.points), 0) };
     });
   const rows = S.ledger

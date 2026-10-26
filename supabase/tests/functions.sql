@@ -445,13 +445,15 @@ select create_excuse(:'s2', :'e_late', '', null) as x4 \gset
 select review_excuse(:'t', :'x4', true, null);
 select review_excuse(:'t', :'x3', true, null);
 select void_entry(:'t', :'e_req', '착오');
-select review_excuse(:'t', :'x2', true, null);
+-- 그사이 무효가 된 출결은 승인하지 않는다 (조용히 "승인"되고 아무것도 안 바뀌던 문제)
+select pg_temp.expect_msg(format('select review_excuse(%L, %L, true, null)', :'t', :'x2'), '신청한 출결이 그사이 정정되어 이미 무효예요%', '이미 무효인 출결 승인 막음');
+select review_excuse(:'t', :'x2', false, '이미 정정됨');
 select pg_temp.expect_msg(format('select review_excuse(%L, %L, true, null)', :'t', :'x2'), '이미 처리된 신청이에요', '두 번 처리');
 set role postgres;
 select pg_temp.ok((select void_reason = '공결 승인' from ledger where id = :'e_late') and (select status from attendance where period_id = :'p1' and student_id = :'s2') = 'excused'
   and (select voided_by = '부총대' from ledger_private where ledger_id = :'e_late'), '출석 기록 공결 승인 → 무효 + 출결은 공결');
 select pg_temp.ok((select void_reason = '공결 승인 (병원)' from ledger where id = :'e_abs') and not exists (select 1 from attendance where student_id = :'s4' and status = 'excused'), '직접 기록 공결 승인은 사유를 붙여 무효 (출결 없음)');
-select pg_temp.ok((select void_reason = '착오' from ledger where id = :'e_req') and (select status = 'approved' from excuses where id = :'x2'), '이미 무효인 기록의 공결 승인은 상태만');
+select pg_temp.ok((select void_reason = '착오' from ledger where id = :'e_req') and (select status = 'rejected' from excuses where id = :'x2'), '이미 무효인 기록의 공결은 승인되지 않고 반려');
 set role anon;
 select public_state()::text as pub \gset
 select pg_temp.ok(not exists (select 1 from json_array_elements(:'pub'::json -> 'excuses') x where x ->> 'photo' is not null or x ->> 'reviewer' is not null or x ->> 'reviewedAt' is not null), '공개 상태의 공결에는 사진·처리자 없음');
@@ -1006,6 +1008,153 @@ select create_reaction(:'rs6', '1교시', 'q2', 'a');
 select pg_temp.ok(create_reaction(:'rs6', '1교시', 'q3', 'a') is not null, '이월 줄이 있어도 오늘 3번 다 낼 수 있다');
 \echo 22. 리액션 이월 맞추기·전체 내역 통과
 
+-- ───────── 24. 4차 검토 ─────────
+set role anon;
+-- 긴 숫자로 시작하는 교시 이름이 있어도 앱이 열린다, 교시 이름은 40자까지
+select pg_temp.expect_msg(format('select ensure_period(%L, %L, %L, false)', :'t', '2026-08-01', repeat('가', 41)), '교시 이름은 40자까지예요', '교시 추가 41자');
+select ensure_period(:'t', '2026-08-01', '20260903101교시', false);
+select pg_temp.ok(public_state() is not null and private_state(:'t') is not null, '숫자 많은 교시 이름에도 상태가 열린다');
+-- 명단에서 빠진 학생의 출결은 다른 학생 때문에 다시 저장해도 남고, 다시 들어온 뒤 재저장해도 지각이 무효가 되지 않는다
+set role postgres;
+select id as q1 from students where active order by no offset 1 limit 1 \gset
+select id as q2 from students where active order by no offset 2 limit 1 \gset
+select no as q1no from students where id = :'q1' \gset
+set role anon;
+select ensure_period(:'t', '2026-08-02', '1교시', false) as qp \gset
+select save_attendance(:'t', :'qp', format('{"%s":"late"}', :'q1')::jsonb);
+select roster_apply(:'t', format('[{"op":"remove","id":"%s"}]', :'q1')::jsonb, '[]', '2026-08-02');
+select save_attendance(:'t', :'qp', format('{"%s":"absent"}', :'q2')::jsonb);
+set role postgres;
+select pg_temp.ok((select status from attendance where period_id = :'qp' and student_id = :'q1') = 'late', '빠진 학생의 출결은 그대로');
+select pg_temp.ok(not ((private_state(:'t')::jsonb -> 'att' -> :'qp') ? :'q1') and ((private_state(:'t')::jsonb -> 'att' -> :'qp') ? :'q2'),
+  '빠진 학생의 출결은 화면 상태에는 없다 (출석 화면의 지각·결석 수에 섞이지 않게)');
+set role anon;
+select roster_apply(:'t', format('[{"op":"restore","id":"%s","no":%s}]', :'q1', :'q1no')::jsonb, '[]', '2026-08-02');
+set role postgres;
+select coalesce(jsonb_object_agg(student_id, status), '{}')::text as qatt from attendance where period_id = :'qp' \gset
+set role anon;
+select save_attendance(:'t', :'qp', :'qatt'::jsonb);
+set role postgres;
+select pg_temp.ok((select count(*) from ledger where period_id = :'qp' and student_id = :'q1' and item = '지각' and voided_at is null) = 1, '다시 들어온 뒤 재저장해도 지각은 그대로');
+-- 하루 전체 공결: 그사이 한 교시가 정정되면 그 줄만 반려, 나머지는 승인. 모두 정정됐으면 승인 막음
+set role anon;
+select ensure_period(:'t', '2026-08-03', '1교시', false) as gp1 \gset
+select ensure_period(:'t', '2026-08-03', '2교시', false) as gp2 \gset
+select save_attendance(:'t', :'gp1', format('{"%s":"absent"}', :'q2')::jsonb);
+select save_attendance(:'t', :'gp2', format('{"%s":"absent"}', :'q2')::jsonb);
+select create_excuse_day(:'q2', '2026-08-03', '병원', null);
+select save_attendance(:'t', :'gp1', '{}'::jsonb);
+set role postgres;
+select id as gx from excuses where student_id = :'q2' and grp is not null and status = 'pending' limit 1 \gset
+set role anon;
+select review_excuse(:'t', :'gx', true, null);
+set role postgres;
+select pg_temp.ok((select string_agg(status || coalesce('/' || review_note, ''), ',' order by status) from excuses x join ledger l on l.id = x.ledger_id where x.student_id = :'q2' and l.date = '2026-08-03')
+  = 'approved,rejected/그사이 정정되어 이미 무효인 출결', '정정된 줄만 반려, 나머지 승인');
+set role anon;
+select create_excuse_day(:'q1', '2026-08-02', '', null) is null;
+set role postgres;
+-- (q1은 그날 지각 한 건뿐이라 하루 전체로는 1건) — 그 줄이 정정되면 승인 막음
+select id as gx2 from excuses where student_id = :'q1' and status = 'pending' limit 1 \gset
+set role anon;
+select save_attendance(:'t', :'qp', format('{"%s":"absent"}', :'q2')::jsonb);
+select pg_temp.expect_msg(format('select review_excuse(%L, %L, true, null)', :'t', :'gx2'), '신청한 출결이 그사이 모두 정정되어%', '모두 정정됐으면 하루 공결 승인 막음');
+select review_excuse(:'t', :'gx2', false, '정정됨');
+-- 이월에서 뺀 리액션은 요청함 처리 내역에서 "상점 반영"이 아니다
+set role postgres;
+select pg_temp.ok(not exists (select 1 from json_array_elements(private_state(:'t') -> 'reactions') r join reactions x on x.id = (r ->> 'id')::uuid
+  where x.merit = '00000000-0000-0000-0000-000000000000' and (r ->> 'merit')::boolean), '이월에서 뺀 것은 상점 반영 아님');
+-- 옛 백업 (리액션 adj 칸, 항목 owner 칸이 없던 때)도 되살린다
+select backup_dump() as odump \gset
+set role anon;
+select restore_backup(:'t', jsonb_set(jsonb_set(:'odump'::jsonb, '{tables,reactions}',
+    (select coalesce(jsonb_agg(x - 'adj'), '[]') from jsonb_array_elements(:'odump'::jsonb -> 'tables' -> 'reactions') x)),
+  '{tables,presets}', (select coalesce(jsonb_agg(x - 'owner'), '[]') from jsonb_array_elements(:'odump'::jsonb -> 'tables' -> 'presets') x)));
+set role postgres;
+select pg_temp.ok((select count(*) from reactions) = jsonb_array_length(:'odump'::jsonb -> 'tables' -> 'reactions') and not exists (select 1 from reactions where adj), '옛 백업 리액션 (adj 없음)');
+select pg_temp.ok(not exists (select 1 from presets where owner is null), '옛 백업 항목은 부총대 것');
+set role anon;
+select restore_backup(:'t', :'odump'::jsonb);
+-- 하나씩 빼기·살리기를 섞어 3개당 1점이 어긋나게 되면 멈춘다 (승인 3개인데 상점 없음)
+set role postgres;
+select id as cq from students s where active and not exists (select 1 from reactions r where r.student_id = s.id) order by no desc limit 1 \gset
+set role anon;
+select create_reaction(:'cq', '1교시', 'c1', 'a') as c1 \gset
+select create_reaction(:'cq', '1교시', 'c2', 'a') as c2 \gset
+select create_reaction(:'cq', '1교시', 'c3', 'a') as c3 \gset
+select review_reaction(:'t', array[:'c1']::uuid[], true, null);
+set role postgres;
+select max(id) as oc1 from ops where kind = 'review_reaction' \gset
+set role anon;
+select history_drop(:'t', :oc1, false);
+select review_reaction(:'t', array[:'c2']::uuid[], true, null);
+set role postgres;
+select max(id) as oc2 from ops where kind = 'review_reaction' \gset
+set role anon;
+select review_reaction(:'t', array[:'c3']::uuid[], true, null);
+set role postgres;
+select max(id) as oc3 from ops where kind = 'review_reaction' \gset
+set role anon;
+select history_drop(:'t', :oc3, false);
+select history_drop(:'t', :oc2, false);
+select history_restore(:'t', :oc1, false);
+select history_restore(:'t', :oc2, false);
+select pg_temp.expect_msg(format('select history_restore(%L, %s, false)', :'t', :oc3), '그렇게 하면 어떤 학생의 승인 리액션 3개가%', '3개당 1점이 어긋나면 멈춤');
+select pg_temp.expect_msg(format('select history_restore(%L, %s, true)', :'t', :oc3), '그렇게 하면 어떤 학생의 승인 리액션 3개가%', '미리보기도 멈춤');
+set role postgres;
+select pg_temp.ok((select count(*) from reactions where student_id = :'cq' and status = 'approved' and merit is null) = 2, '데이터는 그대로');
+-- 이동도 같은 검사를 한다: 맨 뒤 승인을 빼 둔 채 뒤로 갔다가 앞으로 오면 빼 둔 것은 그대로라 2개
+set role postgres;
+select max(id) as oend from ops \gset
+set role anon;
+select history_move(:'t', :oc1 - 1, false);
+select history_move(:'t', :oend, false);
+set role postgres;
+select pg_temp.ok((select count(*) from reactions where student_id = :'cq' and status = 'approved' and merit is null) = 2, '이동 뒤에도 2개');
+-- 이동 끝에도 같은 검사를 한다: 작업 밖에서 셋째를 승인해 둔(어긋난) 상태로는 이동하지 않는다
+select id as c3id from reactions where student_id = :'cq' and status <> 'approved' limit 1 \gset
+update reactions set status = 'approved' where id = :'c3id';
+select id as cother from students where active and id <> :'cq' order by no limit 1 \gset
+set role anon;
+select add_entries(:'t', current_date, array[:'cother']::uuid[], '이동 검사용', '', 1);
+select pg_temp.expect_msg(format('select history_move(%L, %s, true)', :'t', :oend), '그렇게 하면 어떤 학생의 승인 리액션 3개가%', '이동 미리보기도 검사');
+select pg_temp.expect_msg(format('select history_move(%L, %s, false)', :'t', :oend), '그렇게 하면 어떤 학생의 승인 리액션 3개가%', '이동도 검사');
+set role postgres;
+update reactions set status = 'pending' where id = :'c3id';
+select pg_temp.ok((select count(*) from ledger where item = '이동 검사용' and voided_at is null) = 1, '이동이 취소되어 기록은 그대로');
+-- 맨 끝의 빼 둔 작업: 뒤로 갔다 앞으로 와서 "뒤로 감"에 남은 빼 둔 작업도 맨 끝으로 옮겨 제자리에 둘 수 있다
+-- (그대로 두면 다음 새 작업에 지워져 다시 살릴 수 없다)
+set role postgres;
+select id as dx from students where active order by no limit 1 \gset
+set role anon;
+select add_entries(:'t', '2026-08-03', array[:'dx']::uuid[], '빼 둔 작업 시험 P', '', 1);
+set role postgres;
+select max(id) as dpp from ops \gset
+set role anon;
+select add_entries(:'t', '2026-08-03', array[:'dx']::uuid[], '빼 둔 작업 시험 A', '', 1);
+set role postgres;
+select max(id) as dpa from ops \gset
+set role anon;
+select history_drop(:'t', :dpa, false);
+select history_move(:'t', :dpp - 1, false);
+select history_move(:'t', :dpp, false);
+set role postgres;
+select pg_temp.ok((select undone and dropped from ops where id = :dpa), '앞으로 와도 빼 둔 작업은 뒤로 감에 남는다');
+set role anon;
+select pg_temp.ok((history_move(:'t', :dpa, true) -> 'forward')::jsonb = '[]', '빼 둔 작업만 옮기는 미리보기');
+select history_move(:'t', :dpa, false);
+set role postgres;
+select pg_temp.ok((select not undone and dropped from ops where id = :dpa), '맨 끝으로 옮기면 빼 둔 작업이 제자리로');
+select pg_temp.ok((select count(*) from ledger where item = '빼 둔 작업 시험 A' and voided_at is null) = 0, '데이터는 그대로 (빼 둔 채)');
+set role anon;
+select add_entries(:'t', '2026-08-03', array[:'dx']::uuid[], '빼 둔 작업 시험 뒤', '', 1);
+select history_restore(:'t', :dpa, false);
+set role postgres;
+select pg_temp.ok((select count(*) from ledger where item = '빼 둔 작업 시험 A' and voided_at is null) = 1, '새 작업 뒤에도 다시 살릴 수 있다');
+set role anon;
+select pg_temp.expect_msg(format('select history_move(%L, %s, false)', :'t', :dpa + 1000000), '이미 그 시점이에요', '옮길 것이 없으면 그대로');
+\echo 24. 4차 검토 통과
+
 -- ───────── 23. 리액션 내보내기·정리 ─────────
 set role anon;
 select pg_temp.expect(format('select reaction_export(%L, %L, %L)', :'ct', '2000-01-01', '2100-01-01'), '42501', '내보내기는 부총대만');
@@ -1021,6 +1170,7 @@ set role postgres;
 -- 앞 절에서 남은 대기 공결·출석 요청은 정리를 막으니 치운다 (정리는 작업 내역을 비우므로 직접 바꿔도 된다)
 update excuses set status = 'rejected', review_note = '정리 전' where status = 'pending';
 update attendance_requests set status = 'rejected', review_note = '정리 전' where status = 'pending';
+create temp table merits_before as select s.id, (my_reactions(s.id) ->> 'merits')::int m from students s;
 create temp table prog_before as select student_id, count(*) n from reactions where status = 'approved' and merit is null group by student_id;
 select count(*) as rx_real from reactions where not adj \gset
 select pg_temp.ok(:rx_real > 0 and (select count(*) from prog_before) > 0, '정리 전: 리액션과 이월이 있다');
@@ -1034,6 +1184,7 @@ select pg_temp.ok(not exists (
   select 1 from prog_before b full join (select student_id, count(*) n from reactions where status = 'approved' and merit is null group by student_id) a using (student_id)
   where a.n is distinct from b.n), '학생별 이월 횟수는 그대로');
 select pg_temp.ok((select count(*) from json_each(public_state() -> 'reactProg')) = (select count(*) from prog_before), '공개 이월 수도 그대로');
+select pg_temp.ok(not exists (select 1 from merits_before b where (my_reactions(b.id) ->> 'merits')::int <> b.m) and exists (select 1 from merits_before where m > 0), '받은 리액션 상점 수도 그대로');
 \echo 23. 리액션 내보내기·정리 통과
 
 \echo 모든 서버 함수 테스트 통과

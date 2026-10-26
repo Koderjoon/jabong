@@ -216,7 +216,9 @@ create table if not exists op_changes (
   before jsonb,
   after jsonb
 );
-create index if not exists op_changes_op on op_changes (op_id);
+-- (op_id, id): 이동 중 "이번 작업에서 새로 바뀐 행"을 id 범위로 바로 찾는다
+drop index if exists op_changes_op;
+create index if not exists op_changes_op_id on op_changes (op_id, id);
 create index if not exists op_changes_row on op_changes (tbl, row_key);
 -- 학생 표에 칸(exempt)이 생기기 전의 작업 기록은 그 칸이 없어서 지금 행과 비교가 어긋난다. 기본값으로 채운다.
 update op_changes set before = case when before is not null and not before ? 'exempt' then before || '{"exempt": false}' else before end,
@@ -319,6 +321,8 @@ create policy app_version_read on app_version for select using (true);
 -- 데이터가 바뀔 때마다 버전을 올려 브라우저에 알린다
 create or replace function _bump() returns trigger language plpgsql security definer set search_path = public as $$
 begin
+  -- 작업 내역 이동 중에는 문장마다 올리지 않고 끝에 한 번만 올린다 (수천 번 같은 행을 고치면 몇 초가 걸린다)
+  if current_setting('jabong.moving', true) = 'on' then return null; end if;
   update app_version set version = version + 1, updated_at = now() where id = 1;
   return null;
 end $$;
@@ -495,6 +499,9 @@ create or replace function _attn(p_statuses jsonb) returns text language sql imm
     (select count(*) from jsonb_each_text(coalesce(p_statuses, '{}')) where value = 'excused'))
 $$;
 
+-- 이월을 줄일 때 실제 리액션에 붙이는 표시 ("상점은 안 됐지만 이월에서 뺌")
+create or replace function _merit_cleared() returns uuid language sql immutable as $$ select '00000000-0000-0000-0000-000000000000'::uuid $$;
+
 -- 화면이 쓰는 전체 상태를 JSON 하나로 만든다. p_private가 아니면 이름·기록자를 뺀다.
 create or replace function _state(p_private boolean) returns json
 language sql stable security definer set search_path = public as $$
@@ -505,8 +512,10 @@ language sql stable security definer set search_path = public as $$
       from students),
     'presets', (select coalesce(json_agg(json_build_object('id', id, 'name', name, 'points', points, 'owner', owner, 'kind', kind) order by sort, name), '[]') from presets),
     'periods', (select coalesce(json_agg(json_build_object('id', id, 'date', date, 'label', label, 'morning', morning, 'savedAt', _kst(saved_at))
-      order by date, morning desc, nullif(substring(label from '^[0-9]+'), '')::int nulls last, label), '[]') from periods),
-    'att', (select coalesce(json_object_agg(p.id, (select coalesce(json_object_agg(a.student_id, a.status), '{}') from attendance a where a.period_id = p.id)), '{}')
+      order by date, morning desc, nullif(substring(label from '^[0-9]{1,9}'), '')::int nulls last, label), '[]') from periods),
+    -- 명단에서 빠진 학생의 출결은 표에는 남기되(다시 들어오면 쓴다) 화면에는 싣지 않는다 (출석 화면의 지각·결석 수에 섞이지 않게)
+    'att', (select coalesce(json_object_agg(p.id, (select coalesce(json_object_agg(a.student_id, a.status), '{}') from attendance a
+        join students s on s.id = a.student_id and s.active where a.period_id = p.id)), '{}')
       from periods p where p.saved_at is not null),
     'ledger', (select coalesce(json_agg(json_build_object(
         'id', l.id, 'date', l.date, 'sid', l.student_id, 'item', l.item, 'detail', l.detail, 'points', l.points,
@@ -541,7 +550,7 @@ language sql stable security definer set search_path = public as $$
     -- (모두 싣으면 학기 중에 수 MB가 되어, 바뀔 때마다 모든 폰이 다시 받는다)
     'reactions', case when p_private then (select coalesce(json_agg(json_build_object(
         'id', x.id, 'sid', x.student_id, 'date', x.date, 'period', x.period, 'q', x.question, 'a', x.answer,
-        'status', x.status, 'note', x.review_note, 'merit', x.merit is not null, 'at', _kst(x.created_at),
+        'status', x.status, 'note', x.review_note, 'merit', x.merit is not null and x.merit <> _merit_cleared(), 'at', _kst(x.created_at),
         'reviewer', x.reviewed_by, 'reviewedAt', _kst(x.reviewed_at)
       ) order by x.created_at, x.id), '[]') from reactions x
       where not x.adj and (x.status = 'pending' or x.reviewed_at >= now() - interval '14 days')) else '[]'::json end,
@@ -756,6 +765,7 @@ declare who text := _session_attend(p_token); pid uuid;
 begin
   perform _wlock();
   if coalesce(trim(p_label), '') = '' then raise exception '교시 이름을 입력하세요'; end if;
+  if length(trim(p_label)) > 40 then raise exception '교시 이름은 40자까지예요'; end if;
   -- "아침 출석"은 부총대의 아침 출석만 쓰는 이름이다 (다른 교시가 쓰면 아침 출석 저장이 그 교시를 덮어쓴다)
   if trim(p_label) = '아침 출석' and not coalesce(p_morning, false) then raise exception '"아침 출석"은 교시 이름으로 쓸 수 없어요'; end if;
   select id into pid from periods where date = p_date and label = trim(p_label);
@@ -842,7 +852,8 @@ begin
   -- 전에 저장한 출결 (같은 출결인데 기록이 없으면 그때 면제였거나 부총대가 무효 처리한 것이라 다시 만들지 않는다)
   select coalesce(jsonb_object_agg(student_id, status), '{}') into old from attendance where period_id = p_period;
   update periods set saved_at = now() where id = p_period;
-  delete from attendance where period_id = p_period;
+  -- 명단에서 빠진 학생의 출결은 그대로 둔다 (지우면 다시 들어온 뒤 재저장할 때 그 학생의 지각·결석이 "출석 정정"으로 무효가 된다)
+  delete from attendance where period_id = p_period and student_id in (select id from students where active);
   insert into attendance (period_id, student_id, status)
   select p_period, s.id, e.value from jsonb_each_text(coalesce(p_statuses, '{}')) e
   join students s on s.id = e.key::uuid and s.active
@@ -1000,7 +1011,20 @@ begin
     (select no from students where id = x.student_id),
     case when x.grp is not null then coalesce((select to_char(date, 'FMMM/FMDD') from ledger where id = x.ledger_id), '') || format(' 하루 (%s건)', n)
       else coalesce((select to_char(date, 'FMMM/FMDD') || ' ' || item from ledger where id = x.ledger_id), '') end));
+  -- 그사이 출석을 고쳐 대상 기록이 이미 무효가 됐으면, 한 건짜리 승인은 멈추고(조용히 "승인"되면 안 된다)
+  -- 하루 전체 신청은 무효가 된 줄만 "이미 정정됨"으로 반려한다
+  if p_approve and x.grp is null and exists (select 1 from ledger where id = x.ledger_id and voided_at is not null) then
+    raise exception '신청한 출결이 그사이 정정되어 이미 무효예요. 반려하고, 필요하면 지금 출결로 다시 신청하게 해 주세요';
+  end if;
+  if p_approve and x.grp is not null and not exists (select 1 from excuses y join ledger l on l.id = y.ledger_id
+      where y.grp = x.grp and y.status = 'pending' and l.voided_at is null) then
+    raise exception '신청한 출결이 그사이 모두 정정되어 이미 무효예요. 반려하고, 필요하면 지금 출결로 다시 신청하게 해 주세요';
+  end if;
   for r in select * from excuses where status = 'pending' and (id = p_id or (x.grp is not null and grp = x.grp)) order by created_at, id for update loop
+    if p_approve and exists (select 1 from ledger where id = r.ledger_id and voided_at is not null) then
+      update excuses set status = 'rejected', review_note = '그사이 정정되어 이미 무효인 출결', reviewed_by = who, reviewed_at = now() where id = r.id;
+      continue;
+    end if;
     if p_approve then
       select * into e from ledger where id = r.ledger_id;
       if e.id is not null and e.voided_at is null then
@@ -1019,8 +1043,6 @@ begin
 end $$;
 
 -- 학생 화면의 리액션: 그 학생의 대기 중인 것과 최근 30일 것, 오늘 낸 수, 이월 수, 받은 리액션 상점 수 (로그인 없음)
--- 이월을 줄일 때 실제 리액션에 붙이는 표시 ("상점은 안 됐지만 이월에서 뺌")
-create or replace function _merit_cleared() returns uuid language sql immutable as $$ select '00000000-0000-0000-0000-000000000000'::uuid $$;
 
 create or replace function my_reactions(p_student uuid) returns json
 language sql stable security definer set search_path = public as $$
@@ -1328,6 +1350,16 @@ create or replace function _op_json(p_ids bigint[], p_desc boolean) returns json
     order by case when p_desc then -id else id end), '[]') from ops where id = any (p_ids)
 $$;
 
+-- 리액션 3개당 상점 1점이 어긋났으면(상점이 안 된 승인 리액션이 3개 이상) 멈춘다.
+-- 작업 하나만 빼기·살리기나 이동을 섞으면 행이 겹치지 않아도 생길 수 있다 (뒤의 승인은 그때 개수로 상점 여부를 정했으므로).
+create or replace function _check_reactions() returns void language plpgsql security definer set search_path = public as $$
+begin
+  if exists (select 1 from reactions where status = 'approved' and merit is null group by student_id having count(*) >= 3) then
+    raise exception '그렇게 하면 어떤 학생의 승인 리액션 3개가 상점으로 묶이지 않은 채 남아서(3개당 1점이 어긋나서) 할 수 없어요. 다른 시점을 고르거나 다른 작업부터 되돌려 보세요'
+      using errcode = 'P0002';
+  end if;
+end $$;
+
 -- p_target 작업 바로 뒤의 상태로 이동한다 (0이면 작업 내역의 맨 처음).
 -- 그 뒤의 적용된 작업은 최신부터 거꾸로, 그 앞의 되돌린 작업은 오래된 것부터 다시 적용한다.
 -- "이 작업만 되돌리기"로 빼 둔 작업(dropped)은 데이터를 건드리지 않고 undone 표시만 함께 옮긴다.
@@ -1341,9 +1373,14 @@ begin
   perform _wlock();
   select coalesce(array_agg(id order by id desc), '{}') into back_ids from ops where id > p_target and not undone and kind <> 'scratch';
   select coalesce(array_agg(id order by id), '{}') into fwd_ids from ops where id <= p_target and undone;
-  if not exists (select 1 from ops where (id = any (back_ids) or id = any (fwd_ids)) and not dropped) then raise exception '이미 그 시점이에요'; end if;
+  -- 빼 둔 작업만 옮기는 이동도 한다 (맨 끝의 빼 둔 작업을 제자리로 돌려놓아야 새 작업에 지워지지 않는다)
+  if cardinality(back_ids) + cardinality(fwd_ids) = 0 then raise exception '이미 그 시점이에요'; end if;
   if exists (select 1 from ops where (id = any (back_ids) or id = any (fwd_ids)) and not undoable) then
     raise exception '보관 후 정리나 백업에서 되살리기 너머로는 이동할 수 없어요';
+  end if;
+  -- 한 번에 너무 많이 옮기면 Supabase의 3초 제한을 넘는다 (작업 하나에 약 1ms). 나눠서 옮기게 한다
+  if (select count(*) from ops where (id = any (back_ids) or id = any (fwd_ids)) and not dropped) > 1500 then
+    raise exception '한 번에 작업 1,500개까지만 이동할 수 있어요. 목록에서 더 가까운 작업의 "이 시점으로"를 눌러 나눠서 이동해 주세요';
   end if;
   before := _snap();
   select count(*) into nledger from ledger where voided_at is null;
@@ -1351,6 +1388,7 @@ begin
     -- 이동 중 바뀐 행을 잠깐 받아 둘 임시 작업. 끝나면 지운다.
     insert into ops (actor, kind, summary, undoable, undone) values (who, 'scratch', '', false, true) returning id into scratch;
     perform set_config('jabong.op', scratch::text, true);
+    perform set_config('jabong.moving', 'on', true);
     foreach x in array back_ids loop
       if (select dropped from ops where id = x) then update ops set undone = true where id = x;
       else perform _apply_op(x, true, scratch); end if;
@@ -1361,6 +1399,9 @@ begin
     end loop;
     delete from ops where id = scratch;
     perform set_config('jabong.op', '', true);
+    perform set_config('jabong.moving', '', true);
+    update app_version set version = version + 1, updated_at = now() where id = 1;
+    perform _check_reactions();
     result := json_build_object(
       'back', _op_json(array(select id from ops where id = any (back_ids) and not dropped), true),
       'forward', _op_json(array(select id from ops where id = any (fwd_ids) and not dropped), false),
@@ -1419,6 +1460,7 @@ begin
       perform set_config('jabong.op', '', true);
     end if;
     update ops set dropped = not p_restore, undone = o.undone where id = p_op;
+    perform _check_reactions();
     result := json_build_object(
       'back', case when p_restore then '[]'::json else _op_json(array[p_op], true) end,
       'forward', case when p_restore then _op_json(array[p_op], false) else '[]'::json end,
@@ -1428,6 +1470,7 @@ begin
   exception
     when sqlstate 'P0003' then return result;
     when sqlstate 'P0002' then
+      if sqlerrm like '그렇게 하면%' then raise; end if;
       raise exception '"%" 작업 뒤에 같은 기록을 바꾼 작업이 있거나 작업 내역 밖에서 바뀌어서, 이 작업만 %수 없어요. "이 시점으로"를 써 보세요',
         o.summary, case when p_restore then '다시 살릴 ' else '되돌릴 ' end using errcode = 'P0002';
   end;
@@ -1474,7 +1517,8 @@ begin
   -- 자봉 면제 칸이 생기기 전 백업에는 exempt가 없으니 false로 채운다
   insert into students select (jsonb_populate_record(null::students, '{"exempt": false}'::jsonb || e)).* from jsonb_array_elements(t -> 'students') e;
   -- 교시 저장(kind)이 생기기 전 백업의 항목은 모두 'item'이다
-  insert into presets select (jsonb_populate_record(null::presets, '{"kind": "item"}'::jsonb || e)).* from jsonb_array_elements(t -> 'presets') e;
+  -- 직책별 항목(owner)이 생기기 전 백업의 항목은 부총대 것
+  insert into presets select (jsonb_populate_record(null::presets, '{"kind": "item", "owner": "부총대"}'::jsonb || jsonb_strip_nulls(e))).* from jsonb_array_elements(t -> 'presets') e;
   insert into periods select * from jsonb_populate_recordset(null::periods, t -> 'periods');
   insert into attendance select * from jsonb_populate_recordset(null::attendance, t -> 'attendance');
   insert into ledger select * from jsonb_populate_recordset(null::ledger, t -> 'ledger');
@@ -1489,7 +1533,8 @@ begin
     from jsonb_array_elements(coalesce(t -> 'excuses', '[]')) e;
   insert into attendance_requests select * from jsonb_populate_recordset(null::attendance_requests, t -> 'attendance_requests');
   -- 리액션이 생기기 전 백업에는 없다
-  insert into reactions select * from jsonb_populate_recordset(null::reactions, coalesce(t -> 'reactions', '[]'));
+  -- adj 칸이 생기기 전 백업에는 없으니 false로
+  insert into reactions select (jsonb_populate_record(null::reactions, '{"adj": false}'::jsonb || e)).* from jsonb_array_elements(coalesce(t -> 'reactions', '[]')) e;
   return json_build_object('students', (select count(*) from students), 'ledger', (select count(*) from ledger), 'createdAt', p_data ->> 'createdAt');
 end $$;
 
@@ -1521,9 +1566,15 @@ begin
   create temp table _rx on commit drop as
     select student_id, count(*) as n from reactions where date <= p_cut and status = 'approved' and merit is null group by student_id;
   select count(*) into rx_n from reactions where date <= p_cut and not adj;
+  -- 받은 리액션 상점 수(묶음 수)도 묶음마다 한 줄씩 남긴다
+  create temp table _rxm on commit drop as
+    select distinct student_id, merit from reactions where date <= p_cut and merit is not null and merit <> _merit_cleared();
   delete from reactions where date <= p_cut;
   insert into reactions (student_id, date, period, question, answer, status, adj, reviewed_by, reviewed_at, created_at)
   select student_id, p_cut, '이월', '정리 이월', '', 'approved', true, who, now(), p_cut::timestamptz from _rx, generate_series(1, n);
+  insert into reactions (student_id, date, period, question, answer, status, adj, merit, reviewed_by, reviewed_at, created_at)
+  select student_id, p_cut, '이월', '정리 이월 (받은 상점)', '', 'approved', true, merit, who, now(), p_cut::timestamptz from _rxm
+  where not exists (select 1 from reactions x where x.merit = _rxm.merit and x.student_id = _rxm.student_id);
   delete from periods where date <= p_cut;
   delete from photos p where not exists (select 1 from requests where photo_id = p.id) and not exists (select 1 from excuses where photo_id = p.id);
   return json_build_object('old', old_n, 'carry', carry_n, 'reactions', rx_n);

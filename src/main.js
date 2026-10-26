@@ -108,10 +108,24 @@ async function refresh() {
     S = sess ? await rpc('private_state', { p_token: sess.token }) : await rpc('public_state');
     loaded = true;
     loadError = null;
+    if (!UI.roleSet && UI.user) {
+      UI.role = roleOf(UI.user);
+      UI.tab = tabsOf(UI.role)[0][0];
+      UI.roleSet = true;
+    }
   } catch (e) {
     if (e.code === '28000') return signOut('로그인이 끊겼어요. 다시 로그인해 주세요');
     loadError = e.message;
   }
+}
+
+// 다른 기기의 변경으로 다시 불러온다. 그사이 새 작업이 생겼으면 열어 둔 작업 내역도 새로 불러온다
+// (지난 목록을 보고 "맨 끝으로" 등을 누르면 남이 방금 한 작업을 되돌리게 된다. 실행 직전에도 hist-run이 한 번 더 확인한다)
+async function refreshBg() {
+  const before = JSON.stringify(S?.lastOp ?? null);
+  await refresh();
+  if (!busy && UI.hist.list && JSON.stringify(S?.lastOp ?? null) !== before) UI.hist = { ...UI.hist, list: null, loading: false };
+  softRender();
 }
 
 // 서버 함수를 부르고, 성공하면 최신 상태를 다시 받아 화면을 그린다
@@ -178,7 +192,7 @@ function vBoard() {
   return `<div><h1>자봉 현황</h1><p class="live"><span class="dot"></span>실시간 반영 · 마지막 변경 ${esc(S.updatedAt)}</p></div>
   ${vInstall()}
   ${UI.role === 'student' && S.students.length ? vMyCard(me) : ''}
-  <div class="toolbar"><input type="search" id="q" ${named ? '' : 'inputmode="numeric" '}placeholder="${named ? '번호·이름 검색' : '번호 검색'}" value="${esc(UI.q)}" data-bind="q" data-region="board-grid">
+  <div class="toolbar"><input type="search" id="q" aria-label="학생 찾기" ${named ? '' : 'inputmode="numeric" '}placeholder="${named ? '번호·이름 검색' : '번호 검색'}" value="${esc(UI.q)}" data-bind="q" data-region="board-grid">
   ${named ? `<div class="seg"><button class="${UI.sort === 'no' ? 'on' : ''}" data-act="sort" data-v="no">번호순</button><button class="${UI.sort === 'bal' ? 'on' : ''}" data-act="sort" data-v="bal">자봉 많은 순</button></div>` : ''}</div>
   <div class="grid${named ? ' named' : ''}" id="board-grid">${list.map(({ s, b }) => `<button class="tile${me && me.id === s.id ? ' me' : ''}" data-act="open" data-sid="${s.id}"><span class="no">${s.no}</span>${named ? `<span class="nm">${esc(s.name)}</span>` : ''}<span class="pt">자봉 ${b}</span>${named && s.exempt ? '<span class="ex">면제</span>' : ''}</button>`).join('') || `<p class="empty">${S.students.length ? '찾는 학생이 없어요.' : '아직 명단이 없어요.'}</p>`}</div>`;
 }
@@ -201,7 +215,7 @@ function vInstall() {
 // 학생 화면 맨 위: 내 번호의 자봉과 최근 기록. 정하지 않았으면 정하는 칸.
 function vMyCard(me) {
   if (!me)
-    return `<div class="card mycard"><div class="toolbar"><input id="myno" inputmode="numeric" placeholder="내 번호" style="width:110px" autocomplete="off"><button class="btn ghost small" data-act="myno-set">내 번호로 정하기</button></div>
+    return `<div class="card mycard"><div class="toolbar"><input id="myno" inputmode="numeric" aria-label="내 번호" placeholder="내 번호" style="width:110px" autocomplete="off"><button class="btn ghost small" data-act="myno-set">내 번호로 정하기</button></div>
     <p class="hint" style="margin:0">이 폰에만 기억해요. 정해 두면 여기서 내 자봉과 최근 내역을 바로 보고, 공결 신청에도 번호가 미리 들어가요.</p></div>`;
   const es = S.ledger.filter((e) => e.sid === me.id).reverse().sort((a, c) => c.date.localeCompare(a.date) || c.at.localeCompare(a.at)).slice(0, 3);
   const b = bal(me.id);
@@ -232,7 +246,7 @@ function vDetail() {
   <div class="hero"><div><h1>${s.no}번${isStaff() && s.name ? ` <span class="sub" style="font-size:15px">${esc(s.name)}</span>` : ''}</h1><p class="sub">${isStaff() && s.exempt ? '<b>자봉 면제</b> · 상점만 받아요 · ' : ''}자봉·상점 ${es.filter(live).length}건${es.some((e) => e.voided) ? ` · 무효 ${es.filter((e) => e.voided).length}건` : ''}</p></div>
   <div style="text-align:right"><div class="sub">자봉</div><div class="big ${b > 0 ? 'p' : b < 0 ? 'm' : ''}">${b}</div></div></div>
   ${UI.role === 'student' ? `<button class="btn ghost" data-act="to-excuse" data-no="${s.no}">이 번호로 공결 신청</button>${UI.myNo !== s.no ? `<button class="btn ghost small" data-act="myno-set" data-no="${s.no}" style="align-self:flex-start">이 번호를 내 번호로 정하기</button>` : ''}` : ''}
-  ${admin ? `<button class="btn ghost" data-act="to-record" data-no="${s.no}">이 학생 자봉·상점 수정·무효 처리</button>` : ''}
+  ${admin ? `<button class="btn ghost" data-act="to-record" data-sid="${s.id}">이 학생 자봉·상점 수정·무효 처리</button>` : ''}
   <div>${dates.map((d) => `<div class="day">${mdw(d)}</div><ul class="evs">${es.filter((e) => e.date === d).map(ev).join('')}</ul>`).join('') || '<p class="empty">아직 자봉·상점이 없어요.</p>'}</div>`;
 }
 
@@ -387,7 +401,7 @@ function vRequest() {
 function reqCard(r, admin) {
   return `<div class="card"><div class="req-top"><span class="pill ${r.status}">${STATUS[r.status]}</span><span class="note">${esc(r.by)} · ${esc(r.at)}</span></div>
   <div class="req-body"><b>${esc(r.item)}</b>${r.detail ? ` · ${esc(r.detail)}` : ''} <span class="pts ${r.points > 0 ? 'p' : 'm'}">${sgn(r.points)}</span> · ${md(r.date)}</div>
-  <div class="chips">${r.sids.map((id) => `<span class="chip">${noOf(id)} ${esc(stu(id)?.name || '')}</span>`).join('')}</div>
+  <div class="chips">${r.sids.map((id) => `<span class="chip">${noL(id)} ${esc(stu(id)?.name || '')}</span>`).join('')}</div>
   ${r.reason ? `<div class="note">사유: ${esc(r.reason)}</div>` : ''}${photoView(r.photo)}
   ${r.note ? `<div class="note">${esc(r.reviewer || '')}: ${esc(r.note)}</div>` : ''}
   ${admin && r.status === 'pending' ? `<input id="note-${r.id}" placeholder="반려 사유 (반려할 때 필수)" autocomplete="off" data-suggest="note"><div class="btns"><button class="btn ok small" data-act="req-ok" data-id="${r.id}">승인</button><button class="btn danger small" data-act="req-no" data-id="${r.id}">반려</button></div>` : ''}</div>`;
@@ -402,7 +416,7 @@ function attReqCard(a, admin) {
   const others = admin ? (S.attRequests || []).filter((o) => o.pid === a.pid && o.id !== a.id && o.status === 'pending') : [];
   return `<div class="card"><div class="req-top"><span class="pill ${a.status}">출석 ${STATUS[a.status]}</span><span class="note">${esc(a.by)} · ${esc(a.at)}</span></div>
   <div class="req-body"><b>${per ? `${mdw(per.date)} ${esc(per.label)}` : '지워진 교시'}</b></div>
-  ${groups.map(([k, l]) => `<div class="note">${ST[k][1]} ${l.length}명</div><div class="chips">${l.map((id) => `<span class="chip">${noOf(id)} ${esc(stu(id)?.name || '')}</span>`).join('')}</div>`).join('') || '<div class="note">전원 출석</div>'}
+  ${groups.map(([k, l]) => `<div class="note">${ST[k][1]} ${l.length}명</div><div class="chips">${l.map((id) => `<span class="chip">${noL(id)} ${esc(stu(id)?.name || '')}</span>`).join('')}</div>`).join('') || '<div class="note">전원 출석</div>'}
   ${a.status !== 'pending' ? `<div class="note">${esc(a.reviewer || '')} · ${esc(a.reviewedAt || '')}${a.note ? ` · 반려 사유: ${esc(a.note)}` : ''}</div>` : ''}
   ${admin && a.status === 'pending' ? `${S.att[a.pid] ? '<div class="warn">이미 저장된 교시예요. 승인하면 이 요청 내용으로 바뀌어요.</div>' : ''}${others.length ? `<div class="warn">같은 교시에 ${others.map((o) => esc(o.by)).join(', ')}의 요청도 있어요.</div>` : ''}
   <input id="note-${a.id}" placeholder="반려 사유 (반려할 때 필수)" autocomplete="off" data-suggest="note"><div class="btns"><button class="btn ok small" data-act="att-ok" data-id="${a.id}">승인 (출석 저장)</button><button class="btn danger small" data-act="att-no" data-id="${a.id}">반려</button></div>` : ''}</div>`;
@@ -414,6 +428,8 @@ function vReqs() {
   return `<div><h1>요청 현황</h1><p class="sub">총대단 전체의 요청과 처리 상태예요. 같은 건을 두 번 요청하지 않게 확인하세요.</p></div>${list.map((x) => x.html()).join('') || '<p class="empty">요청이 없어요.</p>'}`;
 }
 
+// 명단에서 빠진 학생의 번호는 지금 다른 학생이 쓰고 있을 수 있어서 "(제외)"를 붙인다
+const noL = (id) => (stu(id) && !stu(id).active ? `${noOf(id)}(제외)` : noOf(id));
 const periodLabel = (e) => S.periods.find((p) => p.id === e.pid)?.label || e.detail;
 
 // 공결 신청을 묶음째로 모은다. 하루 전체 신청(grp)은 한 묶음, 나머지는 한 건씩.
@@ -426,15 +442,28 @@ function excGroups(list) {
   });
   return [...m.values()];
 }
+// 묶음의 상태. 하루 전체 신청은 그사이 정정된 줄만 반려되어 승인·반려가 섞일 수 있다 ("일부 승인")
+const grpStatus = (g) => (g.some((x) => x.status === 'approved') && g.some((x) => x.status === 'rejected') ? 'partial' : g[0].status);
+const grpPill = (g, pre = '') => {
+  const st = grpStatus(g);
+  return `<span class="pill ${st === 'partial' ? 'approved' : st}">${pre}${st === 'partial' ? '일부 승인' : STATUS[st]}</span>`;
+};
+const grpNote = (g) => g.find((x) => x.status === 'rejected' && x.note)?.note || g[0].note;
 // "9/26(금) 하루 전체 · 1교시 결석, 2교시 지각 (+3)" 또는 "9/26(금) 1교시 결석 +2"
 function excText(g, pts) {
   const es = g.map((x) => S.ledger.find((l) => l.id === x.eid)).filter(Boolean);
+  const mixed = grpStatus(g) === 'partial';
+  // 대기 중인데 그사이 출석을 고쳐 대상이 이미 무효가 됐으면 알린다 (승인하면 서버가 멈추거나 그 줄만 반려한다).
+  // 일부 승인이면 반려된 줄에 표시한다
+  const gone = (e) =>
+    g[0].status === 'pending' && e.voided ? ' <b class="warnc">(그사이 정정되어 이미 무효)</b>'
+      : mixed && g.find((x) => x.eid === e.id)?.status === 'rejected' ? ' <b class="warnc">(반려)</b>' : '';
   if (!es.length) return '';
   if (g[0].grp) {
     const sum = es.reduce((a, e) => a + Number(e.points), 0);
-    return `${mdw(es[0].date)} <b>하루 전체</b> · ${es.map((e) => `${esc(periodLabel(e))} ${e.item}`).join(', ')}${pts ? ` (${sgn(sum)})` : ''}`;
+    return `${mdw(es[0].date)} <b>하루 전체</b> · ${es.map((e) => `${esc(periodLabel(e))} ${e.item}${gone(e)}`).join(', ')}${pts ? ` (${sgn(sum)})` : ''}`;
   }
-  return `${mdw(es[0].date)} ${esc(periodLabel(es[0]))} ${es[0].item}${pts ? ` ${sgn(es[0].points)}` : ''}`;
+  return `${mdw(es[0].date)} ${esc(periodLabel(es[0]))} ${es[0].item}${pts ? ` ${sgn(es[0].points)}` : ''}${gone(es[0])}`;
 }
 
 function vExcuse() {
@@ -463,7 +492,8 @@ function vExcuse() {
   ${photoField('excForm', f.photo)}<button class="btn" data-act="exc-add">신청하기</button>` : '<p class="note">공결 신청할 지각·결석 기록이 없어요.</p>') : f.no ? '<p class="note">없는 번호예요.</p>' : ''}</div>
   ${mine.length ? `<h2>${s.no}번 신청 내역</h2>${mine.map((g) => {
     const x = g[0];
-    return `<div class="card"><div class="req-top"><span class="pill ${x.status}">${STATUS[x.status]}</span><span class="note">${esc(x.at)}</span></div><div class="req-body">${excText(g, false)}${x.reason ? ` · ${esc(x.reason)}` : ''}</div>${x.note ? `<div class="note">반려 사유: ${esc(x.note)}</div>` : ''}</div>`;
+    const note = grpNote(g);
+    return `<div class="card"><div class="req-top">${grpPill(g)}<span class="note">${esc(x.at)}</span></div><div class="req-body">${excText(g, false)}${x.reason ? ` · ${esc(x.reason)}` : ''}</div>${note ? `<div class="note">반려 사유: ${esc(note)}</div>` : ''}</div>`;
   }).join('')}` : ''}`;
 }
 
@@ -473,17 +503,20 @@ const REACT_MAX = 3;
 const rxText = (r) => `${md(r.date)} ${esc(r.period)} · Q. ${esc(r.q)} · A. ${esc(r.a)}`;
 // 학생 자기 리액션은 번호를 넣었을 때만 서버에서 받아 온다 (모든 학생 것을 상태에 싣으면 학기 중에 수 MB가 된다).
 // 장부가 바뀌면(S.ver) 다시 받는다. 받는 동안에는 전에 받은 것을 보여 준다.
-let rxLoad = null; // { sid, ver, data }
+// 다시 받는 기준: 장부 버전과 서버 날짜 (자정이 지나면 "오늘 3번"이 풀려야 한다)
+const rxKey = () => `${S.ver}|${S.today}`;
+let rxLoad = null; // { sid, key, data, err }
 function rxData(sid) {
-  if (rxLoad && rxLoad.sid === sid && rxLoad.ver === S.ver) return rxLoad.data;
-  const want = { sid, ver: S.ver, data: rxLoad?.sid === sid ? rxLoad.data : null };
+  if (rxLoad && rxLoad.sid === sid && rxLoad.key === rxKey()) return rxLoad;
+  const want = { sid, key: rxKey(), data: rxLoad?.sid === sid ? rxLoad.data : null, err: false };
   rxLoad = want;
   rpc('my_reactions', { p_student: sid })
     .then((d) => (want.data = d))
-    .catch(() => (want.data = want.data || { rows: [], today: 0, prog: 0, merits: 0 }))
+    .catch(() => (want.err = true))
     .finally(() => rxLoad === want && rxLoaded());
-  return want.data;
+  return want;
 }
+const rxRetry = '<button class="btn ghost small" data-act="rx-retry">다시 시도</button>';
 // 받아 오면 다시 그린다. 번호 칸(숫자, 다시 그려도 되는 칸)을 치는 중이면 커서를 지키며 바로, 글자 칸이면 다 친 뒤에
 function rxLoaded() {
   if (UI.tab !== 'react') return;
@@ -492,32 +525,36 @@ function rxLoaded() {
   else softRender();
 }
 // 누구나 보는 전체 리액션 내역 (최신순). 처음 30개, "더 보기"로 300개까지.
-let rxFeed = null; // { ver, n, data }
+let rxFeed = null; // { key, n, data, err }
 function feedData() {
   const n = UI.rxFeedN;
-  if (rxFeed && rxFeed.ver === S.ver && rxFeed.n === n) return rxFeed.data;
-  const want = { ver: S.ver, n, data: rxFeed?.data || null };
+  if (rxFeed && rxFeed.key === rxKey() && rxFeed.n === n) return rxFeed;
+  const want = { key: rxKey(), n, data: rxFeed?.data || null, err: false };
   rxFeed = want;
   rpc('reaction_feed', { p_limit: n })
     .then((d) => (want.data = d))
-    .catch(() => (want.data = want.data || []))
+    .catch(() => (want.err = true))
     .finally(() => rxFeed === want && rxLoaded());
-  return want.data;
+  return want;
 }
 function vReactFeed() {
-  const F = feedData();
+  const L0 = feedData();
+  const F = L0.data;
   return `<h2>전체 리액션 내역</h2><p class="sub" style="margin-top:-12px">모든 학생의 리액션이 최신순으로 보여요.</p>
+  ${L0.err ? `<div class="warn">리액션 내역을 ${F ? '새로 ' : ''}불러오지 못했어요. ${rxRetry}</div>` : ''}
   <div id="rx-feed">${F
     ? F.map((r) => `<div class="card rx-feed"><div class="req-top"><span class="pill ${r.status}">${STATUS[r.status]}${r.merit ? ' · 상점 반영' : ''}</span><span class="note">${r.no}번${r.active ? '' : ' (제외)'} · ${esc(r.at)}</span></div><div class="req-body">${rxText(r)}</div></div>`).join('') || '<p class="empty">아직 리액션이 없어요.</p>'
-    : '<p class="note">불러오는 중…</p>'}</div>
+    : L0.err ? '' : '<p class="note">불러오는 중…</p>'}</div>
   ${F && F.length >= UI.rxFeedN && UI.rxFeedN < 300 ? '<button class="btn ghost" data-act="rx-more">더 보기</button>' : ''}`;
 }
 function vReact() {
   const f = UI.reactForm;
   const s = S.students.find((x) => x.active && x.no === Number(f.no));
   const today = S.today || TODAY;
-  const R = s ? rxData(s.id) : null;
-  if (s && !R) return `<div><h1>리액션 상점</h1></div><div class="card"><label class="fld"><span>내 번호</span><input id="rx-no" inputmode="numeric" value="${esc(f.no)}" data-bind="reactForm.no" data-rerender="1"></label><p class="note">불러오는 중…</p></div>${vReactFeed()}`;
+  const RL = s ? rxData(s.id) : null;
+  const R = RL?.data;
+  if (s && !R)
+    return `<div><h1>리액션 상점</h1></div><div class="card"><label class="fld"><span>내 번호</span><input id="rx-no" inputmode="numeric" value="${esc(f.no)}" data-bind="reactForm.no" data-rerender="1"></label>${RL.err ? `<div class="warn">내 리액션을 불러오지 못했어요. ${rxRetry}</div>` : '<p class="note">불러오는 중…</p>'}</div>${vReactFeed()}`;
   const mine = R ? R.rows : [];
   const usedToday = R ? R.today : 0;
   const prog = R ? R.prog : 0;
@@ -535,8 +572,8 @@ function vReact() {
   return `<div><h1>리액션 상점</h1><p class="sub">수업 중 대답한 것을 적어 내면 부총대가 확인해요. 승인된 대답 ${REACT_MAX}번마다 상점 1점이고, 남는 것은 다음으로 이어져요. <b>오늘(${mdw(today)}) 한 것만</b> 하루 ${REACT_MAX}번까지 신청할 수 있어요.</p></div>
   <div class="card"><label class="fld"><span>내 번호</span><input id="rx-no" inputmode="numeric" value="${esc(f.no)}" data-bind="reactForm.no" data-rerender="1" placeholder="예: 56"></label>
   ${s
-    ? `<div class="rx-prog" id="rx-prog"><div><b>${s.no}번</b> · 다음 상점까지 <b>${prog}/${REACT_MAX}</b> <span class="dots">${'●'.repeat(prog)}${'○'.repeat(REACT_MAX - prog)}</span></div>
-    <div class="note">리액션 상점 ${merits}점 받음${pending ? ` · 확인 대기 ${pending}번` : ''}</div></div>${form}`
+    ? `<div class="rx-prog" id="rx-prog"><div><b>${s.no}번</b> · 다음 상점까지 <b>${prog}/${REACT_MAX}</b> <span class="dots">${'●'.repeat(Math.min(prog, REACT_MAX))}${'○'.repeat(Math.max(0, REACT_MAX - prog))}</span></div>
+    <div class="note">리액션 상점 ${merits}점 받음${pending ? ` · 확인 대기 ${pending}번` : ''}</div></div>${RL.err ? `<div class="warn">내 리액션을 새로 불러오지 못했어요 (위 숫자가 지난 것일 수 있어요). ${rxRetry}</div>` : ''}${form}`
     : f.no ? '<p class="note">없는 번호예요.</p>' : ''}</div>
   ${mine.length ? `<h2>${s.no}번 신청 내역</h2>${mine.map((r) => `<div class="card"><div class="req-top"><span class="pill ${r.status}">${STATUS[r.status]}${r.merit ? ' · 상점 반영' : ''}${r.cleared ? ' · 이월에서 뺌' : ''}</span><span class="note">${esc(r.at)}</span></div>
     <div class="req-body">${rxText(r)}</div>${r.note ? `<div class="note">반려 사유: ${esc(r.note)}</div>` : ''}</div>`).join('')}
@@ -654,7 +691,10 @@ function vAttend() {
 function vRecord() {
   const q = UI.recFilter.trim();
   let list = [...S.ledger].reverse().sort((a, b) => b.date.localeCompare(a.date) || b.at.localeCompare(a.at));
-  if (q) list = list.filter((e) => String(noOf(e.sid)) === q || e.item.includes(q) || (e.detail || '').includes(q));
+  // 학생 상세에서 왔으면 그 학생 것만 (그 학생이 작업 내역 이동으로 사라졌으면 거르지 않는다)
+  if (UI.recSid && stu(UI.recSid)) list = list.filter((e) => e.sid === UI.recSid);
+  // 번호는 화면에 보이는 대로 찾는다: "30"은 지금 30번인 학생만, 명단에서 빠진 학생은 "30(제외)"
+  if (q) list = list.filter((e) => String(noL(e.sid)) === q || e.item.includes(q) || (e.detail || '').includes(q));
   const shown = list.slice(0, 40);
   const row = (e) => {
     let extra = '';
@@ -664,13 +704,14 @@ function vRecord() {
       <label class="fld"><span>수정 사유 (필수, 학생들에게 공개)</span><input id="ed-reason" autocomplete="off" data-suggest="editReason"></label><div class="btns"><button class="btn small" data-act="edit-save" data-id="${e.id}">수정 저장</button><button class="btn ghost small" data-act="edit-cancel">닫기</button></div></div>`;
     if (UI.voidId === e.id)
       extra = `<div class="edit"><label class="fld"><span>무효 처리 사유 (필수, 학생들에게 공개)</span><input id="vd-reason" autocomplete="off" data-suggest="voidReason"></label><p class="hint" style="margin:0">점수 합계에서 빠지지만, 기록은 줄이 그어진 채로 남아요.</p><div class="btns"><button class="btn danger small" data-act="void-save" data-id="${e.id}">무효 처리</button><button class="btn ghost small" data-act="edit-cancel">닫기</button></div></div>`;
-    return `<div class="rec-row"><span class="mono">${noOf(e.sid)}번</span><span class="${e.voided ? 'off' : ''}">${esc(e.item)}${e.detail ? ` · ${esc(e.detail)}` : ''}<br><span class="d">${mdw(e.date)}${e.revs?.length ? ' · 수정됨' : ''}${e.voided ? ' · 무효' : ''}</span></span><span class="pts ${e.points > 0 ? 'p' : 'm'} ${e.voided ? 'off' : ''}">${sgn(e.points)}</span>
+    return `<div class="rec-row"><span class="mono">${noL(e.sid)}번</span><span class="${e.voided ? 'off' : ''}">${esc(e.item)}${e.detail ? ` · ${esc(e.detail)}` : ''}<br><span class="d">${mdw(e.date)}${e.revs?.length ? ' · 수정됨' : ''}${e.voided ? ' · 무효' : ''}</span></span><span class="pts ${e.points > 0 ? 'p' : 'm'} ${e.voided ? 'off' : ''}">${sgn(e.points)}</span>
     ${e.voided ? '' : `<div class="acts"><button class="btn ghost small" data-act="edit" data-id="${e.id}">수정</button><button class="btn ghost small" data-act="void" data-id="${e.id}">무효 처리</button></div>`}${extra}</div>`;
   };
   return `<div><h1>자봉·상점 주기</h1><p class="sub">즉석 부과, 상점 등 모든 항목을 여기서 바로 줘요.</p></div>
   <div class="card">${entryFields('recForm')}<button class="btn" data-act="rec-add">자봉·상점 주기</button></div>
   <h2>자봉·상점 수정·무효 처리</h2><p class="sub" style="margin-top:-12px">지우지 않고 이력으로 남아요. 학생 상세 화면에서 누구나 수정 내역을 볼 수 있어요.</p>
-  <input type="search" id="recFilter" placeholder="번호 또는 항목으로 찾기" value="${esc(UI.recFilter)}" data-bind="recFilter" data-region="rec-list">
+  ${UI.recSid && stu(UI.recSid) ? `<div class="req-top"><span class="note">${noL(UI.recSid)}번 ${esc(stu(UI.recSid).name || '')} 학생 것만 보는 중</span><button class="btn ghost small" data-act="rec-all">전체 보기</button></div>` : ''}
+  <input type="search" id="recFilter" aria-label="자봉·상점 찾기" placeholder="번호 또는 항목으로 찾기" value="${esc(UI.recFilter)}" data-bind="recFilter" data-region="rec-list">
   <div class="card" style="gap:0" id="rec-list">${shown.map(row).join('') || '<p class="empty">아직 준 자봉·상점이 없어요.</p>'}${list.length > 40 ? '<p class="note">최근 40건만 보여요. 번호로 찾아보세요.</p>' : ''}</div>`;
 }
 
@@ -687,17 +728,17 @@ function vInbox() {
   <h2>공결 신청</h2>${ex.map((g) => {
     const x = g[0];
     return `<div class="card"><div class="req-top"><span class="pill pending">대기${g.length > 1 ? ` · ${g.length}건` : ''}</span><span class="note">${esc(x.at)}</span></div>
-    <div class="req-body"><b>${noOf(x.sid)}번 ${esc(stu(x.sid)?.name || '')}</b> · ${excText(g, true)}</div>${x.reason ? `<div class="note">사유: ${esc(x.reason)}</div>` : '<div class="note">사유 없음</div>'}${x.photo ? photoView(x.photo) : '<div class="note">증빙 사진 없음</div>'}
-    <input id="note-${x.id}" placeholder="반려 사유 (반려할 때 필수)" autocomplete="off" data-suggest="note"><div class="btns"><button class="btn ok small" data-act="exc-ok" data-id="${x.id}">${g.length > 1 ? `${g.length}건 모두 승인` : '승인'} (자봉 무효 처리)</button><button class="btn danger small" data-act="exc-no" data-id="${x.id}">반려</button></div></div>`;
+    <div class="req-body"><b>${noL(x.sid)}번 ${esc(stu(x.sid)?.name || '')}</b> · ${excText(g, true)}</div>${x.reason ? `<div class="note">사유: ${esc(x.reason)}</div>` : '<div class="note">사유 없음</div>'}${x.photo ? photoView(x.photo) : '<div class="note">증빙 사진 없음</div>'}
+    <input id="note-${x.id}" aria-label="반려 사유" placeholder="반려 사유 (반려할 때 필수)" autocomplete="off" data-suggest="note"><div class="btns"><button class="btn ok small" data-act="exc-ok" data-id="${x.id}">${g.length > 1 ? `${g.length}건 모두 승인` : '승인'} (자봉 무효 처리)</button><button class="btn danger small" data-act="exc-no" data-id="${x.id}">반려</button></div></div>`;
   }).join('') || '<p class="empty">대기 중인 공결 신청이 없어요.</p>'}
   <h2>리액션 신청</h2>${rxBy.map((g) => {
     const sid = g[0].sid;
     const prog = S.reactProg?.[sid] || 0;
-    return `<div class="card rx-card"><div class="req-top"><b>${noOf(sid)}번 ${esc(stu(sid)?.name || '')}</b><span class="note">이월 ${prog}/${REACT_MAX} · 대기 ${g.length}건</span></div>
+    return `<div class="card rx-card"><div class="req-top"><b>${noL(sid)}번 ${esc(stu(sid)?.name || '')}</b><span class="note">이월 ${prog}/${REACT_MAX} · 대기 ${g.length}건</span></div>
     ${g.map((r) => `<div class="rx-item"><div class="req-body">${rxText(r)}</div><div class="note">${esc(r.at)}</div>
-      <input id="note-rx-${r.id}" placeholder="반려 사유 (반려할 때 필수)" autocomplete="off" data-suggest="note">
+      <input id="note-rx-${r.id}" aria-label="반려 사유" placeholder="반려 사유 (반려할 때 필수)" autocomplete="off" data-suggest="note">
       <div class="btns"><button class="btn ok small" data-act="rx-ok" data-ids="${r.id}">승인</button><button class="btn danger small" data-act="rx-no" data-id="${r.id}">반려</button></div></div>`).join('')}
-    ${g.length > 1 ? `<button class="btn ok" data-act="rx-ok" data-ids="${g.map((r) => r.id).join(',')}">${noOf(sid)}번 ${g.length}건 모두 승인</button>` : ''}</div>`;
+    ${g.length > 1 ? `<button class="btn ok" data-act="rx-ok" data-ids="${g.map((r) => r.id).join(',')}">${noL(sid)}번 ${g.length}건 모두 승인</button>` : ''}</div>`;
   }).join('') || '<p class="empty">대기 중인 리액션 신청이 없어요.</p>'}
   ${rx.length > 1 && rxBy.length > 1 ? `<button class="btn ok" data-act="rx-ok" data-ids="${rx.map((r) => r.id).join(',')}">리액션 ${rx.length}건 모두 승인</button>` : ''}
   ${vDone()}`;
@@ -717,22 +758,23 @@ function vDone() {
     if (it.kind === 'rx') {
       const r = it.r;
       return `<div class="card"><div class="req-top"><span class="pill ${r.status}">리액션 ${STATUS[r.status]}${r.merit ? ' · 상점 반영' : ''}</span><span class="note">${esc(r.reviewer || '')} · ${esc(it.at)}</span></div>
-      <div class="req-body"><b>${noOf(r.sid)}번 ${esc(stu(r.sid)?.name || '')}</b> · ${rxText(r)}</div>${r.note ? `<div class="note">반려 사유: ${esc(r.note)}</div>` : ''}</div>`;
+      <div class="req-body"><b>${noL(r.sid)}번 ${esc(stu(r.sid)?.name || '')}</b> · ${rxText(r)}</div>${r.note ? `<div class="note">반려 사유: ${esc(r.note)}</div>` : ''}</div>`;
     }
     if (it.kind === 'req') {
       const r = it.r;
       return `<div class="card"><div class="req-top"><span class="pill ${r.status}">총대단 요청 ${STATUS[r.status]}</span><span class="note">${esc(r.reviewer || '')} · ${esc(it.at)}</span></div>
       <div class="req-body"><b>${esc(r.item)}</b>${r.detail ? ` · ${esc(r.detail)}` : ''} <span class="pts ${r.points > 0 ? 'p' : 'm'}">${sgn(r.points)}</span> · ${md(r.date)}</div>
-      <div class="chips">${r.sids.map((id) => `<span class="chip">${noOf(id)} ${esc(stu(id)?.name || '')}</span>`).join('')}</div>
+      <div class="chips">${r.sids.map((id) => `<span class="chip">${noL(id)} ${esc(stu(id)?.name || '')}</span>`).join('')}</div>
       <div class="note">요청: ${esc(r.by)} · ${esc(r.at)}${r.reason ? ` · 사유: ${esc(r.reason)}` : ''}</div>
       ${r.note ? `<div class="note">반려 사유: ${esc(r.note)}</div>` : ''}${photoView(r.photo)}</div>`;
     }
     const x = it.x;
     const txt = excText(it.g, true);
-    return `<div class="card"><div class="req-top"><span class="pill ${x.status}">공결 ${STATUS[x.status]}</span><span class="note">${esc(x.reviewer || '')} · ${esc(it.at)}</span></div>
-    <div class="req-body"><b>${noOf(x.sid)}번 ${esc(stu(x.sid)?.name || '')}</b>${txt ? ` · ${txt}` : ''}</div>
+    const note = grpNote(it.g);
+    return `<div class="card"><div class="req-top">${grpPill(it.g, '공결 ')}<span class="note">${esc(x.reviewer || '')} · ${esc(it.at)}</span></div>
+    <div class="req-body"><b>${noL(x.sid)}번 ${esc(stu(x.sid)?.name || '')}</b>${txt ? ` · ${txt}` : ''}</div>
     <div class="note">신청: ${esc(x.at)}${x.reason ? ` · 사유: ${esc(x.reason)}` : ''}</div>
-    ${x.note ? `<div class="note">반려 사유: ${esc(x.note)}</div>` : ''}${photoView(x.photo)}</div>`;
+    ${note ? `<div class="note">반려 사유: ${esc(note)}</div>` : ''}${photoView(x.photo)}</div>`;
   };
   return `<h2>처리한 내역</h2><p class="sub" style="margin-top:-12px">승인·반려한 출석 요청, 총대단 요청, 공결 신청이에요. 증빙 사진은 처리 후 180일 동안 볼 수 있어요.</p>
   ${shown.map(card).join('') || '<p class="empty">아직 처리한 건이 없어요.</p>'}
@@ -783,14 +825,16 @@ function vPurge() {
   const cut = UI.purgeCut || '';
   const old = cut ? S.ledger.filter((e) => e.date <= cut) : [];
   const n = new Set(old.filter(live).map((e) => e.sid)).size;
-  const ready = UI.fullBackup && old.length && UI.purgeTyped.trim() === '정리';
+  // 전체 파일을 받은 뒤 장부가 바뀌었으면(S.ver) 그 파일에는 새 기록이 없으니 다시 받아야 한다
+  const fresh = UI.fullBackup && UI.fullBackupVer === S.ver;
+  const ready = fresh && old.length && UI.purgeTyped.trim() === '정리';
   return `<div class="card"><h2>보관 후 정리</h2>
   <p class="hint" style="margin:0">기준 날짜까지의 기록을 학생마다 <b>"이월" 한 줄</b>로 합쳐서 서버를 가볍게 해요. 현재 자봉 점수는 그대로예요. 그 기간의 <b>리액션 내역도 모두 지우고</b>, 학생별 리액션 이월 횟수만 남겨요. 지워진 기록은 앱에서 다시 볼 수 없으니, 먼저 전체 기간 파일로 받아두세요.</p>
   <p class="hint" style="margin:0">기록은 글자라서 몇 년을 써도 수 MB라, 보통은 1년에 한 번이면 충분해요.</p>
   <label class="fld"><span>기준 날짜 (이 날까지 정리)</span><input type="date" id="purge-cut" value="${esc(cut)}" data-bind="purgeCut" data-rerender="1" style="width:auto"></label>
   ${cut ? `<div class="note">정리 대상: 기록 ${old.length}건 → 이월 ${n}건${old.some((e) => e.voided) ? ` (무효 ${old.filter((e) => e.voided).length}건 포함)` : ''}</div>` : ''}
-  ${UI.fullBackup ? '<div class="note" style="color:var(--merit)">✓ 전체 기간 파일을 받았어요</div>' : '<div class="warn">먼저 공지 탭 → 내보내기에서 <b>전체</b> 기간 파일을 만들어야 정리할 수 있어요.</div>'}
-  <input id="purge-typed" placeholder="확인하려면 '정리'라고 입력" value="${esc(UI.purgeTyped)}" data-bind="purgeTyped" data-region="purge-btn" ${UI.fullBackup ? '' : 'disabled'}>
+  ${fresh ? '<div class="note" style="color:var(--merit)">✓ 전체 기간 파일을 받았어요</div>' : UI.fullBackup ? '<div class="warn">전체 기간 파일을 받은 뒤 장부가 바뀌었어요. 새 기록도 남도록 공지 탭 → 내보내기에서 <b>전체</b> 기간 파일을 다시 만들어 주세요.</div>' : '<div class="warn">먼저 공지 탭 → 내보내기에서 <b>전체</b> 기간 파일을 만들어야 정리할 수 있어요.</div>'}
+  <input id="purge-typed" aria-label="정리 확인 입력" placeholder="확인하려면 '정리'라고 입력" value="${esc(UI.purgeTyped)}" data-bind="purgeTyped" data-region="purge-btn" ${fresh ? '' : 'disabled'}>
   <div id="purge-btn"><button class="btn danger" data-act="purge" ${ready ? '' : 'disabled'}>${cut ? `${md(cut)}까지 ` : ''}기록 정리하기</button></div></div>`;
 }
 
@@ -850,23 +894,34 @@ function histPos(list) {
   const cur = list.find((o) => !o.undone && !o.dropped) || null;
   const future = list.filter((o) => o.undone && !o.dropped);
   const locked = list.some((o) => !o.undoable);
+  // 맨 끝은 빼 둔 작업까지 포함한 가장 새 작업이다. 뒤로 갔다 오면서 빼 둔 작업이 "뒤로 감"에 남으면 새 작업에 지워져 다시 살릴 수 없다
+  const end = list[0]?.undone ? list[0].id : null;
   return {
     cur,
     back: cur && cur.undoable ? cur.id - 1 : null,
-    fwd: future.length ? future[future.length - 1].id : null,
+    fwd: future.length ? future[future.length - 1].id : end,
+    end,
+    // 앞으로 갈 수 있는 작업 수와, 함께 사라질 빼 둔 작업 수
+    ahead: future.length,
+    aheadDropped: list.filter((o) => o.undone && o.dropped).length,
     start: !locked && cur ? 0 : null,
   };
 }
 function vHistory() {
   const h = UI.hist;
   if (!h.list) {
+    // 실패하면 저절로 다시 부르지 않는다 (오프라인이면 1초에 수백 번 부르게 된다). 다시 시도 버튼으로만.
+    if (h.error) return `<div><h1>작업 내역</h1></div><div class="card"><p class="note">작업 내역을 불러오지 못했어요: ${esc(h.error)}</p><button class="btn" data-act="hist-retry">다시 시도</button></div>`;
     if (!h.loading) {
       h.loading = true;
       loadHistory()
-        .catch((e) => (e.code === '28000' ? signOut(e.message) : toast(e.message)))
+        // 그사이 탭을 다시 눌러 UI.hist가 새것으로 바뀌었을 수 있으니 지금 것에 적는다
+        .catch((e) => (e.code === '28000' ? signOut(e.message) : (UI.hist.error = e.message || '알 수 없는 오류')))
         .finally(() => {
           h.loading = false;
-          render();
+          UI.hist.loading = false;
+          // 다른 탭으로 옮겼으면 그리지 않는다 (한글 입력 중인 칸의 포커스를 뺏지 않게)
+          if (UI.tab === 'history') softRender();
         });
     }
     return '<div><h1>작업 내역</h1></div><p class="boot">불러오는 중…</p>';
@@ -878,6 +933,7 @@ function vHistory() {
     ? `<div class="card" style="border-color:var(--warn)"><h2>${esc(p.title)}</h2>
     ${p.data.back.length ? `<div class="note">되돌릴 작업 ${p.data.back.length}개</div>${opRows(p.data.back)}` : ''}
     ${p.data.forward.length ? `<div class="note">다시 적용할 작업 ${p.data.forward.length}개</div>${opRows(p.data.forward)}` : ''}
+    ${!p.drop && !p.data.back.length && !p.data.forward.length ? '<div class="note">빼 둔 작업만 제자리로 옮겨요 (데이터는 그대로예요).</div>' : ''}
     <div class="note">무효가 아닌 기록 ${p.data.ledger.before}건 → ${p.data.ledger.after}건</div>
     ${p.data.students.length ? `<div class="note">달라지는 학생 ${p.data.students.length}명</div><div class="mlist" style="max-height:200px">${p.data.students.map((x) => {
       const bits = [];
@@ -904,13 +960,15 @@ function vHistory() {
   const complete = h.list.length < h.limit;
   return `<div><h1>작업 내역</h1><p class="sub">누가 언제 무엇을 바꿨는지 최신순으로 보여요. 뒤로가기·앞으로 가기로 작업 단위로 오가거나, 작업 하나만 되돌릴 수 있어요. 이동이나 되돌리기는 작업 내역에 남지 않아요.</p></div>
   ${previewCard}
+  ${pos.end != null ? `<div class="warn">지금 <b>뒤로 간 상태</b>예요. 이대로 누가 새 작업을 하면(학생의 공결·리액션 신청, 총대단 요청도 포함) ${[pos.ahead ? `앞으로 갈 수 있는 작업 ${pos.ahead}개` : '', pos.aheadDropped ? `빼 둔 작업 ${pos.aheadDropped}개` : ''].filter(Boolean).join('와 ')}가 사라져요. 확인이 끝나면 바로 맨 끝으로 돌아오세요.
+    <div class="btns" style="margin-top:6px"><button class="btn small" data-act="hist-pv" data-target="${pos.end}" data-title="맨 끝으로 돌아가기">맨 끝으로 돌아가기</button></div></div>` : ''}
   <div class="card"><div class="btns">
     <button class="btn ghost" data-act="hist-pv" data-target="${pos.back ?? ''}" data-title="뒤로가기" ${pos.back == null ? 'disabled' : ''}>← 뒤로가기</button>
     <button class="btn ghost" data-act="hist-pv" data-target="${pos.fwd ?? ''}" data-title="앞으로 가기" ${pos.fwd == null ? 'disabled' : ''}>앞으로 가기 →</button>
   </div>${pos.start != null && complete ? '<button class="btn ghost small" data-act="hist-pv" data-target="0" data-title="맨 처음으로 이동">맨 처음으로</button>' : ''}</div>
   <div class="card" style="gap:0">${list || '<p class="empty">아직 작업이 없어요.</p>'}
   ${!complete ? '<button class="btn ghost" data-act="hist-more" style="margin-top:10px">더 보기</button>' : ''}</div>
-  <p class="hint">"뒤로 감" 줄은 앞으로 가기나 "이 시점으로"로 다시 적용할 수 있어요. 다만 뒤로 간 상태에서 새 작업(기록, 승인 등)을 하면 그 줄들은 사라져요. "이 작업만 되돌리기"는 그 작업 하나만 빼 두고, "다시 살리기"로 언제든 되살릴 수 있어요. 뒤의 작업이 같은 기록을 바꿨으면 할 수 없다고 알려줘요. 이동하기 전에 무엇이 바뀌는지 먼저 보여줘요. 보관 후 정리나 백업에서 되살리기 너머로는 갈 수 없어요.</p>`;
+  <p class="hint">"뒤로 감" 줄은 앞으로 가기나 "이 시점으로"로 다시 적용할 수 있어요. 다만 뒤로 간 상태에서 누가 새 작업(기록, 승인, 학생의 공결·리액션 신청 등)을 하면 그 줄들은 사라져요. "이 작업만 되돌리기"는 그 작업 하나만 빼 두고, "다시 살리기"로 언제든 되살릴 수 있어요. 뒤의 작업이 같은 기록을 바꿨으면 할 수 없다고 알려줘요. 이동하기 전에 무엇이 바뀌는지 먼저 보여줘요. 보관 후 정리나 백업에서 되살리기 너머로는 갈 수 없어요.</p>`;
 }
 
 // 리액션 이월 맞추기: 엑셀로 정리하던 이월(다음 상점까지 모은 횟수 0~2)을 붙여넣어 옮긴다 (서버 reaction_adjust)
@@ -920,7 +978,7 @@ function vReactAdj() {
   return `<div class="card" id="rxadj-card"><h2>리액션 이월 맞추기</h2>
   <p class="hint" style="margin:0">엑셀로 정리하던 리액션 이월(다음 상점까지 모은 횟수, 0~2번)을 옮겨요. <b>번호·이월 횟수</b> 열을 복사해 붙여넣으면, 적은 학생만 그 횟수로 맞춰져요. 이미 받은 상점은 자봉 점수(명단 붙여넣기·직접 주기)로 넣어 주세요.</p>
   <p class="note" style="margin:0" id="rxadj-cur">지금 이월: ${cur.join(', ') || '없음'}</p>
-  <textarea id="rxadj-text" data-bind="rxAdjText" data-region="rxadj-preview" placeholder="번호&#9;이월&#10;3&#9;2&#10;12&#9;1" style="min-height:90px;font-family:var(--mono)">${esc(UI.rxAdjText)}</textarea>
+  <textarea id="rxadj-text" aria-label="리액션 이월 붙여넣기" data-bind="rxAdjText" data-region="rxadj-preview" placeholder="번호&#9;이월&#10;3&#9;2&#10;12&#9;1" style="min-height:90px;font-family:var(--mono)">${esc(UI.rxAdjText)}</textarea>
   <div id="rxadj-preview" style="display:flex;flex-direction:column;gap:8px">${plan
     ? `${plan.errors.length ? `<div class="warn">${plan.errors.map(esc).join('<br>')}</div>` : ''}${plan.items.length
         ? `<div class="mlist">${plan.items.map((x) => `<div class="mrow"><span class="mono">${x.no}번</span><span class="grow">${esc(stu(x.sid)?.name || '')}</span><span class="mono note">${x.from} → ${x.to}</span></div>`).join('')}</div>`
@@ -961,7 +1019,7 @@ function vBackup() {
     ${diffs.length ? `<div class="note">점수가 달라지는 학생 ${diffs.length}명</div><div class="mlist" style="max-height:180px">${diffs.map((d) => `<div class="mrow"><span class="mono">${esc(d.x.no)}</span><span class="grow">${esc(d.x.name)}</span><span class="mono note">지금 ${esc(d.cur ?? '없음')} → ${esc(d.then)}</span></div>`).join('')}</div>` : '<div class="note">학생별 자봉 점수는 지금과 같아요.</div>'}
     ${gone.length ? `<div class="warn">백업 뒤에 추가된 학생 ${gone.length}명(${gone.map((x) => esc(x.no)).join(', ')}번)은 사라져요.</div>` : ''}
     <div class="warn">되살리면 이 백업 뒤에 생긴 기록·요청·출석이 모두 사라져요. 되살리기 직전 상태는 파일로 먼저 받아 둬요.</div>
-    <input id="bk-typed" placeholder="확인하려면 '되살리기'라고 입력" value="${esc(b.typed)}" data-bind="bk.typed" data-region="bk-go">
+    <input id="bk-typed" aria-label="되살리기 확인 입력" placeholder="확인하려면 '되살리기'라고 입력" value="${esc(b.typed)}" data-bind="bk.typed" data-region="bk-go">
     <div id="bk-go"><button class="btn danger" data-act="bk-restore" ${b.typed.trim() === '되살리기' ? '' : 'disabled'}>이 백업으로 되살리기</button></div></div>`;
   }
   // 예전에 암호를 걸어 받은 파일이면 암호 칸을 보여 준다
@@ -1340,6 +1398,7 @@ const A = {
     if (r.error) return toast(r.error);
     setSession({ token: r.token, role: r.role });
     UI.user = r.role;
+    UI.roleSet = true;
     resetDrafts();
     await refresh();
     UI.tab = tabsOf(UI.role)[0][0];
@@ -1362,6 +1421,7 @@ const A = {
     if (r.error) return toast(r.error);
     setSession({ token: r.token, role: r.role });
     UI.user = r.role;
+    UI.roleSet = true;
     resetDrafts();
     UI.newCode = r.code;
     UI.recover = false;
@@ -1401,7 +1461,7 @@ const A = {
     return toast(`${who} 비밀번호를 재설정했어요. 본인에게 알려주세요`);
   },
   tab: (d) => {
-    if (d.tab === 'history') UI.hist = { ...UI.hist, list: null, preview: null };
+    if (d.tab === 'history') UI.hist = { ...UI.hist, list: null, preview: null, error: null, loading: false };
     if (d.tab === 'excuse' && !UI.excForm.no && myStudent()) UI.excForm.no = String(UI.myNo);
     if (d.tab === 'react' && !UI.reactForm.no && myStudent()) UI.reactForm.no = String(UI.myNo);
     UI.tab = d.tab;
@@ -1432,7 +1492,11 @@ const A = {
   'to-record': (d) => {
     UI.sid = null;
     UI.tab = 'record';
-    UI.recFilter = d.no;
+    UI.recFilter = '';
+    UI.recSid = d.sid;
+  },
+  'rec-all': () => {
+    UI.recSid = null;
   },
   pick: (d) => {
     addStudents(d.fk, [d.sid]);
@@ -1663,6 +1727,10 @@ const A = {
     await run('review_excuse', { p_id: d.id, p_approve: false, p_note: val('note-' + d.id) }, '반려했어요');
     return true;
   },
+  'rx-retry': () => {
+    rxLoad = null;
+    rxFeed = null;
+  },
   'rx-more': () => {
     UI.rxFeedN = Math.min(300, UI.rxFeedN + 30);
   },
@@ -1684,12 +1752,13 @@ const A = {
     if (!f.period.trim()) return toast('교시를 적어 주세요');
     if (!f.q.trim()) return toast('질문을 적어 주세요');
     if (!f.a.trim()) return toast('내 대답을 적어 주세요');
-    const used = (rxLoad?.sid === s.id && rxLoad.data ? rxLoad.data.today : 0) + 1;
+    // 오늘 낸 수는 불러온 것이 있을 때만 (못 불러왔으면 숫자를 빼고 알린다)
+    const R0 = rxLoad?.sid === s.id && !rxLoad.err ? rxLoad.data : null;
     await rpc('create_reaction', { p_student: s.id, p_period: f.period.trim(), p_question: f.q.trim(), p_answer: f.a.trim() });
     UI.reactForm = { no: f.no, period: f.period, q: '', a: '' };
     await refresh();
     render();
-    return toast(`신청했어요 · 부총대 확인을 기다려요 (오늘 ${used}/${REACT_MAX})`);
+    return toast(`신청했어요 · 부총대 확인을 기다려요${R0 ? ` (오늘 ${R0.today + 1}/${REACT_MAX})` : ''}`);
   },
   'rx-ok': async (d) => {
     const ids = d.ids.split(',');
@@ -1750,23 +1819,30 @@ const A = {
     }
   },
   'exp-make': async () => {
-    const [from, to, label] = L.expRange(S, UI.exp, TODAY);
+    // 파일은 누른 순간의 장부로 만든다 (리액션을 받는 동안 새로 불러와도 섞이지 않게)
+    const S0 = S;
+    const [from, to, label] = L.expRange(S0, UI.exp, TODAY);
     // 리액션 내역은 상태에 다 싣지 않으니 따로 받아 온다. 서버가 아직 옛 버전이면 리액션 시트만 비운다
     let rx = [];
     let rxOk = true;
     try {
-      rx = await rpc('reaction_export', { p_token: token(), p_from: from, p_to: to });
+      // 전체 기간이면 리액션도 처음부터 끝까지 (기록이 없는 날의 리액션도 빠지지 않게. 정리하면 지워지니)
+      const all = UI.exp.range === 'all';
+      rx = await rpc('reaction_export', { p_token: token(), p_from: all ? '2000-01-01' : from, p_to: all ? '2999-12-31' : to });
     } catch (e) {
       if (e.code === '28000') throw e;
       rxOk = false;
     }
-    await downloadExport(S, from, to, `25학번_자봉_${label}.xlsx`, rx);
-    if (UI.exp.range === 'all' && rxOk) UI.fullBackup = true;
+    await downloadExport(S0, from, to, `25학번_자봉_${label}.xlsx`, rx);
+    if (UI.exp.range === 'all' && rxOk) {
+      UI.fullBackup = true;
+      UI.fullBackupVer = S0.ver;
+    }
     render();
     return toast(rxOk ? '엑셀 파일을 만들었어요' : '엑셀 파일을 만들었어요 (리액션은 불러오지 못해 빠졌어요. 서버 반영을 확인하세요)');
   },
   purge: async () => {
-    if (!UI.fullBackup || UI.purgeTyped.trim() !== '정리') return toast('전체 기간 파일과 확인 입력이 필요해요');
+    if (!UI.fullBackup || UI.fullBackupVer !== S.ver || UI.purgeTyped.trim() !== '정리') return toast('전체 기간 파일과 확인 입력이 필요해요');
     const r = await rpc('purge', { p_token: token(), p_cut: UI.purgeCut });
     UI.purgeTyped = '';
     UI.fullBackup = false;
@@ -1883,14 +1959,15 @@ const A = {
     if (d.target === '' || d.target == null) return;
     const target = Number(d.target);
     const data = await rpc('history_move', { p_token: token(), p_target: target, p_preview: true });
-    UI.hist.preview = { target, title: d.title, data };
+    // top: 화면의 작업 내역이 기준으로 삼은 맨 위 작업. 실행할 때 서버와 다르면 멈춘다
+    UI.hist.preview = { target, title: d.title, data, top: UI.hist.list?.[0]?.id ?? null };
     window.scrollTo(0, 0);
   },
   'hist-drop-pv': async (d) => {
     const id = Number(d.id);
     const restore = !!d.restore;
     const data = await rpc(restore ? 'history_restore' : 'history_drop', { p_token: token(), p_op: id, p_preview: true });
-    UI.hist.preview = { drop: id, restore, title: restore ? '다시 살리기' : '이 작업만 되돌리기', data };
+    UI.hist.preview = { drop: id, restore, title: restore ? '다시 살리기' : '이 작업만 되돌리기', data, top: UI.hist.list?.[0]?.id ?? null };
     window.scrollTo(0, 0);
   },
   'myno-set': (d) => {
@@ -1923,11 +2000,22 @@ const A = {
     render();
     return toast('되돌렸어요 · 작업 내역에서 다시 살릴 수 있어요');
   },
+  'hist-retry': () => {
+    UI.hist = { ...UI.hist, list: null, error: null, loading: false };
+  },
   'hist-cancel': () => {
     UI.hist.preview = null;
   },
   'hist-run': async () => {
     const p = UI.hist.preview;
+    // 미리보기 뒤에 다른 사람이 새 작업을 했으면(학생 신청 등) 그 작업까지 되돌리게 되므로 멈춘다
+    const top = (await rpc('ops_list', { p_token: token(), p_limit: 1 }))[0]?.id ?? null;
+    if (top !== p.top) {
+      UI.hist = { ...UI.hist, list: null, preview: null, loading: false };
+      await refresh();
+      render();
+      return toast('그사이 새 작업이 생겼어요. 작업 내역을 새로 불러왔으니 다시 확인해 주세요');
+    }
     if (p.drop) await rpc(p.restore ? 'history_restore' : 'history_drop', { p_token: token(), p_op: p.drop, p_preview: false });
     else await rpc('history_move', { p_token: token(), p_target: p.target, p_preview: false });
     UI.hist.preview = null;
@@ -2114,26 +2202,19 @@ async function boot() {
   }
   render();
   if (!configured) return;
+  // 로그인돼 있으면 직책(부총대/총대단)은 처음으로 불러오기에 성공한 뒤에 정한다 (refresh 안에서).
+  // 실패한 채로 정하면 직책 목록이 비어 부총대가 총대단 화면에 떨어진다
+  UI.roleSet = !UI.user;
   await refresh();
-  if (UI.user) {
-    UI.role = roleOf(UI.user);
-    UI.tab = tabsOf(UI.role)[0][0];
-  }
   render();
   let timer;
   onChange(() => {
     clearTimeout(timer);
-    timer = setTimeout(async () => {
-      await refresh();
-      softRender();
-    }, 300);
+    timer = setTimeout(refreshBg, 300);
   });
   // 오래 켜 둔 화면이 날짜를 넘기면 오늘 날짜를 다시 맞춘다
-  document.addEventListener('visibilitychange', async () => {
-    if (document.visibilityState === 'visible') {
-      await refresh();
-      softRender();
-    }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') refreshBg();
   });
 }
 

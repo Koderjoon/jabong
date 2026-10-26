@@ -479,8 +479,14 @@ test('학생 상세(부총대): 수정 이력 펼치기, 무효 표시, 기록�
   assert.match(rev, /점수/);
   await A.fits('학생 상세');
   await A.click('[data-act="to-record"]');
-  assert.equal(await A.page.inputValue('#recFilter'), '1');
-  await A.page.fill('#recFilter', '');
+  // 번호로 찾는 대신 그 학생 것만 (명단에서 빠진 학생이 같은 번호였어도 섞이지 않게)
+  assert.equal(await A.page.inputValue('#recFilter'), '');
+  assert.match(await A.text(), /1번 김민서 학생 것만 보는 중/);
+  const recNos = () => A.page.$$eval('#rec-list .rec-row .mono', (r) => [...new Set(r.map((x) => x.textContent))]);
+  assert.deepEqual(await recNos(), ['1번']);
+  await A.click('[data-act="rec-all"]');
+  assert.equal(await A.has('[data-act="rec-all"]'), false);
+  assert.ok((await recNos()).length > 1);
   await A.tab('board');
   await A.click('#board-grid .tile:has(.no:text-is("2"))');
   await A.click('[data-act="back"]');
@@ -1165,11 +1171,14 @@ test('작업 내역: 뒤로가기·앞으로 가기, 그만두기, 이 작업만
   list = await rows();
   assert.match(list[1], /지금 여기/);
   assert.match(await A.text('#view .rec-row >> nth=0'), /뒤로 감/);
+  const back = '#view .warn:has-text("뒤로 간 상태")';
+  assert.match(await A.text(back), /앞으로 갈 수 있는 작업 1개가 사라져요/);
   assert.equal((await one(`select count(*)::int as n from ops`)).n, nops, '이동은 작업 내역에 남지 않는다');
   await A.click('[data-title="앞으로 가기"]');
   assert.match(await A.text('.card[style*="warn"]'), /다시 적용할 작업 1개/);
   assert.equal(await A.toast('[data-act="hist-run"]'), '이동했어요');
   assert.equal(await sig(), start);
+  assert.equal(await A.has(back), false, '맨 끝이면 경고 없음');
   // 이 작업만 되돌리기 → 다시 살리기
   const row = (t) => `#view .rec-row:has-text("${t}")`;
   await A.click(`${row('기록: 소치 실습')} [data-act="hist-drop-pv"]`);
@@ -1188,9 +1197,21 @@ test('작업 내역: 뒤로가기·앞으로 가기, 그만두기, 이 작업만
   assert.equal((await one(`select count(*)::int as n from students`)).n, 0);
   list = await rows();
   assert.match(list.at(-1), /지금 여기/);
-  await A.click('#view .rec-row >> nth=0 >> [data-act="hist-pv"]');
+  // "이 작업만 되돌리기"로 빼 둔 작업은 앞으로 가도 다시 적용되지 않으므로 세지 않는다
+  const live = (await one(`select count(*)::int as n from ops where not dropped`)).n;
+  const dropped = (await one(`select count(*)::int as n from ops where dropped`)).n;
+  assert.match(await A.text(back), new RegExp(`앞으로 갈 수 있는 작업 ${live}개와 빼 둔 작업 ${dropped}개가 사라져요`));
+  await A.click(`${back} [data-title="맨 끝으로 돌아가기"]`);
+  assert.match(await A.text('.card[style*="warn"]'), new RegExp(`다시 적용할 작업 ${live}개`));
+  await A.click('[data-act="hist-cancel"]');
+  await A.click('#view .rec-row >> nth=1 >> [data-act="hist-pv"]');
+  assert.equal(await A.toast('[data-act="hist-run"]'), '이동했어요');
+  assert.match(await A.text(back), /작업 1개가 사라져요/);
+  await A.click(`${back} [data-title="맨 끝으로 돌아가기"]`);
+  assert.match(await A.text('.card[style*="warn"]'), /다시 적용할 작업 1개/);
   assert.equal(await A.toast('[data-act="hist-run"]'), '이동했어요');
   assert.equal(await sig(), start);
+  assert.equal(await A.has(back), false);
   // 50개가 넘으면 "더 보기"
   const tok = await A.token();
   for (let i = 0; i < 50; i++) await db.query(`select my_presets_save($1, (select json_agg(json_build_object('name', name, 'points', points) order by sort) from presets where owner = '부총대' and kind = 'item')::jsonb)`, [tok]);
@@ -1375,6 +1396,19 @@ test('백업: 받기 → 데이터 바꾸기 → 파일로 되살리기(미리�
 test('보관 후 정리: 전체 파일 먼저, 확인 입력, 점수 그대로, 작업 내역 비움', async () => {
   await A.tab('manage');
   assert.match(await A.text(), /먼저 공지 탭 → 내보내기에서 전체 기간 파일을 만들어야/);
+  assert.ok(await A.page.isDisabled('#purge-typed'));
+  await A.tab('notice');
+  await A.click('[data-act="exp-range"][data-v="all"]');
+  await A.download('[data-act="exp-make"]');
+  await A.tab('manage');
+  assert.match(await A.text(), /전체 기간 파일을 받았어요/);
+  // 파일을 받은 뒤 장부가 바뀌면 (다른 기기에서 기록) 그 기록이 파일에 없으므로 다시 받게 한다
+  // (점수는 그대로 두려고 하나 주고 바로 무효 처리)
+  const tok = await A.token();
+  await db.query(`select add_entries($1, $2, array[(select id from students where no = 1 and active)], '받은 뒤 기록', '', 1)`, [tok, TODAY]);
+  await db.query(`select void_entry($1, (select id from ledger where item = '받은 뒤 기록'), '시험')`, [tok]);
+  await A.page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await A.page.waitForSelector('#view .warn:has-text("받은 뒤 장부가 바뀌었어요")');
   assert.ok(await A.page.isDisabled('#purge-typed'));
   await A.tab('notice');
   await A.click('[data-act="exp-range"][data-v="all"]');
@@ -1967,7 +2001,8 @@ test('리액션 이월 맞추기(부총대, 붙여넣기)와 전체 리액션 �
   assert.equal(await S.has('[data-act="rx-more"]'), false);
   assert.match(await S.text('#rx-feed .rx-feed:last-child'), /옛 질문 1/, '가장 오래된 것이 맨 아래');
   await db.query(`delete from reactions where question like '옛 질문%'`);
-  // 엑셀 내보내기에 리액션 내역이 들어간다 (전체 기간)
+  // 엑셀 내보내기에 리액션 내역이 들어간다 (전체 기간 — 자봉 기록이 하나도 없는 날의 리액션도)
+  await db.query(`insert into reactions (student_id, date, period, question, answer, status) values ($1, '2001-02-03', '옛날 교시', '기록 없는 날 질문', '대답', 'approved')`, [z.id]);
   await A.tab('notice');
   await A.click('[data-act="exp-range"][data-v="all"]');
   const file = await A.download('[data-act="exp-make"]');
@@ -1976,6 +2011,7 @@ test('리액션 이월 맞추기(부총대, 붙여넣기)와 전체 리액션 �
   assert.match(xl, /승인 · 상점 반영/);
   assert.match(xl, /수업 내용과 달라요/, '반려 사유');
   assert.doesNotMatch(xl, /부총대 조정/, '이월 줄은 안 들어간다');
+  assert.match(xl, /기록 없는 날 질문/, '전체 기간이면 기록이 없는 날의 리액션도 (정리 전에 남겨야 하니)');
   assert.doesNotMatch(xl, /박하준/, '이름은 안 들어간다');
 });
 
@@ -1989,7 +2025,175 @@ test('서버에 못 닿으면 "불러오지 못했어요"와 다시 시도', asy
   await R.page.context().close();
 });
 
+test('불러오기 실패: 작업 내역은 계속 다시 부르지 않고 다시 시도 버튼, 부총대는 다시 시도 뒤에도 부총대 화면, 리액션도 다시 시도', async () => {
+  const tok = await A.token();
+  // 로그인된 부총대가 처음 불러오기에 실패한 뒤 다시 시도 → 부총대 화면 (총대단 로그인 화면이 아니라)
+  const P = await open({
+    beforeGoto: async (ctx) => {
+      await ctx.addInitScript((t) => localStorage.setItem('jabong-session', JSON.stringify({ token: t, role: '부총대' })), tok);
+      await ctx.route('**/rest/v1/rpc/private_state', (r) => r.abort(), { times: 1 });
+    },
+  });
+  assert.match(await P.text(), /불러오지 못했어요/);
+  await P.click('[data-act="reload"]');
+  await P.page.waitForSelector('#tabs button');
+  assert.deepEqual(await P.tabs(), ['출석', '자봉', '요청함', '공지', '작업 내역', '관리', '현황판']);
+  // 작업 내역: 실패하면 한 번만 부르고 다시 시도 버튼
+  let n = 0;
+  await P.page.route('**/rest/v1/rpc/ops_list', (r) => (n++, r.fulfill({ status: 500, contentType: 'application/json', body: '{"message":"서버 오류"}' })));
+  await P.click('#tabs [data-tab="history"]');
+  await P.page.waitForSelector('[data-act="hist-retry"]');
+  await P.page.waitForTimeout(1000);
+  assert.equal(n, 1, `실패해도 저절로 다시 부르지 않는다 (${n}번 부름)`);
+  assert.match(await P.text(), /작업 내역을 불러오지 못했어요: 서버 오류/);
+  await P.page.unroute('**/rest/v1/rpc/ops_list');
+  await P.click('[data-act="hist-retry"]');
+  await P.page.waitForSelector('[data-act="hist-pv"]');
+  assert.doesNotMatch(await P.text(), /불러오지 못했어요/);
+  await P.page.context().close();
+  // 리액션: 실패는 "불러오지 못했어요"와 다시 시도 (빈 내역처럼 보이지 않게)
+  const R = await open({ beforeGoto: (ctx) => Promise.all([ctx.route('**/rest/v1/rpc/reaction_feed', (r) => r.abort()), ctx.route('**/rest/v1/rpc/my_reactions', (r) => r.abort())]) });
+  await R.tab('react');
+  await R.page.waitForSelector('#view .warn');
+  assert.match(await R.text(), /리액션 내역을 불러오지 못했어요/);
+  assert.doesNotMatch(await R.text(), /아직 리액션이 없어요/);
+  await R.page.fill('#rx-no', '1');
+  await R.page.waitForFunction(() => /내 리액션을 불러오지 못했어요/.test(document.getElementById('view').textContent));
+  await R.page.context().unroute('**/rest/v1/rpc/reaction_feed');
+  await R.page.context().unroute('**/rest/v1/rpc/my_reactions');
+  await R.click('[data-act="rx-retry"]');
+  await R.page.waitForSelector('#rx-prog');
+  assert.doesNotMatch(await R.text(), /불러오지 못했어요/);
+  // 불러온 뒤 다시 부르기에 실패하면 지난 숫자는 두고 알린다 (조용히 지난 숫자만 보이지 않게)
+  await R.page.context().route('**/rest/v1/rpc/my_reactions', (r) => r.abort());
+  await db.query(`update app_version set version = version + 1 where id = 1`);
+  await R.page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await R.page.waitForFunction(() => /내 리액션을 새로 불러오지 못했어요/.test(document.getElementById('view').textContent));
+  assert.ok(await R.has('#rx-prog'));
+  await R.page.context().close();
+});
+
+test('학생 상세: 띄어쓰기 없는 긴 세부내용(주소)이 있어도 좁은 폰에서 옆으로 넘치지 않는다, 안내는 화면 읽기 프로그램이 읽는다', async () => {
+  const sid1 = (await one(`select id from students where active order by no limit 1`)).id;
+  await db.query(`select add_entries($1, '2026-01-20', array[$2]::uuid[], '자료 미제출', $3, 1)`, [await A.token(), sid1, 'https://docs.google.com/spreadsheets/d/' + 'x'.repeat(150)]);
+  const N = await open({ width: 320, height: 640 });
+  await N.click('#board-grid .tile');
+  await N.page.waitForSelector('.evs');
+  await N.fits('320 학생 상세 긴 주소');
+  assert.equal(await N.page.getAttribute('#toast', 'role'), 'status');
+  await N.page.context().close();
+  await db.query(`select void_entry($1, (select id from ledger where item = '자료 미제출'), '시험')`, [await A.token()]);
+});
+
 // ───────── 로그인 유지·만료 ─────────
+test('제외된 학생은 번호 옆 (제외), 번호로 찾으면 지금 그 번호인 학생만, 공결 대기 중 출결이 정정되면 요청함에 표시하고 승인은 막는다', async () => {
+  const tok = await A.token();
+  const st = await one(`select id, no, name from students where active order by no desc limit 1`);
+  await db.query(`select add_entries($1, $2, array[$3::uuid], '결석', '정정 시험', 2)`, [tok, TODAY, st.id]);
+  const lid = (await one(`select id from ledger where detail = '정정 시험'`)).id;
+  await db.query(`select create_excuse($1, $2, '병원', null)`, [st.id, lid]);
+  await db.query(`select void_entry($1, $2, '착오')`, [tok, lid]);
+  await A.reload();
+  await A.tab('inbox');
+  const card = `.card:has(.req-body b:text-matches("^${st.no}번"))`;
+  assert.match(await A.text(card), /\(그사이 정정되어 이미 무효\)/);
+  assert.match(await A.toast(`${card} [data-act="exc-ok"]`), /그사이 정정되어 이미 무효예요/);
+  const id = await A.page.getAttribute(`${card} [data-act="exc-no"]`, 'data-id');
+  await A.page.fill(`#note-${id}`, '이미 정정됨');
+  assert.equal(await A.toast(`${card} [data-act="exc-no"]`), '반려했어요');
+  // 명단에서 제외하면 자봉 목록·요청함 등에서 번호 옆에 (제외)
+  await A.tab('manage');
+  await A.page.click('summary:has-text("명단 하나씩 고치기")');
+  assert.equal(await A.toast(`.mrow:has(.no-in[value="${st.no}"]) [data-act="stu-toggle"]`), '명단에서 제외했어요 (기록은 남아요)');
+  await A.tab('record');
+  await A.page.fill('#recFilter', '정정 시험');
+  assert.match(await A.text('#rec-list'), new RegExp(`${st.no}\\(제외\\)번`));
+  await A.page.fill('#recFilter', String(st.no));
+  assert.doesNotMatch(await A.text('#rec-list'), /정정 시험/, '번호로 찾으면 제외된 학생 것은 섞이지 않는다');
+  await A.page.fill('#recFilter', `${st.no}(제외)`);
+  assert.match(await A.text('#rec-list'), /정정 시험/, '보이는 대로 "번호(제외)"로 찾는다');
+  await A.page.fill('#recFilter', '');
+  await A.tab('manage');
+  if (!(await A.page.$eval('details:has([data-act="stu-add"])', (d) => d.open))) await A.page.click('summary:has-text("명단 하나씩 고치기")');
+  assert.equal(await A.toast(`.mrow:has(.name-in[value="${st.name}"]) [data-act="stu-toggle"]`), `${st.no}번으로 복귀했어요`);
+});
+
+test('하루 전체 공결 중 그사이 정정된 줄만 반려되면 "일부 승인"과 반려된 줄 표시 (요청함·학생 신청 내역)', async () => {
+  const tok = await A.token();
+  const st = await one(`select id, no from students where active order by no limit 1 offset 1`);
+  const D = '2026-07-15';
+  await db.query(`select add_entries($1, $2, array[$3::uuid], '결석', '7월 시험 1교시', 2)`, [tok, D, st.id]);
+  await db.query(`select add_entries($1, $2, array[$3::uuid], '지각', '7월 시험 2교시', 1)`, [tok, D, st.id]);
+  assert.equal((await one(`select create_excuse_day($1, $2, '병원', null) as n`, [st.id, D])).n, 2);
+  await db.query(`select void_entry($1, (select id from ledger where detail = '7월 시험 2교시'), '착오')`, [tok]);
+  await A.reload();
+  await A.tab('inbox');
+  const card = `.card:has(.req-body b:text-matches("^${st.no}번")):has([data-act="exc-ok"])`;
+  assert.match(await A.text(card), /\(그사이 정정되어 이미 무효\)/);
+  assert.match(await A.toast(`${card} [data-act="exc-ok"]`), /하루 전체 공결을 승인했어요/);
+  const done = `.card:has(.req-body b:text-matches("^${st.no}번")):has-text("7/15")`;
+  assert.match(await A.text(`${done} .pill`), /공결 일부 승인/);
+  assert.match(await A.text(done), /2교시 지각 \(반려\)/);
+  assert.doesNotMatch(await A.text(done), /1교시 결석 \(반려\)/);
+  assert.match(await A.text(done), /반려 사유: 그사이 정정되어 이미 무효인 출결/);
+  await S.reload();
+  await S.tab('excuse');
+  await S.page.fill('#exc-no', String(st.no));
+  assert.match(await S.text('#view .card:has-text("7/15") .pill'), /일부 승인/);
+});
+
+test('작업 내역: 맨 끝의 빼 둔 작업도 "맨 끝으로" 제자리에, 미리보기 뒤 다른 사람의 새 작업이 생기면 멈춤, 돌아오면 새로 불러옴, 탭을 빠르게 두 번 눌러도 불러옴', async () => {
+  const tok = await A.token();
+  // 다른 기기에서 한 작업 (자주 쓰는 항목 그대로 저장)
+  const other = () => db.query(`select my_presets_save($1, (select json_agg(json_build_object('name', name, 'points', points) order by sort) from presets where owner = '부총대' and kind = 'item')::jsonb)`, [tok]);
+  await other();
+  await other();
+  await db.query(`select history_drop($1, (select max(id) from ops), false)`, [tok]);
+  // 탭을 빠르게 두 번 눌러도(불러오는 중에 다시) 다음에 다시 열 때 "불러오는 중"에 갇히지 않는다
+  await A.tab('board');
+  // 첫 불러오기를 늦춰서 두 번째 누름이 반드시 불러오는 중에 오게 한다
+  await A.page.route('**/rest/v1/rpc/ops_list', async (r) => (await new Promise((ok) => setTimeout(ok, 400)), r.continue()), { times: 1 });
+  await A.page.evaluate(() => {
+    // (탭 줄은 다시 그려지므로 두 번째도 새로 찾는다)
+    const b = () => document.querySelector('#tabs [data-tab="history"]');
+    b().click();
+    setTimeout(() => b().click(), 100);
+  });
+  await A.page.waitForSelector('[data-title="뒤로가기"]');
+  await A.tab('board');
+  await A.tab('history');
+  await A.page.waitForSelector('[data-title="뒤로가기"]');
+  const back = '#view .warn:has-text("뒤로 간 상태")';
+  assert.equal(await A.has(back), false, '빼 둔 작업이 제자리면 경고 없음');
+  await A.click('[data-title="뒤로가기"]');
+  assert.equal(await A.toast('[data-act="hist-run"]'), '이동했어요');
+  assert.match(await A.text(back), /앞으로 갈 수 있는 작업 1개와 빼 둔 작업 1개가 사라져요/);
+  await A.click('[data-title="앞으로 가기"]');
+  assert.equal(await A.toast('[data-act="hist-run"]'), '이동했어요');
+  // 앞으로 와도 빼 둔 작업은 아직 "뒤로 감" 쪽이라 새 작업에 지워진다 → 경고와 맨 끝으로 (앞으로 가기도 맨 끝으로)
+  assert.match(await A.text(back), /빼 둔 작업 1개가 사라져요/);
+  assert.ok(await A.page.isEnabled('[data-title="앞으로 가기"]'));
+  assert.equal(await A.page.getAttribute('[data-title="앞으로 가기"]', 'data-target'), await A.page.getAttribute(`${back} [data-title="맨 끝으로 돌아가기"]`, 'data-target'));
+  await A.click(`${back} [data-title="맨 끝으로 돌아가기"]`);
+  assert.match(await A.text('.card[style*="warn"]'), /빼 둔 작업만 제자리로 옮겨요/);
+  assert.equal(await A.toast('[data-act="hist-run"]'), '이동했어요');
+  assert.equal(await A.has(back), false);
+  assert.equal((await one(`select undone from ops where id = (select max(id) from ops)`)).undone, false);
+  // 미리보기를 띄운 뒤 다른 사람이 새 작업을 하면 실행하지 않고 새로 불러온다 (그 작업까지 되돌리지 않게)
+  await A.click('[data-title="뒤로가기"]');
+  await other();
+  assert.match(await A.toast('[data-act="hist-run"]'), /그사이 새 작업이 생겼어요/);
+  assert.equal((await one(`select count(*)::int as n from ops where undone and not dropped`)).n, 0, '아무것도 되돌리지 않았다');
+  await A.page.waitForSelector('[data-title="뒤로가기"]');
+  assert.equal(await A.has('[data-act="hist-run"]'), false);
+  // 화면으로 돌아오면(또는 다른 기기의 변경 알림) 작업 내역도 새로 불러온다
+  await other();
+  const nid = (await one(`select max(id)::int as id from ops`)).id;
+  assert.equal(await A.has(`[data-act="hist-drop-pv"][data-id="${nid}"]`), false);
+  await A.page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await A.page.waitForSelector(`[data-act="hist-drop-pv"][data-id="${nid}"]`);
+});
+
 test('새로고침해도 로그인 유지, 서버에서 로그인이 지워지면 다음 동작에서 로그아웃', async () => {
   await A.reload();
   assert.match(await A.text('#subbar'), /부총대로 로그인됨/);

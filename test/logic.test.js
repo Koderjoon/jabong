@@ -146,6 +146,19 @@ test('내보내기 시트: 기간 시작·변동·현재 자봉, 이름은 넣�
   assert.ok(!JSON.stringify({ summary, rows, revisions }).includes('학생1'));
 });
 
+test('내보내기 시트: 보관 후 정리의 이월 줄은 기간 안 날짜여도 기간 시작 점수로 센다', () => {
+  const S = state();
+  // 9/10에 정리해서 그 전 기록이 이월 5점 한 줄로 합쳐진 상태
+  S.add('2026-09-10', '이월', '', 5, [1], { src: 'carry' });
+  S.add('2026-09-12', '지각', '1교시', 1, [1]);
+  assert.deepEqual(exportSheets(S, '2026-09-01', '2026-09-30').summary[0], { no: 1, start: 5, change: 1, end: 6, now: 6 });
+  // 이월 날짜가 기간 뒤면 그 기간에는 없던 것
+  assert.deepEqual(exportSheets(S, '2026-08-01', '2026-08-31').summary[0], { no: 1, start: 0, change: 0, end: 0, now: 6 });
+  // 기간 끝 = 지금 (기간이 모든 기록을 덮으면)
+  const all = exportSheets(S, '2026-03-01', '2026-12-31').summary[0];
+  assert.equal(all.end, bal(S, 's1'));
+});
+
 test('0.5점: 공지 문구, 합계, 명단 붙여넣기', () => {
   const S = state();
   S.add('2026-09-26', '실습', '', 0.5, [3, 1]);
