@@ -79,6 +79,16 @@ GitHub 저장소 → **Settings → Secrets and variables → Actions → New re
 **Actions** 탭 → "잠들지 않게 깨우기" → **Run workflow**로 한 번 돌려서 초록불이 뜨는지 확인한다.
 만약 멈췄다면 Supabase 대시보드에서 **Restore project**를 누르면 데이터 그대로 다시 켜진다.
 
+### 5. 서버 반영 버튼 (권장)
+
+서버(`supabase/schema.sql`)가 바뀌었을 때 SQL Editor에 붙여넣는 대신, GitHub의 버튼 하나로 반영한다. 폰 브라우저에서도 된다.
+
+1. Supabase 대시보드 위쪽 **Connect** → **Session pooler**의 주소(`postgresql://postgres.xxxx:[YOUR-PASSWORD]@aws-…pooler.supabase.com:5432/postgres`)를 복사한다. Direct connection 주소는 GitHub에서 접속이 안 된다.
+2. `[YOUR-PASSWORD]`를 데이터베이스 비밀번호로 바꾼다. 모르면 **Project Settings → Database → Reset database password**로 새로 정한다 (앱은 이 비밀번호를 쓰지 않아서 바꿔도 앱에는 영향이 없다).
+3. GitHub 저장소 → **Settings → Secrets and variables → Actions → New repository secret**: Name `SUPABASE_DB_URL`, Value에 2의 주소.
+
+쓸 때: **Actions** 탭 → **서버 반영** → **Run workflow**. 그 버전의 테스트가 통과했을 때만 실행되고, 한 덩어리로 실행해서 중간에 실패하면 아무것도 바뀌지 않는다. 이 주소는 데이터베이스 비밀번호가 들어 있으니 Secrets 말고 다른 곳에 적지 않는다.
+
 ## 운영 메모
 
 - **무료 한도**: 데이터베이스 500MB. 기록은 글자라 몇 년을 써도 수 MB다. 증빙 사진은 약 50~100KB로 줄여 저장하고, 처리 180일 뒤 자동으로 지운다.
