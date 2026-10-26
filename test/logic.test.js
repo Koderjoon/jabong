@@ -315,6 +315,9 @@ test('제외된 학생의 번호를 다른 학생이 쓰면 공지·날짜별 �
   S.ledger.push({ id: 'x1', at: '2026-09-23 09:00', date: '2026-09-23', sid: 'n3', item: '청소', detail: '', points: 1, src: 'manual', revs: [] });
   assert.equal(genNotice(S, '2026-09-23', '2026-09-23'), '😿 9/23 자봉, 상점 공지하겠습니다.\n청소(+1): 3 (제외), 3, 5');
   assert.deepEqual(exportSheets(S, '2026-09-01', '2026-09-30').rows.map((r) => r.no), ['3 (제외)', 3, 5]);
+  // 수정 이력 시트도 같은 표시
+  S.ledger.forEach((x) => (x.revs = [{ at: '2026-09-23 10:00', before: { points: 2 }, after: { points: 1 }, reason: '오기' }]));
+  assert.deepEqual(exportSheets(S, '2026-09-01', '2026-09-30').revisions.map((r) => r.no).sort(), [3, '3 (제외)', 5].sort());
 });
 
 test('명단 붙여넣기: "현재 명단 복사"로 나온 이름 없는 학생 줄은 그대로 둔다', () => {

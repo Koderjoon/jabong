@@ -32,11 +32,11 @@ select pg_temp.ok((select count(*) from presets where owner = '부총대') = 6 a
 -- ───────── 1. 노출과 권한 ─────────
 select pg_temp.ok(
   (select array_agg(p.proname::text order by p.proname::text) from pg_proc p where p.pronamespace = 'public'::regnamespace and has_function_privilege('anon', p.oid, 'execute'))
-  = (select array_agg(x order by x) from unnest(array['public_state', 'create_excuse', 'create_excuse_day', 'create_reaction', 'review_reaction', 'login', 'recover', 'private_state', 'logout', 'get_photo',
+  = (select array_agg(x order by x) from unnest(array['public_state', 'create_excuse', 'create_excuse_day', 'create_reaction', 'my_reactions', 'review_reaction', 'login', 'recover', 'private_state', 'logout', 'get_photo',
       'create_request', 'change_pw', 'reset_pw', 'new_recovery', 'ensure_period', 'delete_period', 'rename_period', 'save_attendance', 'request_attendance', 'review_attendance',
       'add_entries', 'edit_entry', 'void_entry', 'review_request', 'review_excuse', 'roster_apply', 'my_presets_save', 'my_periods_save', 'purge', 'backup_dump',
       'restore_backup', 'history_move', 'history_drop', 'history_restore', 'ops_list']) x),
-  '브라우저(anon)에 열린 함수가 정확히 화면이 쓰는 35개');
+  '브라우저(anon)에 열린 함수가 정확히 화면이 쓰는 36개');
 select pg_temp.ok(not exists (select 1 from pg_proc p where p.pronamespace = 'public'::regnamespace
   and has_function_privilege('anon', p.oid, 'execute') <> has_function_privilege('authenticated', p.oid, 'execute')), 'anon과 authenticated 권한이 같음');
 select pg_temp.ok(not exists (select 1 from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname !~ '^_'
@@ -827,7 +827,9 @@ set role postgres;
 select pg_temp.ok((select bool_and(date = (now() at time zone 'Asia/Seoul')::date and status = 'pending') from reactions where student_id = :'d1'), '날짜는 서버의 한국 오늘');
 select pg_temp.ok((select period || '/' || question || '/' || answer from reactions where id = :'rx1') = '1교시 해부학/하악신경 분지는?/설신경', '앞뒤 공백 다듬기');
 select pg_temp.ok((select summary from ops order by id desc limit 1) like '리액션 신청: %번 %/% 2교시', '신청 작업 요약');
-select pg_temp.ok((select count(*) from json_array_elements(public_state() -> 'reactions')) = 3 and (public_state() ->> 'today') = to_char(now() at time zone 'Asia/Seoul', 'YYYY-MM-DD'), '공개 상태에 리액션과 오늘');
+select pg_temp.ok((select count(*) from json_array_elements(private_state(:'t') -> 'reactions')) = 3 and (public_state() ->> 'today') = to_char(now() at time zone 'Asia/Seoul', 'YYYY-MM-DD'), '부총대 상태에 리액션, 오늘 날짜');
+select pg_temp.ok(json_array_length(public_state() -> 'reactions') = 0 and position('하악신경' in public_state()::text) = 0, '공개 상태에는 리액션 글이 없다 (가볍게)');
+select pg_temp.ok((my_reactions(:'d1') ->> 'today')::int = 3 and json_array_length(my_reactions(:'d1') -> 'rows') = 3 and (my_reactions(:'d1') -> 'rows' -> 0 ->> 'q') = '질문', '학생 자기 리액션은 따로 (최신부터)');
 set role anon;
 -- 승인·반려는 부총대만, 반려 사유 필수
 select pg_temp.expect(format('select review_reaction(%L, array[%L]::uuid[], true, null)', :'ct', :'rx1'), '42501', '총대는 승인 못 함');
@@ -899,5 +901,46 @@ select restore_backup(:'t', :'rdump'::jsonb);
 set role postgres;
 select pg_temp.ok((select count(*) from reactions) = jsonb_array_length(:'rdump'::jsonb -> 'tables' -> 'reactions'), '리액션 되살리기');
 \echo 20. 리액션 상점 통과
+
+-- ───────── 21. 3차 검토 ─────────
+set role postgres;
+select id as rs4 from students where active order by no offset 3 limit 1 \gset
+-- 늦게 승인해도 상점 날짜는 승인한 날 (이미 낸 공지 날짜로 들어가지 않게)
+insert into reactions (student_id, date, period, question, answer, created_at)
+select :'rs4', (now() at time zone 'Asia/Seoul')::date - 2, '1교시', '그제 ' || k, '대답', now() - interval '2 days' + k * interval '1 minute' from generate_series(1, 3) k;
+select array_agg(id)::text as rs4ids from reactions where student_id = :'rs4' \gset
+set role anon;
+select pg_temp.ok(review_reaction(:'t', :'rs4ids'::uuid[], true, null) = 1, '그제 것 3개 승인');
+set role postgres;
+select pg_temp.ok((select date from ledger where student_id = :'rs4' and src = 'reaction') = (now() at time zone 'Asia/Seoul')::date, '상점 날짜는 승인한 날');
+select pg_temp.ok((my_reactions(:'rs4') ->> 'merits')::int = 1 and (my_reactions(:'rs4') ->> 'prog')::int = 0, '받은 상점 수');
+-- 같은 학생의 리액션을 뒤에서 또 처리했으면 앞의 승인만 빼거나 살릴 수 없다 (3개당 1점이 어긋나지 않게)
+set role anon;
+select create_reaction(:'rs4', '1교시', 'h1', 'a') as h1 \gset
+select create_reaction(:'rs4', '1교시', 'h2', 'a') as h2 \gset
+select review_reaction(:'t', array[:'h1']::uuid[], true, null);
+set role postgres;
+select max(id) as oph1 from ops where kind = 'review_reaction' \gset
+set role anon;
+select review_reaction(:'t', array[:'h2']::uuid[], true, null);
+select pg_temp.expect_msg(format('select history_drop(%L, %s, false)', :'t', :oph1), '%같은 학생의 리액션을 처리한 작업%', '앞의 승인만 빼기 막음');
+set role postgres;
+select max(id) as oph2 from ops where kind = 'review_reaction' \gset
+set role anon;
+select history_drop(:'t', :oph2, false);
+set role postgres;
+select pg_temp.ok((my_reactions(:'rs4') ->> 'prog')::int = 1, '맨 뒤 승인은 뺄 수 있고, 빼면 이월 1');
+set role anon;
+select history_restore(:'t', :oph2, false);
+set role postgres;
+select pg_temp.ok((my_reactions(:'rs4') ->> 'prog')::int = 2, '다시 살리면 이월 2');
+-- "아침 출석"은 아침 출석만 쓰는 이름
+set role anon;
+select pg_temp.expect_msg(format('select ensure_period(%L, %L, %L, false)', :'t', '2026-07-01', '아침 출석'), '"아침 출석"은 교시 이름으로 쓸 수 없어요', '교시로 아침 출석 추가');
+select ensure_period(:'t', '2026-07-01', '1교시', false) as ap1 \gset
+select pg_temp.expect_msg(format('select rename_period(%L, %L, %L)', :'t', :'ap1', ' 아침 출석 '), '"아침 출석"은 교시 이름으로 쓸 수 없어요', '아침 출석으로 이름 바꾸기');
+select pg_temp.expect_msg(format('select ensure_period(%L, %L, %L, true)', :'t', '2026-07-01', '1교시'), '같은 이름의 교시가 이미 있어요%', '아침/교시가 다른 같은 이름');
+select pg_temp.ok(ensure_period(:'t', '2026-07-01', '아침 출석', true) is not null and ensure_period(:'t', '2026-07-01', '아침 출석', true) = ensure_period(:'t', '2026-07-01', '아침 출석', true), '아침 출석은 그대로');
+\echo 21. 3차 검토 통과
 
 \echo 모든 서버 함수 테스트 통과

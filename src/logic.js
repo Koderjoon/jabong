@@ -307,7 +307,7 @@ export function exportSheets(S, from, to) {
         revisions.push({
           at: r.at,
           date: x.date,
-          no: no(x.sid),
+          no: noLabel(S, x.sid),
           change: Object.keys(r.after)
             .map((k) => `${fieldName(k)}: ${fmtVal(k, r.before[k])} → ${fmtVal(k, r.after[k])}`)
             .join(', '),

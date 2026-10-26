@@ -531,15 +531,17 @@ language sql stable security definer set search_path = public as $$
         'id', a.id, 'pid', a.period_id, 'statuses', a.statuses, 'by', a.requested_by, 'status', a.status,
         'note', a.review_note, 'reviewer', a.reviewed_by, 'at', _kst(a.created_at), 'reviewedAt', _kst(a.reviewed_at)
       ) order by a.created_at), '[]') from attendance_requests a) else '[]'::json end,
-    -- 리액션: 대기 중인 것과 최근 30일 것만 (전부 보내면 학기 말에 무거워진다). 이월 중인 개수는 학생별로 따로.
-    'reactions', (select coalesce(json_agg(json_build_object(
+    -- 리액션: 글(질문·대답)은 부총대 화면에만, 대기 중인 것과 최근 14일 처리한 것. 학생 화면은 my_reactions로 자기 것만 받는다.
+    -- (모두 싣으면 학기 중에 수 MB가 되어, 바뀔 때마다 모든 폰이 다시 받는다)
+    'reactions', case when p_private then (select coalesce(json_agg(json_build_object(
         'id', x.id, 'sid', x.student_id, 'date', x.date, 'period', x.period, 'q', x.question, 'a', x.answer,
         'status', x.status, 'note', x.review_note, 'merit', x.merit is not null, 'at', _kst(x.created_at),
-        'reviewer', case when p_private then x.reviewed_by end, 'reviewedAt', _kst(x.reviewed_at)
+        'reviewer', x.reviewed_by, 'reviewedAt', _kst(x.reviewed_at)
       ) order by x.created_at, x.id), '[]') from reactions x
-      where x.status = 'pending' or x.date >= (now() at time zone 'Asia/Seoul')::date - 30),
+      where x.status = 'pending' or x.reviewed_at >= now() - interval '14 days') else '[]'::json end,
     'reactProg', (select coalesce(json_object_agg(student_id, n), '{}') from
       (select student_id, count(*) as n from reactions where status = 'approved' and merit is null group by student_id) t),
+    'ver', (select version from app_version where id = 1),
     'today', to_char(now() at time zone 'Asia/Seoul', 'YYYY-MM-DD'),
     'accounts', (select json_agg(json_build_object('role', role, 'admin', is_admin, 'attend', is_admin or can_attend) order by sort) from accounts),
     -- 맨 위 작업 (부총대 화면의 "되돌리기" 버튼이 방금 한 작업인지 알아보는 데 쓴다)
@@ -748,7 +750,12 @@ declare who text := _session_attend(p_token); pid uuid;
 begin
   perform _wlock();
   if coalesce(trim(p_label), '') = '' then raise exception '교시 이름을 입력하세요'; end if;
+  -- "아침 출석"은 부총대의 아침 출석만 쓰는 이름이다 (다른 교시가 쓰면 아침 출석 저장이 그 교시를 덮어쓴다)
+  if trim(p_label) = '아침 출석' and not coalesce(p_morning, false) then raise exception '"아침 출석"은 교시 이름으로 쓸 수 없어요'; end if;
   select id into pid from periods where date = p_date and label = trim(p_label);
+  if pid is not null and (select morning from periods where id = pid) <> coalesce(p_morning, false) then
+    raise exception '같은 이름의 교시가 이미 있어요. 다른 이름을 써 주세요';
+  end if;
   if pid is null then
     perform _op(who, 'ensure_period', format('교시 추가: %s %s', to_char(p_date, 'FMMM/FMDD'), trim(p_label)));
     -- 두 사람이 같은 교시를 동시에 추가해도 오류 없이 같은 교시로
@@ -802,6 +809,7 @@ begin
   if lbl = '' then raise exception '교시 이름을 입력하세요'; end if;
   if length(lbl) > 40 then raise exception '교시 이름은 40자까지예요'; end if;
   if lbl = per.label then raise exception '지금 이름과 같아요'; end if;
+  if lbl = '아침 출석' then raise exception '"아침 출석"은 교시 이름으로 쓸 수 없어요'; end if;
   if not exists (select 1 from accounts where role = who and is_admin) and (per.saved_at is not null
       or exists (select 1 from ledger where period_id = p_id)
       or exists (select 1 from attendance_requests where period_id = p_id and requested_by <> who)) then
@@ -1004,6 +1012,18 @@ begin
   end loop;
 end $$;
 
+-- 학생 화면의 리액션: 그 학생의 대기 중인 것과 최근 30일 것, 오늘 낸 수, 이월 수, 받은 리액션 상점 수 (로그인 없음)
+create or replace function my_reactions(p_student uuid) returns json
+language sql stable security definer set search_path = public as $$
+  select json_build_object(
+    'rows', (select coalesce(json_agg(json_build_object('id', id, 'date', date, 'period', period, 'q', question, 'a', answer,
+        'status', status, 'note', review_note, 'merit', merit is not null, 'at', _kst(created_at)) order by created_at desc, id desc), '[]')
+      from reactions where student_id = p_student and (status = 'pending' or date >= (now() at time zone 'Asia/Seoul')::date - 30)),
+    'today', (select count(*) from reactions where student_id = p_student and date = (now() at time zone 'Asia/Seoul')::date and status <> 'rejected'),
+    'prog', (select count(*) from reactions where student_id = p_student and status = 'approved' and merit is null),
+    'merits', (select count(distinct merit) from reactions where student_id = p_student and merit is not null))
+$$;
+
 -- 리액션 승인·반려 (부총대, 여러 건 한 번에). 승인할 때마다 그 학생의 아직 상점이 안 된 승인 리액션을 세어
 -- 3개가 모이면 상점 1점(-1)을 만들고 그 3개에 표시한다. 만든 상점 수를 돌려준다.
 create or replace function review_reaction(p_token uuid, p_ids uuid[], p_approve boolean, p_note text) returns int
@@ -1025,7 +1045,8 @@ begin
       select array_agg(id) into g from (select id from reactions where student_id = r.student_id and status = 'approved' and merit is null
         order by created_at, id limit 3) t;
       if array_length(g, 1) = 3 then
-        mid := _entry(r.date, r.student_id, '리액션 상점', '', -1, 'reaction', null, null, who, null, who);
+        -- 상점 날짜는 승인한 날(한국 오늘): 리액션 날짜로 하면 이미 낸 공지 날짜로 들어가 공지에서 빠진다
+        mid := _entry((now() at time zone 'Asia/Seoul')::date, r.student_id, '리액션 상점', '', -1, 'reaction', null, null, who, null, who);
         update reactions set merit = mid where id = any (g);
         n := n + 1;
       end if;
@@ -1298,6 +1319,16 @@ begin
     raise exception '"%" 작업 뒤에 같은 기록을 바꾼 작업이 있어서, 이 작업만 %수 없어요. "이 시점으로"를 써 보세요',
       o.summary, case when p_restore then '다시 살릴 ' else '되돌릴 ' end using errcode = 'P0002';
   end if;
+  -- 리액션 상점은 "그 학생의 아직 안 묶인 승인 리액션 3개"로 만들어지니, 뒤의 작업이 같은 학생의 리액션을 건드렸으면
+  -- 행이 겹치지 않아도 이 작업만 빼거나 살리면 3개당 1점이 어긋난다
+  if not o.undone and exists (
+      select 1 from op_changes a join op_changes b on b.tbl = 'reactions'
+        and coalesce(b.after, b.before) ->> 'student_id' = coalesce(a.after, a.before) ->> 'student_id'
+      join ops l on l.id = b.op_id
+      where a.op_id = p_op and a.tbl = 'reactions' and l.id > p_op and not l.undone and not l.dropped and l.kind <> 'scratch') then
+    raise exception '"%" 작업 뒤에 같은 학생의 리액션을 처리한 작업이 있어서, 이 작업만 %수 없어요. "이 시점으로"를 써 보세요',
+      o.summary, case when p_restore then '다시 살릴 ' else '되돌릴 ' end using errcode = 'P0002';
+  end if;
   before := _snap();
   select count(*) into nledger from ledger where voided_at is null;
   begin
@@ -1406,8 +1437,8 @@ begin
   end loop;
   delete from excuses where ledger_id is null;
   delete from requests where status <> 'pending' and date <= p_cut;
-  -- 상점이 아직 안 된 승인 리액션은 남긴다 (이월)
-  delete from reactions where date <= p_cut and (status = 'rejected' or merit is not null);
+  -- 승인 리액션은 남긴다: 상점이 아직 안 된 것은 이월, 된 것은 받은 상점 수를 세는 데 쓴다
+  delete from reactions where date <= p_cut and status = 'rejected';
   delete from periods where date <= p_cut;
   delete from photos p where not exists (select 1 from requests where photo_id = p.id) and not exists (select 1 from excuses where photo_id = p.id);
   return json_build_object('old', old_n, 'carry', carry_n);
@@ -1433,7 +1464,7 @@ do $$ declare f text; begin
   if exists (select 1 from pg_roles where rolname = 'anon') then
     execute 'revoke execute on all functions in schema public from public, anon, authenticated';
     foreach f in array array[
-      'public_state()', 'create_excuse(uuid,uuid,text,text)', 'create_excuse_day(uuid,date,text,text)', 'create_reaction(uuid,text,text,text)', 'review_reaction(uuid,uuid[],boolean,text)', 'login(text,text)', 'recover(text,text,text)',
+      'public_state()', 'create_excuse(uuid,uuid,text,text)', 'create_excuse_day(uuid,date,text,text)', 'create_reaction(uuid,text,text,text)', 'my_reactions(uuid)', 'review_reaction(uuid,uuid[],boolean,text)', 'login(text,text)', 'recover(text,text,text)',
       'private_state(uuid)', 'logout(uuid)', 'get_photo(uuid,uuid)', 'create_request(uuid,date,uuid[],text,text,numeric,text,text)',
       'change_pw(uuid,text,text)', 'reset_pw(uuid,text,text)', 'new_recovery(uuid,text)', 'ensure_period(uuid,date,text,boolean)', 'delete_period(uuid,uuid)', 'rename_period(uuid,uuid,text)',
       'save_attendance(uuid,uuid,jsonb)', 'request_attendance(uuid,uuid,jsonb)', 'review_attendance(uuid,uuid,boolean,text)', 'add_entries(uuid,date,uuid[],text,text,numeric)', 'edit_entry(uuid,uuid,date,text,text,numeric,text)',

@@ -24,7 +24,7 @@ const token = () => getSession()?.token;
 const blankForm = () => ({ date: TODAY, preset: '', item: '', points: 1, detail: '', nums: '', find: '', reason: '', photo: '' });
 const UI = {
   role: 'student', tab: 'board', sid: null, user: null, sort: 'no', q: '',
-  attDate: TODAY, attPid: null, attView: 'list', draft: {}, touched: {}, newPeriod: '', attConfirm: false, perDel: null, perEdit: null, recalled: {},
+  attDate: TODAY, attPid: null, attView: 'list', draft: {}, touched: {}, newPeriod: '', attConfirm: false, perDel: null, perEdit: null, perName: '', recalled: {},
   recForm: blankForm(), reqForm: blankForm(), exForm: blankForm(), excForm: { no: '', eid: '', reason: '', photo: '' }, reactForm: { no: '', period: '', q: '', a: '' },
   recFilter: '', editId: null, voidId: null, openRev: {}, photos: {},
   noticeFrom: null, noticeTo: null, noticeText: null,
@@ -119,7 +119,8 @@ async function run(fn, args, msg) {
   const before = S.lastOp?.id ?? null;
   const r = await rpc(fn, { p_token: token(), ...args });
   await refresh();
-  render();
+  // 다른 카드에 적던 반려 사유 같은 글자는 남긴다
+  renderKeep();
   // 부총대가 데이터를 바꿨으면 공지 문구도 새로 만든다
   if (isAdmin()) UI.noticeText = null;
   if (msg) doneToast(typeof msg === 'function' ? msg(r) : msg, before);
@@ -470,23 +471,44 @@ function vExcuse() {
 // 날짜는 서버가 정한 오늘(S.today)이다. 하루 3번까지(반려된 것은 세지 않는다).
 const REACT_MAX = 3;
 const rxText = (r) => `${md(r.date)} ${esc(r.period)} · Q. ${esc(r.q)} · A. ${esc(r.a)}`;
+// 학생 자기 리액션은 번호를 넣었을 때만 서버에서 받아 온다 (모든 학생 것을 상태에 싣으면 학기 중에 수 MB가 된다).
+// 장부가 바뀌면(S.ver) 다시 받는다. 받는 동안에는 전에 받은 것을 보여 준다.
+let rxLoad = null; // { sid, ver, data }
+function rxData(sid) {
+  if (rxLoad && rxLoad.sid === sid && rxLoad.ver === S.ver) return rxLoad.data;
+  const want = { sid, ver: S.ver, data: rxLoad?.sid === sid ? rxLoad.data : null };
+  rxLoad = want;
+  rpc('my_reactions', { p_student: sid })
+    .then((d) => (want.data = d))
+    .catch(() => (want.data = want.data || { rows: [], today: 0, prog: 0, merits: 0 }))
+    .finally(() => {
+      if (rxLoad !== want || UI.tab !== 'react') return;
+      // 번호 칸(숫자, 다시 그려도 되는 칸)을 치는 중이면 커서를 지키며 바로, 글자 칸이면 다 친 뒤에 다시 그린다
+      const a = document.activeElement;
+      if (a?.dataset?.rerender) rerenderKeep(a);
+      else softRender();
+    });
+  return want.data;
+}
 function vReact() {
   const f = UI.reactForm;
   const s = S.students.find((x) => x.active && x.no === Number(f.no));
   const today = S.today || TODAY;
-  const mine = s ? (S.reactions || []).filter((r) => r.sid === s.id) : [];
-  const usedToday = mine.filter((r) => r.date === today && r.status !== 'rejected').length;
-  const prog = s ? S.reactProg?.[s.id] || 0 : 0;
-  const merits = s ? S.ledger.filter((e) => e.sid === s.id && e.src === 'reaction' && !e.voided).length : 0;
+  const R = s ? rxData(s.id) : null;
+  if (s && !R) return `<div><h1>리액션 상점</h1></div><div class="card"><label class="fld"><span>내 번호</span><input id="rx-no" inputmode="numeric" value="${esc(f.no)}" data-bind="reactForm.no" data-rerender="1"></label><p class="note">불러오는 중…</p></div>`;
+  const mine = R ? R.rows : [];
+  const usedToday = R ? R.today : 0;
+  const prog = R ? R.prog : 0;
+  const merits = R ? R.merits : 0;
   const pending = mine.filter((r) => r.status === 'pending').length;
   const pers = [...new Set(S.periods.filter((p) => p.date === today && !p.morning).map((p) => p.label))];
   const form =
     usedToday >= REACT_MAX
       ? `<p class="note">오늘은 ${REACT_MAX}번 모두 신청했어요. 내일 또 신청하세요.</p>`
-      : `<label class="fld"><span>교시</span><input id="rx-period" value="${esc(f.period)}" placeholder="예: 2교시 구강해부학" autocomplete="off" data-bind="reactForm.period"></label>
+      : `<label class="fld"><span>교시</span><input id="rx-period" value="${esc(f.period)}" maxlength="40" placeholder="예: 2교시 구강해부학" autocomplete="off" data-bind="reactForm.period"></label>
   ${pers.length ? `<div class="chips">${pers.map((l) => `<button type="button" class="chip" data-act="rx-per" data-v="${esc(l)}">${esc(l)}</button>`).join('')}</div>` : ''}
-  <label class="fld"><span>질문</span><input id="rx-q" value="${esc(f.q)}" placeholder="교수님이 하신 질문" autocomplete="off" data-bind="reactForm.q"></label>
-  <label class="fld"><span>내 대답</span><textarea id="rx-a" data-bind="reactForm.a" placeholder="내가 한 대답">${esc(f.a)}</textarea></label>
+  <label class="fld"><span>질문</span><input id="rx-q" value="${esc(f.q)}" maxlength="300" placeholder="교수님이 하신 질문" autocomplete="off" data-bind="reactForm.q"></label>
+  <label class="fld"><span>내 대답</span><textarea id="rx-a" maxlength="300" data-bind="reactForm.a" placeholder="내가 한 대답">${esc(f.a)}</textarea></label>
   <button class="btn" data-act="rx-add">신청하기 (오늘 ${usedToday}/${REACT_MAX})</button>`;
   return `<div><h1>리액션 상점</h1><p class="sub">수업 중 대답한 것을 적어 내면 부총대가 확인해요. 승인된 대답 ${REACT_MAX}번마다 상점 1점이고, 남는 것은 다음으로 이어져요. <b>오늘(${mdw(today)}) 한 것만</b> 하루 ${REACT_MAX}번까지 신청할 수 있어요.</p></div>
   <div class="card"><label class="fld"><span>내 번호</span><input id="rx-no" inputmode="numeric" value="${esc(f.no)}" data-bind="reactForm.no" data-rerender="1" placeholder="예: 56"></label>
@@ -494,7 +516,7 @@ function vReact() {
     ? `<div class="rx-prog" id="rx-prog"><div><b>${s.no}번</b> · 다음 상점까지 <b>${prog}/${REACT_MAX}</b> <span class="dots">${'●'.repeat(prog)}${'○'.repeat(REACT_MAX - prog)}</span></div>
     <div class="note">리액션 상점 ${merits}점 받음${pending ? ` · 확인 대기 ${pending}번` : ''}</div></div>${form}`
     : f.no ? '<p class="note">없는 번호예요.</p>' : ''}</div>
-  ${mine.length ? `<h2>${s.no}번 신청 내역</h2>${[...mine].reverse().map((r) => `<div class="card"><div class="req-top"><span class="pill ${r.status}">${STATUS[r.status]}${r.merit ? ' · 상점 반영' : ''}</span><span class="note">${esc(r.at)}</span></div>
+  ${mine.length ? `<h2>${s.no}번 신청 내역</h2>${mine.map((r) => `<div class="card"><div class="req-top"><span class="pill ${r.status}">${STATUS[r.status]}${r.merit ? ' · 상점 반영' : ''}</span><span class="note">${esc(r.at)}</span></div>
     <div class="req-body">${rxText(r)}</div>${r.note ? `<div class="note">반려 사유: ${esc(r.note)}</div>` : ''}</div>`).join('')}
     <p class="hint">최근 30일 것만 보여요.</p>` : ''}`;
 }
@@ -535,14 +557,14 @@ function periodBar(pid) {
   const others = (S.attRequests || []).some((a) => a.pid === pid && a.by !== UI.user);
   if (!isAdmin() && (S.att[pid] || S.ledger.some((e) => e.pid === pid) || others)) return '';
   if (UI.perEdit === pid)
-    return `<div class="per-edit"><input id="per-name" value="${esc(per.label)}" autocomplete="off" enterkeyhint="done" aria-label="새 교시 이름">
+    return `<div class="per-edit"><input id="per-name" value="${esc(UI.perName)}" maxlength="40" autocomplete="off" enterkeyhint="done" aria-label="새 교시 이름" data-bind="perName">
     <button class="btn small" data-act="per-ren-save" data-id="${pid}">저장</button><button class="btn ghost small" data-act="per-ren-no">취소</button></div>`;
   if (UI.perDel === pid)
     return `<div class="att-confirm"><span>${esc(per.label)}을(를) 지울까요? 저장된 출결과 이 교시의 출석 요청이 함께 지워져요.${given ? ` 이 교시로 준 자봉 ${given}건은 "교시 삭제"로 무효 처리돼요.` : ''}</span>
   <div class="btns"><button class="btn danger small" data-act="per-del-yes" data-id="${pid}">네, 지우기</button><button class="btn ghost small" data-act="per-del-no">그만두기</button></div></div>`;
   // 처리하지 않은 출석 요청·공결 신청이 있으면 서버가 삭제를 거절하니 미리 알린다 (이름 바꾸기는 된다)
   const eids = new Set(S.ledger.filter((e) => e.pid === pid).map((e) => e.id));
-  const blocked = (S.attRequests || []).some((a) => a.pid === pid && a.status === 'pending') || (S.excuses || []).some((x) => x.status === 'pending' && eids.has(x.eid));
+  const blocked = (isAdmin() && (S.attRequests || []).some((a) => a.pid === pid && a.status === 'pending')) || (S.excuses || []).some((x) => x.status === 'pending' && eids.has(x.eid));
   return `<div class="per-del">${blocked ? '<span class="note">처리하지 않은 출석 요청·공결 신청이 있어서 지금은 이 교시를 지울 수 없어요. 요청함에서 먼저 처리하세요.</span>' : ''}${per.morning ? '' : `<button class="btn ghost small" data-act="per-ren" data-id="${pid}">이름 바꾸기</button>`}${blocked ? '' : `<button class="btn ghost small" data-act="per-del" data-id="${pid}">이 교시 삭제</button>`}</div>`;
 }
 
@@ -1005,7 +1027,10 @@ function softRender() {
   if (a && a.closest('#view') && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return (pendingRender = true);
   // 버튼을 누르는 중에 다시 그리면 그 누름(click)이 사라진다. 손을 뗀 뒤에 그린다.
   if (pointerDown) return setTimeout(softRender, 50);
-  // 반려 사유·수정 사유처럼 상태에 묶이지 않은 칸의 글자는 다시 그려도 남긴다
+  renderKeep();
+}
+// 반려 사유·수정 사유처럼 상태에 묶이지 않은 칸의 글자는 다시 그려도 남긴다
+function renderKeep() {
   const kept = [...document.querySelectorAll('#view input[id]:not([data-bind]):not([type=file]):not([type=checkbox]), #view textarea[id]:not([data-bind])')]
     .filter((el) => el.value)
     .map((el) => [el.id, el.value]);
@@ -1469,6 +1494,7 @@ const A = {
   },
   'per-ren': (d) => {
     UI.perEdit = d.id;
+    UI.perName = S.periods.find((p) => p.id === d.id)?.label || '';
     render();
     const el = document.getElementById('per-name');
     el?.focus();
@@ -1480,7 +1506,7 @@ const A = {
   },
   'per-ren-save': async (d) => {
     const old = S.periods.find((p) => p.id === d.id)?.label || '';
-    const label = val('per-name').trim();
+    const label = (UI.perName || '').trim();
     if (!label) return toast('교시 이름을 입력하세요');
     if (label === old) {
       UI.perEdit = null;
@@ -1607,11 +1633,11 @@ const A = {
     if (!f.period.trim()) return toast('교시를 적어 주세요');
     if (!f.q.trim()) return toast('질문을 적어 주세요');
     if (!f.a.trim()) return toast('내 대답을 적어 주세요');
+    const used = (rxLoad?.sid === s.id && rxLoad.data ? rxLoad.data.today : 0) + 1;
     await rpc('create_reaction', { p_student: s.id, p_period: f.period.trim(), p_question: f.q.trim(), p_answer: f.a.trim() });
     UI.reactForm = { no: f.no, period: f.period, q: '', a: '' };
     await refresh();
     render();
-    const used = (S.reactions || []).filter((r) => r.sid === s.id && r.date === S.today && r.status !== 'rejected').length;
     return toast(`신청했어요 · 부총대 확인을 기다려요 (오늘 ${used}/${REACT_MAX})`);
   },
   'rx-ok': async (d) => {
@@ -1958,7 +1984,14 @@ document.addEventListener('click', async (ev) => {
     if (done !== true) render();
   } catch (e) {
     if (e.code === '28000') await signOut(e.message);
-    else toast(e.message || '문제가 생겼어요. 다시 해보세요');
+    else {
+      toast(e.message || '문제가 생겼어요. 다시 해보세요');
+      // 다른 기기에서 이미 처리한 것이면 화면을 새로 불러와 그 카드를 치운다
+      if (/이미 처리된|새로 불러온 뒤/.test(e.message || '')) {
+        await refresh();
+        renderKeep();
+      }
+    }
   } finally {
     busy = false;
     document.body.style.cursor = '';

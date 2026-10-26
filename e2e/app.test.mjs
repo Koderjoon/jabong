@@ -880,6 +880,7 @@ test('총대: 출석 탭(아침 출석 없음), 교시 추가, 출석 요청·�
   await C.click(`[data-act="setst"][data-sid="${await sid('서지호')}"][data-v="absent"]`);
   assert.equal(await C.has('[data-act="att-save"]'), false, '총대단은 저장 대신 요청');
   assert.equal(await C.toast('[data-act="att-request"]'), '출석 요청을 보냈어요 · 부총대 확인을 기다려요');
+  assert.ok(await C.has('[data-act="per-del"]'), '내 요청만 있는 교시는 총대도 지울 수 있다 (서버와 같게)');
   assert.match(await C.text('.att-foot'), /요청 보냄 · 부총대 확인 대기 중/);
   assert.equal(await C.text('[data-act="att-request"]'), '요청 다시 보내기');
   await C.click(`[data-act="setst"][data-sid="${await sid('정우진')}"][data-v="late"]`);
@@ -1554,7 +1555,13 @@ test('교시 이름 바꾸기: 검사·취소(Esc)·Enter로 저장, 그 교시 
   await A.page.fill('#per-name', '5교시');
   assert.equal(await A.toast('[data-act="per-ren-save"]'), '그 날짜에 같은 이름의 교시가 이미 있어요');
   assert.equal(await A.page.inputValue('#per-name'), '5교시');
+  // 적다가 칸을 벗어난 사이 다른 기기 변경으로 다시 그려도 적던 이름이 남는다
   await A.page.fill('#per-name', '4교시 해부학');
+  await A.page.click('h1');
+  await A.page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await A.page.waitForTimeout(400);
+  assert.equal(await A.page.inputValue('#per-name'), '4교시 해부학');
+  await A.page.focus('#per-name');
   await A.page.evaluate(() => (document.getElementById('toast').hidden = true));
   await A.page.press('#per-name', 'Enter');
   await A.page.waitForFunction(() => document.querySelector('#toast > span')?.textContent.startsWith('교시 이름을 바꿨어요'));
@@ -1856,10 +1863,11 @@ test('리액션 상점: 학생은 오늘 것만 하루 3번(검사·교시 고�
   await S.page.fill('#rx-a', '이복근 등');
   await S.toast('[data-act="rx-add"]');
   await S.page.fill('#rx-period', '3교시 생리학');
-  await S.page.fill('#rx-q', '심박출량 공식?');
+  await S.page.fill('#rx-q', '심박출량 공식? ' + 'CardiacOutputStrokeVolumeHeartRate'.repeat(4));
   await S.page.fill('#rx-a', '1회 박출량 × 심박수');
   assert.equal(await S.toast('[data-act="rx-add"]'), '신청했어요 · 부총대 확인을 기다려요 (오늘 3/3)');
   assert.match(await S.text(), /오늘은 3번 모두 신청했어요/);
+  await S.fits('띄어쓰기 없는 긴 글이 있어도');
   assert.equal(await S.has('#rx-q'), false);
   const rows = await q(`select date::text as d, status from reactions where student_id = $1`, [me.id]);
   assert.deepEqual(rows.map((r) => r.d), [TODAY, TODAY, TODAY], '날짜는 오늘');
@@ -1872,11 +1880,18 @@ test('리액션 상점: 학생은 오늘 것만 하루 3번(검사·교시 고�
   await A.fits('리액션 요청함');
   const item = `${card} .rx-item:has-text("심박출량")`;
   assert.equal(await A.toast(`${item} [data-act="rx-no"]`), '반려 사유를 입력하세요');
+  // 다른 건을 먼저 승인해도 적던 반려 사유는 남는다
   await A.page.fill(`${item} input`, '수업 내용과 달라요');
+  assert.equal(await A.toast(`${card} .rx-item:has-text("설골상근") [data-act="rx-ok"]`), '1건 승인했어요');
+  assert.equal(await A.page.inputValue(`${item} input`), '수업 내용과 달라요', '적던 반려 사유가 남는다');
   assert.equal(await A.toast(`${item} [data-act="rx-no"]`), '반려했어요');
-  assert.equal(await A.toast(`${card} [data-act="rx-ok"]:has-text("2건 모두 승인")`), '2건 승인했어요');
+  // 다른 기기에서 이미 처리한 것을 누르면 안내하고 화면을 새로 불러온다
+  const last = (await one(`select id from reactions where student_id = $1 and status = 'pending'`, [me.id])).id;
+  await db.query(`select review_reaction($1, array[$2]::uuid[], true, null)`, [await A.token(), last]);
+  assert.match(await A.toast(`${card} [data-act="rx-ok"]`), /^이미 처리된 리액션이 있어요/);
+  await A.page.waitForFunction(() => !document.querySelector('.rx-card'));
+  assert.equal(await A.has(card), false, '처리된 카드는 사라진다');
   assert.equal((await balances())['박하준'], before, '2번이면 아직 상점 없음');
-  assert.equal(await A.has(card), false);
   // 학생: 이월 2/3, 반려 사유, 반려된 만큼 한 번 더 낼 수 있다
   await S.reload();
   await S.tab('react');

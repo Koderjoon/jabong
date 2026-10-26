@@ -179,6 +179,8 @@ details.card summary{cursor:pointer}
 .att button.absent{background:var(--pen-soft);border-color:var(--pen)}.att button.absent small{color:var(--pen)}
 .att button.excused{background:var(--accent-soft);border-color:var(--accent)}.att button.excused small{color:var(--accent)}
 .att button .nm{font-family:var(--sans);font-size:12px;font-weight:500;color:var(--ink)}
+/* 띄어쓰기 없는 긴 글(주소, 영어 등)이 화면을 옆으로 밀지 않게 */
+.card{overflow-wrap:anywhere}
 .rx-prog{display:flex;flex-direction:column;gap:2px;background:var(--accent-soft);border-radius:10px;padding:10px 12px;font-size:14px}
 .rx-prog .dots{color:var(--merit);letter-spacing:2px}
 .rx-item{display:flex;flex-direction:column;gap:6px;border-top:1px solid var(--line);padding-top:8px}
