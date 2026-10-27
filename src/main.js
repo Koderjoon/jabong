@@ -192,9 +192,18 @@ function vBoard() {
   return `<div><h1>자봉 현황</h1><p class="live"><span class="dot"></span>실시간 반영 · 마지막 변경 ${esc(S.updatedAt)}</p></div>
   ${vInstall()}
   ${UI.role === 'student' && S.students.length ? vMyCard(me) : ''}
+  ${vStoreLink()}
   <div class="toolbar"><input type="search" id="q" aria-label="학생 찾기" ${named ? '' : 'inputmode="numeric" '}placeholder="${named ? '번호·이름 검색' : '번호 검색'}" value="${esc(UI.q)}" data-bind="q" data-region="board-grid">
   ${named ? `<div class="seg"><button class="${UI.sort === 'no' ? 'on' : ''}" data-act="sort" data-v="no">번호순</button><button class="${UI.sort === 'bal' ? 'on' : ''}" data-act="sort" data-v="bal">자봉 많은 순</button></div>` : ''}</div>
   <div class="grid${named ? ' named' : ''}" id="board-grid">${list.map(({ s, b }) => `<button class="tile${me && me.id === s.id ? ' me' : ''}" data-act="open" data-sid="${s.id}"><span class="no">${s.no}</span>${named ? `<span class="nm">${esc(s.name)}</span>` : ''}<span class="pt">자봉 ${b}</span>${named && s.exempt ? '<span class="ex">면제</span>' : ''}</button>`).join('') || `<p class="empty">${S.students.length ? '찾는 학생이 없어요.' : '아직 명단이 없어요.'}</p>`}</div>`;
+}
+
+// 학급 매점 바로가기 (부총대가 관리 탭에서 넣은 링크). 새 창(폰은 구글 시트 앱)으로 열고 이 앱은 그대로 둔다.
+// 서버도 https:// 주소만 받지만, 화면에서도 한 번 더 거른다 (javascript: 같은 주소가 링크가 되지 않게)
+const storeUrl = () => (/^https:\/\/[^\s"<>]+$/.test(S.links?.store || '') ? S.links.store : null);
+function vStoreLink() {
+  const url = storeUrl();
+  return url ? `<a class="btn store-btn" href="${esc(url)}" target="_blank" rel="noopener noreferrer">🛒 학급 매점 열기 <span aria-hidden="true">↗</span></a>` : '';
 }
 
 // 홈 화면에 앱으로 추가 (manifest.webmanifest). 안드로이드 크롬은 버튼, 아이폰은 Safari 공유 메뉴 안내.
@@ -862,6 +871,11 @@ function vManage() {
   <button class="btn" data-act="nos-save">명단 저장</button></details>
 
 
+  <div class="card"><h2>학급 매점 링크</h2>
+  <p class="hint" style="margin:0">넣으면 모든 화면의 현황판 맨 위에 "학급 매점 열기" 버튼이 생겨요. 비우고 저장하면 버튼이 사라져요. 구글 시트는 공유를 <b>"링크가 있는 모든 사용자 → 뷰어"</b>로 해 두세요 (편집자로 두면 학생 누구나 시트를 고칠 수 있어요).</p>
+  <input id="store-url" type="url" inputmode="url" aria-label="학급 매점 링크" placeholder="https://docs.google.com/spreadsheets/..." value="${esc(S.links?.store || '')}" autocomplete="off">
+  <div class="btns"><button class="btn ghost" data-act="link-save">링크 저장</button>${storeUrl() ? `<a class="btn ghost small" href="${esc(storeUrl())}" target="_blank" rel="noopener noreferrer">열어 보기 ↗</a>` : ''}</div></div>
+
   <div class="card"><h2>비밀번호</h2>
   <p class="hint" style="margin:0">인수인계할 때는 다음 사람에게 지금 비밀번호와 복구 코드를 알려주고, 그 사람이 로그인해서 자기 비밀번호로 바꾸면 끝이에요.</p>
   <h2 style="font-size:14px">내 비밀번호 바꾸기 (${esc(UI.user)})</h2>
@@ -1453,6 +1467,12 @@ const A = {
     UI.pwOpen = false;
     render();
     return toast('내 비밀번호를 바꿨어요');
+  },
+  'link-save': async () => {
+    const url = val('store-url').trim();
+    if (url && !/^https:\/\/[^\s"<>]+$/.test(url)) return toast('링크는 https:// 로 시작하는 주소여야 해요 (띄어쓰기 없이)');
+    await run('set_link', { p_id: 'store', p_url: url }, url ? '매점 링크를 저장했어요 · 현황판에 버튼이 생겼어요' : '매점 링크를 지웠어요');
+    return true;
   },
   'pw-reset': async () => {
     const who = val('pw-who');

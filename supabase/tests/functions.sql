@@ -35,8 +35,8 @@ select pg_temp.ok(
   = (select array_agg(x order by x) from unnest(array['public_state', 'create_excuse', 'create_excuse_day', 'create_reaction', 'my_reactions', 'reaction_feed', 'reaction_adjust', 'reaction_export', 'review_reaction', 'login', 'recover', 'private_state', 'logout', 'get_photo',
       'create_request', 'change_pw', 'reset_pw', 'new_recovery', 'ensure_period', 'delete_period', 'rename_period', 'save_attendance', 'request_attendance', 'review_attendance',
       'add_entries', 'edit_entry', 'void_entry', 'review_request', 'review_excuse', 'roster_apply', 'my_presets_save', 'my_periods_save', 'purge', 'backup_dump',
-      'restore_backup', 'history_move', 'history_drop', 'history_restore', 'ops_list']) x),
-  '브라우저(anon)에 열린 함수가 정확히 화면이 쓰는 39개');
+      'restore_backup', 'history_move', 'history_drop', 'history_restore', 'ops_list', 'set_link']) x),
+  '브라우저(anon)에 열린 함수가 정확히 화면이 쓰는 40개');
 select pg_temp.ok(not exists (select 1 from pg_proc p where p.pronamespace = 'public'::regnamespace
   and has_function_privilege('anon', p.oid, 'execute') <> has_function_privilege('authenticated', p.oid, 'execute')), 'anon과 authenticated 권한이 같음');
 select pg_temp.ok(not exists (select 1 from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname !~ '^_'
@@ -70,7 +70,8 @@ declare
     'select void_entry(%s, gen_random_uuid(), ''r'')', 'select review_request(%s, gen_random_uuid(), true, null)',
     'select review_excuse(%s, gen_random_uuid(), true, null)', 'select roster_apply(%s, ''[]'', ''[]'', current_date)',
     'select purge(%s, current_date)', 'select restore_backup(%s, ''{}'')', 'select history_move(%s, 0, true)',
-    'select history_drop(%s, 1, true)', 'select history_restore(%s, 1, true)', 'select ops_list(%s, 10)'];
+    'select history_drop(%s, 1, true)', 'select history_restore(%s, 1, true)', 'select ops_list(%s, 10)',
+    'select set_link(%s, ''store'', ''https://x'')'];
   any_login text[] := array[
     'select private_state(%s)', 'select get_photo(%s, gen_random_uuid())',
     'select create_request(%s, current_date, array[gen_random_uuid()], ''x'', '''', 1, '''', null)',
@@ -92,7 +93,7 @@ begin
       n := n + 1;
     end loop;
   end loop;
-  if n <> 16 * 5 + 5 * 2 + 2 * 3 then raise exception 'FAIL: 권한 검사 수 %', n; end if;
+  if n <> 17 * 5 + 5 * 2 + 2 * 3 then raise exception 'FAIL: 권한 검사 수 %', n; end if;
 end $$;
 -- 로그인 없이 부를 수 있는 함수
 select pg_temp.ok(public_state() is not null and backup_dump() is not null, '공개 함수');
@@ -522,7 +523,7 @@ select backup_dump()::text as dump \gset
 select pg_temp.ok(position('$2a$' in :'dump') = 0 and position('$2b$' in :'dump') = 0 and position('data:image' in :'dump') = 0
   and position('recovery' in :'dump') = 0 and position(:'t' in :'dump') = 0, '백업에 비밀번호·복구 코드·로그인·사진 없음');
 select pg_temp.ok((select array_agg(k order by k) from json_object_keys(:'dump'::json -> 'tables') k) = array['attendance', 'attendance_requests', 'excuses', 'ledger',
-  'ledger_private', 'ledger_revisions', 'periods', 'presets', 'reactions', 'requests', 'students'], '백업에 모든 데이터 표');
+  'ledger_private', 'ledger_revisions', 'links', 'periods', 'presets', 'reactions', 'requests', 'students'], '백업에 모든 데이터 표');
 set role postgres;
 create or replace function pg_temp.sig_all() returns text language sql as $$
   select md5(concat_ws('|',
@@ -536,7 +537,8 @@ create or replace function pg_temp.sig_all() returns text language sql as $$
     (select string_agg((to_jsonb(x) - 'photo_id')::text, ',' order by x.id) from requests x),
     (select string_agg((to_jsonb(x) - 'photo_id')::text, ',' order by x.id) from excuses x),
     (select string_agg(to_jsonb(x)::text, ',' order by x.id) from attendance_requests x),
-    (select string_agg(to_jsonb(x)::text, ',' order by x.id) from reactions x)))
+    (select string_agg(to_jsonb(x)::text, ',' order by x.id) from reactions x),
+    (select string_agg(to_jsonb(x)::text, ',' order by x.id) from links x)))
 $$;
 select pg_temp.sig_all() as sig_before \gset
 set role anon;
@@ -1186,5 +1188,44 @@ select pg_temp.ok(not exists (
 select pg_temp.ok((select count(*) from json_each(public_state() -> 'reactProg')) = (select count(*) from prog_before), '공개 이월 수도 그대로');
 select pg_temp.ok(not exists (select 1 from merits_before b where (my_reactions(b.id) ->> 'merits')::int <> b.m) and exists (select 1 from merits_before where m > 0), '받은 리액션 상점 수도 그대로');
 \echo 23. 리액션 내보내기·정리 통과
+
+-- ───────── 25. 학급 매점 링크 ─────────
+set role anon;
+select (login('부총대', '1234')::json ->> 'token') as t \gset
+select (login('학습부장', '1234')::json ->> 'token') as ot \gset
+select pg_temp.ok((public_state() -> 'links')::jsonb = '{}', '처음에는 링크 없음');
+select pg_temp.expect(format('select set_link(%L, ''store'', ''https://x.com'')', :'ot'), '42501', '총대단은 못 바꿈');
+select pg_temp.expect_msg(format('select set_link(%L, ''store'', ''http://x.com'')', :'t'), '링크는 https://%', 'http 주소는 안 됨');
+select pg_temp.expect_msg(format('select set_link(%L, ''store'', ''javascript:alert(1)'')', :'t'), '링크는 https://%', '자바스크립트 주소는 안 됨');
+select pg_temp.expect_msg(format('select set_link(%L, ''store'', ''https://a b'')', :'t'), '링크는 https://%', '띄어쓰기 안 됨');
+select pg_temp.expect_msg(format('select set_link(%L, ''store'', ''https://a"><b'')', :'t'), '링크는 https://%', '따옴표·꺾쇠 안 됨');
+select pg_temp.expect_msg(format('select set_link(%L, ''x'', ''https://a'')', :'t'), '없는 링크예요', '없는 링크 종류');
+select pg_temp.expect_msg(format('select set_link(%L, ''store'', '''')', :'t'), '바뀌는 것이 없어요', '없는데 지우기');
+select set_link(:'t', 'store', '  https://docs.google.com/spreadsheets/d/abc/edit?usp=drivesdk  ');
+select pg_temp.ok(public_state() -> 'links' ->> 'store' = 'https://docs.google.com/spreadsheets/d/abc/edit?usp=drivesdk', '누구나 보는 상태에 링크 (앞뒤 띄어쓰기 없이)');
+select pg_temp.ok(private_state(:'t') -> 'links' ->> 'store' is not null, '로그인한 화면에도');
+select pg_temp.expect_msg(format('select set_link(%L, ''store'', ''https://docs.google.com/spreadsheets/d/abc/edit?usp=drivesdk'')', :'t'), '바뀌는 것이 없어요', '같은 링크');
+select set_link(:'t', 'store', 'https://docs.google.com/spreadsheets/d/new');
+select pg_temp.ok((ops_list(:'t', 1)::jsonb -> 0 ->> 'summary') = '매점 링크 바꾸기', '작업 내역에 남는다');
+select pg_temp.ok((backup_dump() -> 'tables' -> 'links' -> 0 ->> 'url') = 'https://docs.google.com/spreadsheets/d/new', '백업에 링크');
+-- 되돌리기·다시 살리기·지우기
+set role postgres;
+select max(id) as lk from ops \gset
+set role anon;
+select history_drop(:'t', :lk, false);
+select pg_temp.ok(public_state() -> 'links' ->> 'store' = 'https://docs.google.com/spreadsheets/d/abc/edit?usp=drivesdk', '되돌리면 전 링크');
+select history_restore(:'t', :lk, false);
+select set_link(:'t', 'store', '');
+select pg_temp.ok((public_state() -> 'links')::jsonb = '{}', '지우면 버튼이 사라진다');
+select pg_temp.ok((ops_list(:'t', 1)::jsonb -> 0 ->> 'summary') = '매점 링크 지우기', '지우기도 작업 내역에');
+select set_link(:'t', 'store', 'https://docs.google.com/spreadsheets/d/new');
+-- 링크가 없던 때의 백업을 되살리면 링크도 비고, 링크가 있는 백업은 링크까지
+select backup_dump()::jsonb as lkdump \gset
+select restore_backup(:'t', (:'lkdump'::jsonb #- '{tables,links}')::jsonb);
+select pg_temp.ok((public_state() -> 'links')::jsonb = '{}', '링크 없는 옛 백업');
+select (login('부총대', '1234')::json ->> 'token') as t \gset
+select restore_backup(:'t', :'lkdump'::jsonb);
+select pg_temp.ok(public_state() -> 'links' ->> 'store' = 'https://docs.google.com/spreadsheets/d/new', '백업에서 링크도 되살림');
+\echo 25. 학급 매점 링크 통과
 
 \echo 모든 서버 함수 테스트 통과

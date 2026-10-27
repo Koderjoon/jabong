@@ -2194,6 +2194,52 @@ test('작업 내역: 맨 끝의 빼 둔 작업도 "맨 끝으로" 제자리에, 
   await A.page.waitForSelector(`[data-act="hist-drop-pv"][data-id="${nid}"]`);
 });
 
+test('학급 매점 링크: 부총대가 관리 탭에서 넣고(https만)·바꾸고·지우면, 학생·총대단·부총대 현황판 맨 위 버튼이 새 창으로 연다', async () => {
+  const URL1 = 'https://docs.google.com/spreadsheets/d/1as1eph4dCO_ks_pRimG_cUM9EujuIbSwTktNSoWPVyU/edit?usp=drivesdk';
+  await A.tab('board');
+  assert.equal(await A.has('.store-btn'), false, '링크가 없으면 버튼 없음');
+  await A.tab('manage');
+  await A.page.fill('#store-url', 'javascript:alert(1)');
+  assert.match(await A.toast('[data-act="link-save"]'), /https:\/\/ 로 시작하는 주소/);
+  await A.page.fill('#store-url', `  ${URL1} `);
+  assert.equal(await A.toast('[data-act="link-save"]'), '매점 링크를 저장했어요 · 현황판에 버튼이 생겼어요');
+  assert.equal(await A.page.inputValue('#store-url'), URL1);
+  assert.match(await A.toast('[data-act="link-save"]'), /바뀌는 것이 없어요/);
+  await A.tab('board');
+  assert.equal(await A.page.getAttribute('.store-btn', 'href'), URL1);
+  assert.equal(await A.page.getAttribute('.store-btn', 'target'), '_blank');
+  assert.match(await A.page.getAttribute('.store-btn', 'rel'), /noopener/);
+  // 학생(내 번호 카드 바로 아래)과 총대단에도
+  for (const X of [S, O]) {
+    await X.reload();
+    await X.tab('board');
+    assert.equal(await X.page.getAttribute('.store-btn', 'href'), URL1);
+    await X.fits('매점 버튼');
+  }
+  assert.ok(await S.page.$eval('.store-btn', (b) => b.previousElementSibling?.classList.contains('mycard')), '학생은 내 번호 칸 바로 아래');
+  // 누르면 새 창으로 열리고 앱은 그대로 (구글 시트는 시험에서 가짜로 받는다)
+  await S.page.context().route('https://docs.google.com/**', (r) => r.fulfill({ contentType: 'text/html', body: '<title>매점</title>매점' }));
+  const [pop] = await Promise.all([S.page.waitForEvent('popup'), S.page.click('.store-btn')]);
+  await pop.waitForLoadState();
+  assert.equal(pop.url(), URL1);
+  await pop.close();
+  assert.ok(await S.has('#board-grid'), '앱 화면은 그대로');
+  // 바꾸기·지우기 (작업 내역에 남는다)
+  await A.tab('manage');
+  await A.page.fill('#store-url', 'https://docs.google.com/spreadsheets/d/new');
+  await A.toast('[data-act="link-save"]');
+  await A.page.fill('#store-url', '');
+  assert.equal(await A.toast('[data-act="link-save"]'), '매점 링크를 지웠어요');
+  await A.tab('board');
+  assert.equal(await A.has('.store-btn'), false);
+  await A.tab('history');
+  assert.match(await A.text(), /매점 링크 지우기[\s\S]*매점 링크 바꾸기[\s\S]*매점 링크 넣기/);
+  // 다시 넣어 둔다 (좁은 폰 시험에서 버튼이 있는 화면도 보게)
+  await A.tab('manage');
+  await A.page.fill('#store-url', URL1);
+  await A.toast('[data-act="link-save"]');
+});
+
 test('새로고침해도 로그인 유지, 서버에서 로그인이 지워지면 다음 동작에서 로그아웃', async () => {
   await A.reload();
   assert.match(await A.text('#subbar'), /부총대로 로그인됨/);

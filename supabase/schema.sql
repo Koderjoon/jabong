@@ -167,6 +167,12 @@ create index if not exists reactions_student_date on reactions (student_id, date
 -- adj: 부총대가 이월 횟수를 맞추려고 넣은 줄 (엑셀로 정리하던 이월을 옮길 때). 실제 리액션이 아니라 내역에는 안 보인다.
 alter table reactions add column if not exists adj boolean not null default false;
 
+-- 화면의 바로가기 링크 (id: 'store' = 학급 매점). 부총대가 관리 탭에서 바꾸고, 누구나 본다.
+create table if not exists links (
+  id text primary key,
+  url text not null
+);
+
 -- 하루 전체 공결: 그날의 지각·결석마다 한 줄씩 만들고 같은 grp로 묶는다 (승인·반려도 묶음째)
 alter table excuses add column if not exists grp uuid;
 create index if not exists excuses_grp on excuses (grp) where grp is not null;
@@ -292,6 +298,7 @@ update presets set owner = '부총대' where owner is null;
 
 alter table students enable row level security;
 alter table presets enable row level security;
+alter table links enable row level security;
 alter table periods enable row level security;
 alter table attendance enable row level security;
 alter table ledger enable row level security;
@@ -328,7 +335,7 @@ begin
 end $$;
 
 do $$ declare t text; begin
-  foreach t in array array['students','presets','periods','attendance','ledger','ledger_revisions','requests','excuses','attendance_requests','reactions'] loop
+  foreach t in array array['students','presets','periods','attendance','ledger','ledger_revisions','requests','excuses','attendance_requests','reactions','links'] loop
     execute format('drop trigger if exists bump on %I', t);
     execute format('create trigger bump after insert or update or delete on %I for each statement execute function _bump()', t);
   end loop;
@@ -351,7 +358,7 @@ begin
 end $$;
 
 do $$ declare t text; begin
-  foreach t in array array['students','presets','periods','attendance','ledger','ledger_private','ledger_revisions','requests','excuses','attendance_requests','reactions'] loop
+  foreach t in array array['students','presets','periods','attendance','ledger','ledger_private','ledger_revisions','requests','excuses','attendance_requests','reactions','links'] loop
     execute format('drop trigger if exists zz_log on %I', t);
     execute format('create trigger zz_log after insert or update or delete on %I for each row execute function _log_change()', t);
   end loop;
@@ -562,6 +569,7 @@ language sql stable security definer set search_path = public as $$
     -- 맨 위 작업 (부총대 화면의 "되돌리기" 버튼이 방금 한 작업인지 알아보는 데 쓴다)
     'lastOp', case when p_private then (select json_build_object('id', id, 'actor', actor, 'undoable', undoable, 'undone', undone, 'dropped', dropped)
       from ops where kind <> 'scratch' order by id desc limit 1) end,
+    'links', (select coalesce(json_object_agg(id, url), '{}') from links),
     'updatedAt', (select _kst(updated_at) from app_version where id = 1)
   )
 $$;
@@ -1159,6 +1167,23 @@ begin
   return n;
 end $$;
 
+-- 바로가기 링크 바꾸기 (부총대). 빈 주소면 지운다(버튼이 사라진다). https:// 주소만 받는다.
+create or replace function set_link(p_token uuid, p_id text, p_url text) returns void
+language plpgsql security definer set search_path = public as $$
+declare who text := _session(p_token, true); u text := trim(coalesce(p_url, '')); cur text;
+begin
+  perform _wlock();
+  if p_id is distinct from 'store' then raise exception '없는 링크예요'; end if;
+  if u <> '' and (u !~ '^https://[^[:space:]<>"]+$' or length(u) > 1000) then
+    raise exception '링크는 https:// 로 시작하는 주소여야 해요 (띄어쓰기 없이, 1000자까지)';
+  end if;
+  select url into cur from links where id = p_id;
+  if coalesce(cur, '') = u then raise exception '바뀌는 것이 없어요'; end if;
+  perform _op(who, 'set_link', case when u = '' then '매점 링크 지우기' when cur is null then '매점 링크 넣기' else '매점 링크 바꾸기' end);
+  if u = '' then delete from links where id = p_id;
+  else insert into links (id, url) values (p_id, u) on conflict (id) do update set url = excluded.url; end if;
+end $$;
+
 -- 명단 변경을 한 번에 적용한다.
 -- p_ops: [{op:'add',name,no} | {op:'renum'|'restore',id,no} | {op:'remove',id} | {op:'rename',id,name} | {op:'exempt',id,on}]
 -- p_adjs: [{name, to}]  — 해당 학생의 자봉이 to가 되도록 차이만큼 기록을 더한다
@@ -1265,7 +1290,8 @@ create or replace function _dump() returns jsonb language sql stable security de
       'requests', (select coalesce(jsonb_agg(to_jsonb(x)), '[]') from requests x),
       'excuses', (select coalesce(jsonb_agg(to_jsonb(x)), '[]') from excuses x),
       'attendance_requests', (select coalesce(jsonb_agg(to_jsonb(x)), '[]') from attendance_requests x),
-      'reactions', (select coalesce(jsonb_agg(to_jsonb(x)), '[]') from reactions x)
+      'reactions', (select coalesce(jsonb_agg(to_jsonb(x)), '[]') from reactions x),
+      'links', (select coalesce(jsonb_agg(to_jsonb(x)), '[]') from links x)
     ))
 $$;
 
@@ -1535,6 +1561,9 @@ begin
   -- 리액션이 생기기 전 백업에는 없다
   -- adj 칸이 생기기 전 백업에는 없으니 false로
   insert into reactions select (jsonb_populate_record(null::reactions, '{"adj": false}'::jsonb || e)).* from jsonb_array_elements(coalesce(t -> 'reactions', '[]')) e;
+  -- 링크가 생기기 전 백업에는 없다 (그때는 링크도 없었으니 비운다)
+  delete from links where true;
+  insert into links select * from jsonb_populate_recordset(null::links, coalesce(t -> 'links', '[]'));
   return json_build_object('students', (select count(*) from students), 'ledger', (select count(*) from ledger), 'createdAt', p_data ->> 'createdAt');
 end $$;
 
@@ -1605,7 +1634,7 @@ do $$ declare f text; begin
       'change_pw(uuid,text,text)', 'reset_pw(uuid,text,text)', 'new_recovery(uuid,text)', 'ensure_period(uuid,date,text,boolean)', 'delete_period(uuid,uuid)', 'rename_period(uuid,uuid,text)',
       'save_attendance(uuid,uuid,jsonb)', 'request_attendance(uuid,uuid,jsonb)', 'review_attendance(uuid,uuid,boolean,text)', 'add_entries(uuid,date,uuid[],text,text,numeric)', 'edit_entry(uuid,uuid,date,text,text,numeric,text)',
       'void_entry(uuid,uuid,text)', 'review_request(uuid,uuid,boolean,text)', 'review_excuse(uuid,uuid,boolean,text)',
-      'roster_apply(uuid,jsonb,jsonb,date)', 'my_presets_save(uuid,jsonb)', 'my_periods_save(uuid,jsonb)', 'purge(uuid,date)', 'backup_dump()', 'restore_backup(uuid,jsonb)', 'history_move(uuid,bigint,boolean)', 'history_drop(uuid,bigint,boolean)', 'history_restore(uuid,bigint,boolean)', 'ops_list(uuid,integer)'
+      'roster_apply(uuid,jsonb,jsonb,date)', 'my_presets_save(uuid,jsonb)', 'my_periods_save(uuid,jsonb)', 'purge(uuid,date)', 'backup_dump()', 'restore_backup(uuid,jsonb)', 'history_move(uuid,bigint,boolean)', 'history_drop(uuid,bigint,boolean)', 'history_restore(uuid,bigint,boolean)', 'ops_list(uuid,integer)', 'set_link(uuid,text,text)'
     ] loop
       execute format('grant execute on function %s to anon, authenticated', f);
     end loop;

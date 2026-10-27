@@ -19,7 +19,8 @@ create or replace function pg_temp.sig() returns text language sql as $$
     (select string_agg(to_jsonb(x)::text, ',' order by x.id) from requests x),
     (select string_agg(to_jsonb(x)::text, ',' order by x.id) from excuses x),
     (select string_agg(to_jsonb(x)::text, ',' order by x.id) from attendance_requests x),
-    (select string_agg(to_jsonb(x)::text, ',' order by x.id) from reactions x)))
+    (select string_agg(to_jsonb(x)::text, ',' order by x.id) from reactions x),
+    (select string_agg(to_jsonb(x)::text, ',' order by x.id) from links x)))
 $$;
 create temp table sigs (op bigint primary key, sig text not null);
 create or replace function pg_temp.snap() returns void language sql as $$
@@ -46,6 +47,8 @@ select id as s4 from students where name = '라' \gset
 select my_presets_save(:'ot', '[{"name":"청소","points":2}]'); select pg_temp.snap();
 select my_presets_save(:'t', '[{"name":"매점","points":-1},{"name":"실습","points":1}]'); select pg_temp.snap();
 select my_periods_save(:'t', '["1교시 해부학","2교시"]'); select pg_temp.snap();
+select set_link(:'t', 'store', 'https://example.com/a'); select pg_temp.snap();
+select set_link(:'t', 'store', 'https://example.com/b'); select pg_temp.snap();
 select ensure_period(:'t', '2026-04-03', '9교시 지울 교시', false) as pdel \gset
 select pg_temp.snap();
 select save_attendance(:'t', :'pdel', format('{"%s":"late","%s":"absent"}', :'s1', :'s2')::jsonb); select pg_temp.snap();
@@ -115,8 +118,8 @@ select save_attendance(:'t', :'p2', format('{"%s":"late"}', :'s2')::jsonb); sele
 
 select pg_temp.ok((select count(*) from sigs) = (select count(*) from ops) + 1, '작업마다 시점 하나 (+ 맨 처음)');
 select pg_temp.ok((select array_agg(distinct kind order by kind) from ops) = array['add_entries', 'create_excuse', 'create_excuse_day', 'create_reaction', 'create_request', 'delete_period', 'edit_entry', 'ensure_period',
-  'my_periods_save', 'my_presets_save', 'reaction_adjust', 'rename_period', 'request_attendance', 'review_attendance', 'review_excuse', 'review_reaction', 'review_request', 'roster_apply', 'save_attendance', 'void_entry'],
-  '데이터를 바꾸는 함수 20종 모두 사용');
+  'my_periods_save', 'my_presets_save', 'reaction_adjust', 'rename_period', 'request_attendance', 'review_attendance', 'review_excuse', 'review_reaction', 'review_request', 'roster_apply', 'save_attendance', 'set_link', 'void_entry'],
+  '데이터를 바꾸는 함수 21종 모두 사용');
 select max(op) as last from sigs \gset
 select count(*) as nops from ops \gset
 \echo 시나리오 준비 (작업 :nops 개)
