@@ -185,7 +185,7 @@ function vBoard() {
   const named = isStaff();
   let list = active().map((s) => ({ s, b: bal(s.id) }));
   const q = UI.q.trim();
-  if (q) list = list.filter((x) => String(x.s.no).startsWith(q) || (named && (x.s.name || '').includes(q)));
+  if (q) list = list.filter((x) => String(x.s.no).startsWith(q) || (named && L.nameMatch(x.s.name, q)));
   // 자봉 많은 순 정렬과 면제 표시는 총대단 화면에만
   if (named && UI.sort === 'bal') list.sort((a, b) => b.b - a.b || a.s.no - b.s.no);
   const me = UI.role === 'student' ? myStudent() : null;
@@ -264,7 +264,7 @@ function liveParts(fk) {
   const { sids, bad } = parseNums(f.nums);
   // 추천은 입력칸의 마지막 낱말로 찾는다 (앞의 낱말은 띄어쓰기할 때 이미 선택으로 옮겨진다)
   const fq = (f.find || '').trim().split(/[\s,]+/).pop() || '';
-  const sg = fq ? active().filter((s) => (s.name || '').includes(fq) || String(s.no).startsWith(fq)).slice(0, 8) : [];
+  const sg = fq ? active().filter((s) => L.nameMatch(s.name, fq) || String(s.no).startsWith(fq)).slice(0, 8) : [];
   const dup = L.dupNums(S, f);
   return {
     sugg: sg.length

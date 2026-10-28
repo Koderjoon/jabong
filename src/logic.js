@@ -463,3 +463,26 @@ export function reasonEvents(S, kind, me) {
 export function suggestTexts(events, typed) {
   return rank(events, typed, [['최근', 'recent', 3], ['자주', 'freq', 3]], (s) => s.v === (typed || '').trim());
 }
+
+// ───────── 한글 이름 찾기 ─────────
+// 한글을 치는 중간 모양("ㄱ", "곶", "고ㅈ", "고줂", "고준흐")으로도 이름을 찾도록, 글자를 자판 누른 순서(낱자)로 풀어 비교한다.
+// "곶"(ㄱㅗㅈ)은 "고준"(ㄱㅗㅈㅜㄴ)의 앞부분이고, "고줂"(ㄱㅗㅈㅜㄴㅎ)은 "고준희"(ㄱㅗㅈㅜㄴㅎㅡㅣ)의 앞부분이다.
+const CHO = 'ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ';
+const JUNG = ['ㅏ', 'ㅐ', 'ㅑ', 'ㅒ', 'ㅓ', 'ㅔ', 'ㅕ', 'ㅖ', 'ㅗ', 'ㅗㅏ', 'ㅗㅐ', 'ㅗㅣ', 'ㅛ', 'ㅜ', 'ㅜㅓ', 'ㅜㅔ', 'ㅜㅣ', 'ㅠ', 'ㅡ', 'ㅡㅣ', 'ㅣ'];
+const JONG = ['', 'ㄱ', 'ㄲ', 'ㄱㅅ', 'ㄴ', 'ㄴㅈ', 'ㄴㅎ', 'ㄷ', 'ㄹ', 'ㄹㄱ', 'ㄹㅁ', 'ㄹㅂ', 'ㄹㅅ', 'ㄹㅌ', 'ㄹㅍ', 'ㄹㅎ', 'ㅁ', 'ㅂ', 'ㅂㅅ', 'ㅅ', 'ㅆ', 'ㅇ', 'ㅈ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ'];
+// 따로 친 겹낱자(ㄳ, ㅘ 등)도 풀어 둔다
+const SPLIT = { ㄳ: 'ㄱㅅ', ㄵ: 'ㄴㅈ', ㄶ: 'ㄴㅎ', ㄺ: 'ㄹㄱ', ㄻ: 'ㄹㅁ', ㄼ: 'ㄹㅂ', ㄽ: 'ㄹㅅ', ㄾ: 'ㄹㅌ', ㄿ: 'ㄹㅍ', ㅀ: 'ㄹㅎ', ㅄ: 'ㅂㅅ', ㅘ: 'ㅗㅏ', ㅙ: 'ㅗㅐ', ㅚ: 'ㅗㅣ', ㅝ: 'ㅜㅓ', ㅞ: 'ㅜㅔ', ㅟ: 'ㅜㅣ', ㅢ: 'ㅡㅣ' };
+// 글자 하나를 낱자로
+function keysOf(ch) {
+  const c = ch.charCodeAt(0) - 0xac00;
+  if (c >= 0 && c < 11172) return CHO[Math.floor(c / 588)] + JUNG[Math.floor((c % 588) / 28)] + JONG[c % 28];
+  return SPLIT[ch] || ch.toLowerCase();
+}
+// 이름의 어느 글자에서 시작해도 찾는 말의 낱자가 앞부분으로 맞으면 찾은 것으로 본다 (글자 중간·받침에서 시작하지는 않는다)
+export function nameMatch(name, q) {
+  const qk = [...String(q || '').replace(/\s+/g, '')].map(keysOf).join('');
+  if (!qk) return false;
+  const chars = [...String(name || '').replace(/\s+/g, '')].map(keysOf);
+  for (let i = 0; i < chars.length; i++) if (chars.slice(i).join('').startsWith(qk)) return true;
+  return false;
+}

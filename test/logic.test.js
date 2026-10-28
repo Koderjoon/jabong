@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { genNotice, planRoster, planReactAdj, exportReactions, rosterOps, parseNums, expRange, exportSheets, bal, dupNums, excusable, suggestItems, suggestDetails, suggestPeriods, suggestTexts, reasonEvents } from '../src/logic.js';
+import { genNotice, planRoster, planReactAdj, exportReactions, rosterOps, parseNums, expRange, exportSheets, bal, dupNums, excusable, suggestItems, suggestDetails, suggestPeriods, suggestTexts, reasonEvents, nameMatch } from '../src/logic.js';
 
 // 학생 70명과 기록을 만드는 도우미
 function state() {
@@ -369,4 +369,25 @@ test('엑셀 리액션 시트: 결과·상점 반영, 반려 사유는 반려일
     { date: '2026-10-27', no: 5, active: true, period: '3교시', q: 'q', a: 'a', status: 'pending', merit: false, note: '남은 사유' },
   ]);
   assert.deepEqual(rows.map((r) => [r.no, r.result, r.note]), [[3, '승인 · 상점 반영', ''], ['4 (제외)', '반려', '중복'], [5, '대기', '']]);
+});
+
+test('이름 찾기: 한글을 치는 중간 모양으로도 찾는다', () => {
+  for (const q of ['ㄱ', '고', '곶', '고ㅈ', '고주', '고준', '고줂', '고준ㅎ', '고준흐', '고준희', '준', '주', 'ㅈ', '준희', '줂', '희', '흐', 'ㅎ'])
+    assert.ok(nameMatch('고준희', q), q);
+  for (const q of ['ㄴ', '곡', '고준희희', '김', 'ㄱㅈ', '고자', '준고', ''])
+    assert.ok(!nameMatch('고준희', q), q);
+  // 겹모음·겹받침
+  for (const q of ['ㄱ', '고', '과', '곽', '곽ㅁ', '곽미', '곽민']) assert.ok(nameMatch('곽민', q), q);
+  assert.ok(!nameMatch('곽민', 'ㅘ'), '모음만으로는 글자 중간에서 시작하지 않는다');
+  assert.ok(nameMatch('최의진', '최으'));
+  assert.ok(nameMatch('최의진', '최의'));
+  assert.ok(nameMatch('최의진', '최읮'));
+  assert.ok(nameMatch('박영', '박여'));
+  assert.ok(nameMatch('박영', '박영'));
+  assert.ok(nameMatch('김닭', '김닭'));
+  assert.ok(nameMatch('김닭', '김달'));
+  assert.ok(nameMatch('김닭', '김ㄷ'));
+  // 띄어쓰기·영문
+  assert.ok(nameMatch('John Kim', 'johnk'));
+  assert.ok(!nameMatch('', 'ㄱ'));
 });

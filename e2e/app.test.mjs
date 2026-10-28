@@ -314,6 +314,13 @@ test('현황판(부총대): 이름 표시, 정렬, 이름·번호 검색', async
   assert.deepEqual(await tiles(), ['1', '4', '6']);
   await A.page.fill('#q', '9');
   assert.deepEqual(await tiles(), ['9']);
+  // 한글을 치는 중간 모양: "ㅅ"은 서로 시작하는 글자, "섲"(서+ㅈ)은 서지호, "박핮"(박하+ㅈ)은 박하준
+  await A.page.fill('#q', 'ㅅ');
+  assert.deepEqual(await tiles(), ['1', '4', '6']);
+  await A.page.fill('#q', '섲');
+  assert.deepEqual(await tiles(), ['6']);
+  await A.page.fill('#q', '박핮');
+  assert.deepEqual(await tiles(), ['3']);
   await A.page.fill('#q', '없는사람');
   assert.match(await A.text('#board-grid'), /찾는 학생이 없어요/);
   await A.page.fill('#q', '');
@@ -367,6 +374,11 @@ test('기록: 항목 불러오기, 점수 숫자판, 학생 고르기(추천·�
   await A.page.click('h1');
   assert.ok(await A.page.isHidden('#recForm-ptspop'));
   // 이름 일부 → 추천에서 고르기
+  // 한글을 치는 중간 모양으로도 추천 ("김민ㅅ", 박하+ㅈ = "박핮", 첫 자음만)
+  for (const [q, want] of [['ㄱ', /1 김민서/], ['김민ㅅ', /1 김민서/], ['박핮', /3 박하준/], ['ㅂ', /3 박하준/]]) {
+    await A.page.fill('#recForm-find', q);
+    assert.match(await A.text('#recForm-sugg'), want, q);
+  }
   await A.page.fill('#recForm-find', '김민');
   assert.match(await A.text('#recForm-sugg'), /1 김민서/);
   await A.click('#recForm-sugg [data-act="pick"]');
