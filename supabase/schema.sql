@@ -296,25 +296,14 @@ update presets set owner = '부총대' where owner is null;
 -- ───────────────────────── 권한 ─────────────────────────
 -- 테이블은 모두 잠그고, app_version만 Realtime 알림용으로 읽기를 연다.
 
-alter table students enable row level security;
-alter table presets enable row level security;
-alter table links enable row level security;
-alter table periods enable row level security;
-alter table attendance enable row level security;
-alter table ledger enable row level security;
-alter table ledger_private enable row level security;
-alter table ledger_revisions enable row level security;
-alter table photos enable row level security;
-alter table requests enable row level security;
-alter table excuses enable row level security;
-alter table attendance_requests enable row level security;
-alter table reactions enable row level security;
-alter table ops enable row level security;
-alter table op_changes enable row level security;
-alter table accounts enable row level security;
-alter table sessions enable row level security;
-alter table settings enable row level security;
-alter table app_version enable row level security;
+-- 이미 켜져 있으면 건드리지 않는다 (서버 반영 때 앱이 쓰는 중인 표를 잠그는 횟수를 줄여서, 앱의 요청과 서로 기다리다 멈추지(교착) 않게)
+do $$ declare t text; begin
+  foreach t in array array['students', 'presets', 'links', 'periods', 'attendance', 'ledger', 'ledger_private', 'ledger_revisions', 'photos', 'requests', 'excuses', 'attendance_requests', 'reactions', 'ops', 'op_changes', 'accounts', 'sessions', 'settings', 'app_version'] loop
+    if not (select relrowsecurity from pg_class where oid = format('public.%I', t)::regclass) then
+      execute format('alter table %I enable row level security', t);
+    end if;
+  end loop;
+end $$;
 
 do $$ begin
   if exists (select 1 from pg_roles where rolname = 'anon') then
