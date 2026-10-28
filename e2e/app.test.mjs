@@ -206,7 +206,7 @@ let S, A, O, C; // 학생, 부총대, 총대단(학습부장), 출석 권한 총
 // ───────── 학생 첫 화면 ─────────
 test('학생 첫 화면: 명단 없음, 탭 2개', async () => {
   S = await open();
-  assert.deepEqual(await S.tabs(), ['현황판', '공결 신청', '리액션']);
+  assert.deepEqual(await S.tabs(), ['자봉 현황', '공결 신청', '리액션']);
   assert.match(await S.text(), /아직 명단이 없어요/);
   assert.equal(await S.text('#subbar'), '');
   await S.fits('학생 현황판');
@@ -225,7 +225,7 @@ test('부총대 로그인: 틀린 비밀번호, Enter로 로그인, 탭 목록',
   await A.page.fill('#login-pw', '1234');
   await A.page.press('#login-pw', 'Enter');
   await A.page.waitForSelector('#tabs button');
-  assert.deepEqual(await A.tabs(), ['출석', '자봉', '요청함', '공지', '작업 내역', '관리', '현황판']);
+  assert.deepEqual(await A.tabs(), ['출석', '자봉', '요청함', '공지', '작업 내역', '관리', '자봉 현황']);
   assert.match(await A.text('#subbar'), /부총대로 로그인됨/);
   await A.fits('부총대 출석(빈 명단)');
   assert.match(await A.text(), /관리 탭에서 명단을 먼저 넣어 주세요/);
@@ -325,7 +325,7 @@ test('현황판(부총대): 이름 표시, 정렬, 이름·번호 검색', async
   assert.match(await A.text('#board-grid'), /찾는 학생이 없어요/);
   await A.page.fill('#q', '');
   await A.click('[data-act="sort"][data-v="no"]');
-  await A.fits('현황판');
+  await A.fits('자봉 현황');
 });
 
 // ───────── 기록 ─────────
@@ -760,7 +760,7 @@ test('총대단 로그인: 탭, 비밀번호 바꾸기(검사·성공·다시 �
   await O.click('#roles [data-role="officer"]');
   assert.deepEqual(await O.page.$$eval('#login-who option', (o) => o.map((x) => x.textContent)), ['총대', '실습부장 1', '실습부장 2', '운영부장', '총무', '학습부장', '정리부장', '치아부장']);
   await O.login('총대단', '학습부장', '1234');
-  assert.deepEqual(await O.tabs(), ['요청하기', '요청 현황', '현황판']);
+  assert.deepEqual(await O.tabs(), ['요청하기', '요청 현황', '자봉 현황']);
   await O.fits('요청하기');
   await O.click('[data-act="pw-open"]');
   await O.page.fill('#pw-cur', '1234');
@@ -775,9 +775,9 @@ test('총대단 로그인: 탭, 비밀번호 바꾸기(검사·성공·다시 �
   assert.equal(await O.has('#pw-cur'), false);
   pw.학습부장 = '5678';
   assert.equal(await O.toast('[data-act="logout"]'), '로그아웃했어요');
-  assert.deepEqual(await O.tabs(), ['현황판', '공결 신청', '리액션']);
+  assert.deepEqual(await O.tabs(), ['자봉 현황', '공결 신청', '리액션']);
   await O.login('총대단', '학습부장', '5678');
-  assert.deepEqual(await O.tabs(), ['요청하기', '요청 현황', '현황판']);
+  assert.deepEqual(await O.tabs(), ['요청하기', '요청 현황', '자봉 현황']);
 });
 
 test('총대단: 항목명 칸의 불러오기 — "추가"를 누르면 그 자리에서 항목명·점수 입력(검사·Enter·취소), 고르기, 빼기, 바깥 누르면 닫힘', async () => {
@@ -877,7 +877,7 @@ test('총대단: 사진 붙인 요청, 숫자판으로 상점 요청, 요청 현
 test('총대: 출석 탭(아침 출석 없음), 교시 추가, 출석 요청·다시 보내기', async () => {
   C = await open();
   await C.login('총대단', '총대', '1234');
-  assert.deepEqual(await C.tabs(), ['출석', '요청하기', '요청 현황', '현황판']);
+  assert.deepEqual(await C.tabs(), ['출석', '요청하기', '요청 현황', '자봉 현황']);
   // 부총대가 오늘 만든 교시는 보이지만 아침 출석은 없다
   assert.deepEqual(await C.page.$$eval('[data-act="pick-period"]', (b) => b.map((x) => x.textContent)), ['1교시 구강해부학']);
   await C.page.fill('#attDate', '2026-01-06');
@@ -1113,7 +1113,7 @@ test('출석 요청: 이미 저장된 교시·같은 교시 두 요청 경고, �
   await C.toast('[data-act="att-request"]');
   const P1 = await open();
   await P1.login('총대단', '실습부장 1', '1234');
-  assert.deepEqual(await P1.tabs(), ['출석', '요청하기', '요청 현황', '현황판']);
+  assert.deepEqual(await P1.tabs(), ['출석', '요청하기', '요청 현황', '자봉 현황']);
   await P1.click('[data-act="pick-period"]:has-text("2교시 생리학")');
   assert.match(await P1.text('.att-foot'), /부총대가 저장한 교시예요/);
   await P1.click(`[data-act="setst"][data-sid="${await sid('이도윤')}"][data-v="absent"]`);
@@ -1271,7 +1271,7 @@ test('관리: 다른 직책 비밀번호 재설정 → 그 직책은 다음 동�
   await O.page.fill('#reqForm-item', '확인');
   await O.page.type('#reqForm-find', '1 ');
   assert.equal(await O.toast('[data-act="req-add"]'), '로그인이 끊겼어요. 다시 로그인해 주세요');
-  assert.deepEqual(await O.tabs(), ['현황판', '공결 신청', '리액션']);
+  assert.deepEqual(await O.tabs(), ['자봉 현황', '공결 신청', '리액션']);
   await O.login('총대단', '학습부장', 'qwer');
 });
 
@@ -1301,7 +1301,7 @@ test('관리: 새 복구 코드 → 복구 코드로 들어가기(소문자·붙
   pw.부총대 = 'zxcv';
   const code2 = (await A.text('.card:has([data-act="code-ok"]) .mono')).trim();
   assert.notEqual(code2, code);
-  assert.deepEqual(await A.tabs(), ['출석', '자봉', '요청함', '공지', '작업 내역', '관리', '현황판']);
+  assert.deepEqual(await A.tabs(), ['출석', '자봉', '요청함', '공지', '작업 내역', '관리', '자봉 현황']);
   await A.click('[data-act="code-ok"]');
   await A.fits('복구 뒤');
 });
@@ -2032,7 +2032,7 @@ test('서버에 못 닿으면 "불러오지 못했어요"와 다시 시도', asy
   await R.page.context().unroute('**/rest/v1/rpc/public_state');
   await R.click('[data-act="reload"]');
   await R.page.waitForSelector('#board-grid');
-  assert.deepEqual(await R.tabs(), ['현황판', '공결 신청', '리액션']);
+  assert.deepEqual(await R.tabs(), ['자봉 현황', '공결 신청', '리액션']);
   await R.page.context().close();
 });
 
@@ -2048,7 +2048,7 @@ test('불러오기 실패: 작업 내역은 계속 다시 부르지 않고 다�
   assert.match(await P.text(), /불러오지 못했어요/);
   await P.click('[data-act="reload"]');
   await P.page.waitForSelector('#tabs button');
-  assert.deepEqual(await P.tabs(), ['출석', '자봉', '요청함', '공지', '작업 내역', '관리', '현황판']);
+  assert.deepEqual(await P.tabs(), ['출석', '자봉', '요청함', '공지', '작업 내역', '관리', '자봉 현황']);
   // 작업 내역: 실패하면 한 번만 부르고 다시 시도 버튼
   let n = 0;
   await P.page.route('**/rest/v1/rpc/ops_list', (r) => (n++, r.fulfill({ status: 500, contentType: 'application/json', body: '{"message":"서버 오류"}' })));
@@ -2213,7 +2213,7 @@ test('학급 매점 링크: 부총대가 관리 탭에서 넣고(https만)·바�
   await A.page.fill('#store-url', 'javascript:alert(1)');
   assert.match(await A.toast('[data-act="link-save"]'), /https:\/\/ 로 시작하는 주소/);
   await A.page.fill('#store-url', `  ${URL1} `);
-  assert.equal(await A.toast('[data-act="link-save"]'), '매점 링크를 저장했어요 · 현황판에 버튼이 생겼어요');
+  assert.equal(await A.toast('[data-act="link-save"]'), '매점 링크를 저장했어요 · 자봉 현황에 버튼이 생겼어요');
   assert.equal(await A.page.inputValue('#store-url'), URL1);
   assert.match(await A.toast('[data-act="link-save"]'), /바뀌는 것이 없어요/);
   await A.tab('board');
@@ -2281,9 +2281,10 @@ test('디데이: 부총대가 링크(보기 키까지)를 넣으면 학생 첫 �
   assert.equal(await A.toast('[data-act="link-save"][data-id="dday"]'), '디데이 링크를 저장했어요 · 학생 화면 첫 탭이 디데이가 돼요');
   // 학생: 처음 여는 탭이 디데이
   const P = await open({ beforeGoto: (ctx) => routes(ctx) });
-  assert.deepEqual(await P.tabs(), ['디데이', '현황판', '공결 신청', '리액션']);
+  assert.deepEqual(await P.tabs(), ['디데이', '자봉 현황', '공결 신청', '리액션']);
   await P.page.waitForSelector('.dd-item');
   const v = await P.text();
+  assert.match(v, /카톡 공지를 AI가 자동으로 정리한 목록입니다\. 빠지거나 틀릴 수 있으니 중요한 건 꼭 원문 공지를 확인하세요\./);
   // 칸마다 날짜·요일·D-숫자 다음에 제목
   assert.match(v, /오늘 · 1[\s\S]*D-day[\s\S]*<b>오늘<\/b> 마감[\s\S]*내일 · 1[\s\S]*D-1[\s\S]*내일 실습[\s\S]*09:00[\s\S]*7일 이내 · 1[\s\S]*D-5[\s\S]*이번 주 퀴즈[\s\S]*그 이후 · 1[\s\S]*D-20[\s\S]*그 이후 시험[\s\S]*범위: 1~3장[\s\S]*해부학/);
   assert.equal(await P.page.getAttribute('.dd-d:text-is("D-day")', 'class'), 'dd-d hot');
@@ -2328,7 +2329,7 @@ test('디데이: 부총대가 링크(보기 키까지)를 넣으면 학생 첫 �
   await A.page.fill('#dday-url', '');
   assert.equal(await A.toast('[data-act="link-save"][data-id="dday"]'), '디데이 링크를 지웠어요');
   await W.reload();
-  assert.deepEqual(await W.tabs(), ['현황판', '공결 신청', '리액션']);
+  assert.deepEqual(await W.tabs(), ['자봉 현황', '공결 신청', '리액션']);
   assert.ok(await W.has('#board-grid'));
   await W.page.context().close();
 });
@@ -2336,13 +2337,13 @@ test('디데이: 부총대가 링크(보기 키까지)를 넣으면 학생 첫 �
 test('새로고침해도 로그인 유지, 서버에서 로그인이 지워지면 다음 동작에서 로그아웃', async () => {
   await A.reload();
   assert.match(await A.text('#subbar'), /부총대로 로그인됨/);
-  assert.deepEqual(await A.tabs(), ['출석', '자봉', '요청함', '공지', '작업 내역', '관리', '현황판']);
+  assert.deepEqual(await A.tabs(), ['출석', '자봉', '요청함', '공지', '작업 내역', '관리', '자봉 현황']);
   await db.query(`delete from sessions where role = '부총대'`);
   await A.page.evaluate(() => (document.getElementById('toast').hidden = true));
   await A.page.click('#tabs [data-tab="history"]');
   await A.page.waitForSelector('#toast:not([hidden])');
   assert.equal((await A.text('#toast > span')).trim(), '로그인이 끊겼어요. 다시 로그인해 주세요');
-  assert.deepEqual(await A.tabs(), ['현황판', '공결 신청', '리액션']);
+  assert.deepEqual(await A.tabs(), ['자봉 현황', '공결 신청', '리액션']);
 });
 
 // ───────── 좁은 폰(320px)에서 모든 화면 ─────────

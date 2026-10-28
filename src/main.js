@@ -61,9 +61,9 @@ function setMyNo(no) {
 const myStudent = () => (UI.myNo ? S.students.find((x) => x.active && x.no === UI.myNo) : null);
 
 const TABS = {
-  student: [['board', '현황판'], ['excuse', '공결 신청'], ['react', '리액션']],
-  officer: [['request', '요청하기'], ['reqs', '요청 현황'], ['board', '현황판']],
-  admin: [['attend', '출석'], ['record', '자봉'], ['inbox', '요청함'], ['notice', '공지'], ['history', '작업 내역'], ['manage', '관리'], ['board', '현황판']],
+  student: [['board', '자봉 현황'], ['excuse', '공결 신청'], ['react', '리액션']],
+  officer: [['request', '요청하기'], ['reqs', '요청 현황'], ['board', '자봉 현황']],
+  admin: [['attend', '출석'], ['record', '자봉'], ['inbox', '요청함'], ['notice', '공지'], ['history', '작업 내역'], ['manage', '관리'], ['board', '자봉 현황']],
 };
 // 출석 권한을 받은 총대단(기본: 실습부장)은 맨 앞에 출석 탭이 생긴다
 const canAttend = () => Boolean(S.accounts.find((a) => a.role === UI.user)?.attend);
@@ -274,7 +274,7 @@ function vDday() {
   if (!src) return vBoard();
   const D = ddayLoad(src);
   const open = `<a class="btn ghost small" href="${esc(src)}" target="_blank" rel="noopener noreferrer">원본 사이트 열기 ↗</a>`;
-  const head = `<div><h1>디데이</h1>${D.data ? `<p class="sub">마지막 공지 ${esc(D.data.lastMessage.slice(5) || '-')} · 갱신 ${esc(D.data.now.slice(5) || '-')}</p>` : ''}</div>`;
+  const head = `<div><h1>디데이</h1><p class="sub">카톡 공지를 AI가 자동으로 정리한 목록입니다. 빠지거나 틀릴 수 있으니 중요한 건 꼭 원문 공지를 확인하세요.</p>${D.data ? `<p class="note">마지막 공지 ${esc(D.data.lastMessage.slice(5) || '-')} · 갱신 ${esc(D.data.now.slice(5) || '-')}</p>` : ''}</div>`;
   if (!D.data) return `${head}${D.err ? `<div class="warn">${esc(D.err)}</div><div class="btns">${open}</div>` : '<p class="boot">불러오는 중…</p>'}`;
   // 지난 마감과 날짜가 없는 것은 숨기고 오늘·내일·7일 이내·그 이후로 나눈다 (원본 사이트와 같다)
   const now = new Date();
@@ -329,7 +329,7 @@ function vMyCard(me) {
 
 function vDetail() {
   const s = stu(UI.sid);
-  if (!s) return '<button class="back" data-act="back">← 현황판</button><p class="empty">학생을 찾을 수 없어요.</p>';
+  if (!s) return '<button class="back" data-act="back">← 자봉 현황</button><p class="empty">학생을 찾을 수 없어요.</p>';
   const b = bal(s.id);
   // 서버 목록은 오래된 순이라 뒤집은 뒤 정렬한다: 화면 시각이 분 단위여서 같은 분에 생긴 기록도 최신이 위로 온다
   const es = S.ledger.filter((e) => e.sid === s.id).reverse().sort((a, c) => c.date.localeCompare(a.date) || c.at.localeCompare(a.at));
@@ -345,7 +345,7 @@ function vDetail() {
     ${admin ? `<div class="note">${e.src === 'request' ? `요청: ${esc(e.by)} · 승인: ${esc(e.approvedBy)}` : e.requestedBy ? `출석 요청: ${esc(e.requestedBy)} · 승인: ${esc(e.approvedBy)}` : `기록: ${esc(e.by || '-')}`}${e.voided?.by ? ` · 무효 처리: ${esc(e.voided.by)}` : ''}${e.revs?.length ? ` · 수정: ${esc([...new Set(e.revs.map((r) => r.by))].join(', '))}` : ''} (관리자에게만 보임)</div>` : ''}
   </li>`;
   };
-  return `<button class="back" data-act="back">← 현황판</button>
+  return `<button class="back" data-act="back">← 자봉 현황</button>
   <div class="hero"><div><h1>${s.no}번${isStaff() && s.name ? ` <span class="sub" style="font-size:15px">${esc(s.name)}</span>` : ''}</h1><p class="sub">${isStaff() && s.exempt ? '<b>자봉 면제</b> · 상점만 받아요 · ' : ''}자봉·상점 ${es.filter(live).length}건${es.some((e) => e.voided) ? ` · 무효 ${es.filter((e) => e.voided).length}건` : ''}</p></div>
   <div style="text-align:right"><div class="sub">자봉</div><div class="big ${b > 0 ? 'p' : b < 0 ? 'm' : ''}">${b}</div></div></div>
   ${UI.role === 'student' ? `<button class="btn ghost" data-act="to-excuse" data-no="${s.no}">이 번호로 공결 신청</button>${UI.myNo !== s.no ? `<button class="btn ghost small" data-act="myno-set" data-no="${s.no}" style="align-self:flex-start">이 번호를 내 번호로 정하기</button>` : ''}` : ''}
@@ -966,7 +966,7 @@ function vManage() {
 
 
   <div class="card"><h2>학급 매점 링크</h2>
-  <p class="hint" style="margin:0">넣으면 모든 화면의 현황판 맨 위에 "학급 매점 열기" 버튼이 생겨요. 비우고 저장하면 버튼이 사라져요. 구글 시트는 공유를 <b>"링크가 있는 모든 사용자 → 뷰어"</b>로 해 두세요 (편집자로 두면 학생 누구나 시트를 고칠 수 있어요).</p>
+  <p class="hint" style="margin:0">넣으면 모든 화면의 자봉 현황 맨 위에 "학급 매점 열기" 버튼이 생겨요. 비우고 저장하면 버튼이 사라져요. 구글 시트는 공유를 <b>"링크가 있는 모든 사용자 → 뷰어"</b>로 해 두세요 (편집자로 두면 학생 누구나 시트를 고칠 수 있어요).</p>
   <input id="store-url" type="url" inputmode="url" aria-label="학급 매점 링크" placeholder="https://docs.google.com/spreadsheets/..." value="${esc(S.links?.store || '')}" autocomplete="off">
   <div class="btns"><button class="btn ghost" data-act="link-save" data-id="store">링크 저장</button>${storeUrl() ? `<a class="btn ghost small" href="${esc(storeUrl())}" target="_blank" rel="noopener noreferrer">열어 보기 ↗</a>` : ''}</div></div>
 
@@ -1574,7 +1574,7 @@ const A = {
     if (id === 'dday' && url && !/[#&]k=[^&]+/.test(url)) return toast('디데이 링크는 보기 키(#k=…)까지 통째로 붙여넣어 주세요');
     const msg = id === 'dday'
       ? url ? '디데이 링크를 저장했어요 · 학생 화면 첫 탭이 디데이가 돼요' : '디데이 링크를 지웠어요'
-      : url ? '매점 링크를 저장했어요 · 현황판에 버튼이 생겼어요' : '매점 링크를 지웠어요';
+      : url ? '매점 링크를 저장했어요 · 자봉 현황에 버튼이 생겼어요' : '매점 링크를 지웠어요';
     await run('set_link', { p_id: id, p_url: url }, msg);
     return true;
   },
