@@ -1163,19 +1163,24 @@ begin
   return n;
 end $$;
 
--- 바로가기 링크 바꾸기 (부총대). 빈 주소면 지운다(버튼이 사라진다). https:// 주소만 받는다.
+-- 바로가기 링크 바꾸기 (부총대). 빈 주소면 지운다(버튼·탭이 사라진다). https:// 주소만 받는다.
+-- store: 학급 매점(현황판 맨 위 버튼), dday: 디데이 사이트 주소 + #k=보기 키 (학생 화면 첫 탭)
 create or replace function set_link(p_token uuid, p_id text, p_url text) returns void
 language plpgsql security definer set search_path = public as $$
 declare who text := _session(p_token, true); u text := trim(coalesce(p_url, '')); cur text;
+  label text := case p_id when 'store' then '매점 링크' when 'dday' then '디데이 링크' end;
 begin
   perform _wlock();
-  if p_id is distinct from 'store' then raise exception '없는 링크예요'; end if;
+  if label is null then raise exception '없는 링크예요'; end if;
   if u <> '' and (u !~ '^https://[^[:space:]<>"]+$' or length(u) > 1000) then
     raise exception '링크는 https:// 로 시작하는 주소여야 해요 (띄어쓰기 없이, 1000자까지)';
   end if;
+  if p_id = 'dday' and u <> '' and u !~ '[#&]k=[^&]+' then
+    raise exception '디데이 링크는 보기 키(#k=…)까지 통째로 붙여넣어 주세요';
+  end if;
   select url into cur from links where id = p_id;
   if coalesce(cur, '') = u then raise exception '바뀌는 것이 없어요'; end if;
-  perform _op(who, 'set_link', case when u = '' then '매점 링크 지우기' when cur is null then '매점 링크 넣기' else '매점 링크 바꾸기' end);
+  perform _op(who, 'set_link', label || case when u = '' then ' 지우기' when cur is null then ' 넣기' else ' 바꾸기' end);
   if u = '' then delete from links where id = p_id;
   else insert into links (id, url) values (p_id, u) on conflict (id) do update set url = excluded.url; end if;
 end $$;

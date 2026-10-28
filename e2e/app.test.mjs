@@ -2251,6 +2251,88 @@ test('학급 매점 링크: 부총대가 관리 탭에서 넣고(https만)·바�
   await A.toast('[data-act="link-save"]');
 });
 
+test('디데이: 부총대가 링크(보기 키까지)를 넣으면 학생 첫 탭이 디데이, 원본 사이트와 같은 목록, 받아 둔 목록은 끊겨도 보임, 키가 틀리면 안내, 지우면 탭이 사라짐', async () => {
+  const SITE = 'https://koderjoon.github.io/notice-todo/';
+  const API = 'https://script.google.com/macros/s/TEST/exec';
+  const day = (n) => new Date(Date.parse(TODAY + 'T00:00:00Z') + n * 864e5).toISOString().slice(0, 10);
+  const tasks = [
+    { title: '지난 과제', due: `${day(-1)} 10:00`, detail: '', room: '' },
+    { title: '그 이후 시험', due: day(20), detail: '범위: 1~3장', room: '해부학', extra: '모르는 칸' },
+    { title: '<b>오늘</b> 마감', due: day(0), detail: '', room: '공지방' },
+    { title: '내일 실습', due: `${day(1)} 09:00`, detail: '', room: '' },
+    { title: '이번 주 퀴즈', due: day(5), detail: '', room: '' },
+    { title: '날짜 없음', due: '', detail: '', room: '' },
+  ];
+  const calls = { site: 0, api: 0 };
+  const routes = async (ctx, { down = false } = {}) => {
+    await ctx.route(`${SITE}**`, (r) => (calls.site++, down ? r.abort() : r.fulfill({ contentType: 'text/html', headers: { 'Access-Control-Allow-Origin': '*' }, body: `<script>\n  var API = '${API}';\n</script>` })));
+    await ctx.route(`${API}**`, (r) => {
+      calls.api++;
+      if (down) return r.abort();
+      const ok = new URL(r.request().url()).searchParams.get('k') === 'jnudent25';
+      return r.fulfill({ contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify(ok ? { ok: true, tasks, now: `${TODAY} 08:00`, lastMessage: `${TODAY} 07:30` } : { ok: false }) });
+    });
+  };
+  // 부총대: 보기 키 없는 주소는 막는다
+  await A.tab('manage');
+  await A.page.fill('#dday-url', SITE);
+  assert.match(await A.toast('[data-act="link-save"][data-id="dday"]'), /보기 키\(#k=…\)까지/);
+  await A.page.fill('#dday-url', `${SITE}#k=jnudent25`);
+  assert.equal(await A.toast('[data-act="link-save"][data-id="dday"]'), '디데이 링크를 저장했어요 · 학생 화면 첫 탭이 디데이가 돼요');
+  // 학생: 처음 여는 탭이 디데이
+  const P = await open({ beforeGoto: (ctx) => routes(ctx) });
+  assert.deepEqual(await P.tabs(), ['디데이', '현황판', '공결 신청', '리액션']);
+  await P.page.waitForSelector('.dd-item');
+  const v = await P.text();
+  // 칸마다 날짜·요일·D-숫자 다음에 제목
+  assert.match(v, /오늘 · 1[\s\S]*D-day[\s\S]*<b>오늘<\/b> 마감[\s\S]*내일 · 1[\s\S]*D-1[\s\S]*내일 실습[\s\S]*09:00[\s\S]*7일 이내 · 1[\s\S]*D-5[\s\S]*이번 주 퀴즈[\s\S]*그 이후 · 1[\s\S]*D-20[\s\S]*그 이후 시험[\s\S]*범위: 1~3장[\s\S]*해부학/);
+  assert.equal(await P.page.getAttribute('.dd-d:text-is("D-day")', 'class'), 'dd-d hot');
+  assert.equal(await P.page.getAttribute('.dd-d:text-is("D-1")', 'class'), 'dd-d warm');
+  assert.doesNotMatch(v, /지난 과제|날짜 없음|모르는 칸/);
+  assert.equal(await P.has('.dd-item b b'), false, '제목의 HTML은 글자로');
+  assert.match(v, /시각 미정 \(당일 중\)/);
+  assert.equal(await P.page.getAttribute('a:has-text("원본 사이트 열기")', 'href'), `${SITE}#k=jnudent25`);
+  await P.fits('디데이');
+  // 탭을 오가도 1분 안에는 다시 받지 않는다
+  const n = calls.api;
+  await P.tab('board');
+  await P.tab('dday');
+  assert.equal(calls.api, n);
+  await P.page.context().close();
+  // 받아 둔 목록은 인터넷이 끊겨도 보인다 (같은 폰에서 다시 열기)
+  const Q = await open({ beforeGoto: (ctx) => routes(ctx) });
+  await Q.page.waitForSelector('.dd-item');
+  await Q.page.evaluate(() => {
+    const c = JSON.parse(localStorage.getItem('jabong-dday'));
+    c.at -= 120000; // 2분 전에 받은 것으로
+    localStorage.setItem('jabong-dday', JSON.stringify(c));
+  });
+  await Q.page.context().unrouteAll();
+  await routes(Q.page.context(), { down: true });
+  await Q.reload();
+  await Q.page.waitForSelector('#view .warn:has-text("디데이를 불러오지 못했어요")');
+  assert.match(await Q.text(), /전에 받아 둔 목록을 보여 줘요[\s\S]*내일 실습/);
+  await Q.page.context().close();
+  // 총대단·부총대 화면에는 디데이 탭이 없다
+  await O.reload();
+  assert.ok(!(await O.tabs()).includes('디데이'));
+  assert.ok(!(await A.tabs()).includes('디데이'));
+  // 보기 키가 틀리면 안내와 원본 링크
+  await A.page.fill('#dday-url', `${SITE}#k=wrong`);
+  await A.toast('[data-act="link-save"][data-id="dday"]');
+  const W = await open({ beforeGoto: (ctx) => routes(ctx) });
+  await W.page.waitForSelector('#view .warn');
+  assert.match(await W.text(), /디데이 보기 키가 맞지 않아요/);
+  assert.ok(await W.has('a:has-text("원본 사이트 열기")'));
+  // 지우면 디데이 탭이 사라지고 현황판부터
+  await A.page.fill('#dday-url', '');
+  assert.equal(await A.toast('[data-act="link-save"][data-id="dday"]'), '디데이 링크를 지웠어요');
+  await W.reload();
+  assert.deepEqual(await W.tabs(), ['현황판', '공결 신청', '리액션']);
+  assert.ok(await W.has('#board-grid'));
+  await W.page.context().close();
+});
+
 test('새로고침해도 로그인 유지, 서버에서 로그인이 지워지면 다음 동작에서 로그아웃', async () => {
   await A.reload();
   assert.match(await A.text('#subbar'), /부총대로 로그인됨/);

@@ -67,7 +67,9 @@ const TABS = {
 };
 // 출석 권한을 받은 총대단(기본: 실습부장)은 맨 앞에 출석 탭이 생긴다
 const canAttend = () => Boolean(S.accounts.find((a) => a.role === UI.user)?.attend);
-const tabsOf = (role) => (role === 'officer' && UI.user && canAttend() ? [['attend', '출석'], ...TABS.officer] : TABS[role]);
+// 학생 화면은 디데이 링크가 있으면 맨 앞(처음 여는 탭)이 디데이다
+const tabsOf = (role) =>
+  role === 'officer' && UI.user && canAttend() ? [['attend', '출석'], ...TABS.officer] : role === 'student' && ddayUrl() ? [['dday', '디데이'], ...TABS.student] : TABS[role];
 const STATUS = { pending: '대기', approved: '승인', rejected: '반려' };
 // 하루 전체 공결 신청은 여러 줄이어도 한 건으로 센다
 const pendingCount = () =>
@@ -108,6 +110,11 @@ async function refresh() {
     S = sess ? await rpc('private_state', { p_token: sess.token }) : await rpc('public_state');
     loaded = true;
     loadError = null;
+    // 학생 화면은 처음 열 때 디데이 탭부터 (디데이 링크가 있으면)
+    if (!UI.firstTab) {
+      UI.firstTab = true;
+      if (UI.role === 'student' && UI.tab === 'board' && ddayUrl()) UI.tab = 'dday';
+    }
     if (!UI.roleSet && UI.user) {
       UI.role = roleOf(UI.user);
       UI.tab = tabsOf(UI.role)[0][0];
@@ -170,6 +177,7 @@ async function signOut(msg) {
   UI.tab = 'board';
   UI.sid = null;
   await refresh();
+  UI.tab = tabsOf('student')[0][0];
   render();
   if (msg) toast(msg);
 }
@@ -204,6 +212,92 @@ const storeUrl = () => (/^https:\/\/[^\s"<>]+$/.test(S.links?.store || '') ? S.l
 function vStoreLink() {
   const url = storeUrl();
   return url ? `<a class="btn store-btn" href="${esc(url)}" target="_blank" rel="noopener noreferrer">🛒 학급 매점 열기 <span aria-hidden="true">↗</span></a>` : '';
+}
+
+// ───────── 디데이 (학생 첫 탭) ─────────
+// 관리 탭의 디데이 링크(디데이 사이트 주소 + #k=보기 키)로 그 사이트와 같은 마감 목록을 받아 그린다.
+// 사이트 HTML에서 Apps Script 주소(var API = '…/exec')를 찾고, 거기서 목록(JSON)을 받는다. 사이트의 API 주소가 바뀌어도 따라간다.
+// 마지막으로 받은 목록은 이 폰에 기억해 두어(jabong-dday) 다음에 열 때 바로 보이고, 뒤에서 새로 받는다.
+// 목록의 칸은 title·due("YYYY-MM-DD" 또는 "YYYY-MM-DD HH:MM")·detail·room만 쓴다. 모르는 칸은 무시한다.
+const ddayUrl = () => (/^https:\/\/[^\s"<>]+[#&]k=[^&\s]+/.test(S?.links?.dday || '') ? S.links.dday : null);
+const DDAY_KEY = 'jabong-dday';
+let dday = null; // { src, data, at, err, loading }
+function ddayCache(src) {
+  try {
+    const c = JSON.parse(localStorage.getItem(DDAY_KEY) || 'null');
+    return c && c.src === src && c.data ? c : null;
+  } catch {
+    return null;
+  }
+}
+async function ddayFetch(src) {
+  const key = decodeURIComponent(/[#&]k=([^&]+)/.exec(src)[1]);
+  const page = src.split('#')[0];
+  const html = await (await fetch(page, { credentials: 'omit', cache: 'no-cache' })).text();
+  const api = /var\s+API\s*=\s*['"](https:\/\/script\.google\.com\/[^'"\s]+)['"]/.exec(html)?.[1];
+  if (!api) throw Object.assign(new Error('디데이 사이트에서 목록 주소를 찾지 못했어요'), { kind: 'api' });
+  const d = await (await fetch(`${api}?format=json&k=${encodeURIComponent(key)}`, { credentials: 'omit' })).json();
+  if (!d || !d.ok) throw Object.assign(new Error('디데이 보기 키가 맞지 않아요. 부총대에게 알려 주세요'), { kind: 'key' });
+  return { tasks: Array.isArray(d.tasks) ? d.tasks : [], now: String(d.now || ''), lastMessage: String(d.lastMessage || '') };
+}
+function ddayLoad(src) {
+  if (dday?.src !== src) dday = { src, ...(ddayCache(src) || {}), err: null, loading: false };
+  // 1분 안에 받았으면 다시 받지 않는다 (탭을 오갈 때마다 구글을 부르지 않게)
+  if (dday.loading || (dday.at && Date.now() - dday.at < 60000)) return dday;
+  const cur = dday;
+  cur.loading = true;
+  ddayFetch(src)
+    .then((data) => {
+      Object.assign(cur, { data, at: Date.now(), err: null });
+      try {
+        localStorage.setItem(DDAY_KEY, JSON.stringify({ src, data, at: cur.at }));
+      } catch {}
+    })
+    .catch((e) => {
+      cur.err = e.kind ? e.message : '디데이를 불러오지 못했어요';
+      cur.at = Date.now();
+    })
+    .finally(() => {
+      cur.loading = false;
+      if (dday === cur && UI.tab === 'dday') softRender();
+    });
+  return cur;
+}
+const WD = ['일', '월', '화', '수', '목', '금', '토'];
+function ddayDue(s) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?: (\d{2}):(\d{2}))?$/.exec(String(s || ''));
+  if (!m) return null;
+  return { day: new Date(+m[1], m[2] - 1, +m[3]), end: new Date(+m[1], m[2] - 1, +m[3], m[4] ? +m[4] : 23, m[5] ? +m[5] : 59), hm: m[4] ? `${m[4]}:${m[5]}` : '' };
+}
+function vDday() {
+  const src = ddayUrl();
+  if (!src) return vBoard();
+  const D = ddayLoad(src);
+  const open = `<a class="btn ghost small" href="${esc(src)}" target="_blank" rel="noopener noreferrer">원본 사이트 열기 ↗</a>`;
+  const head = `<div><h1>디데이</h1>${D.data ? `<p class="sub">마지막 공지 ${esc(D.data.lastMessage.slice(5) || '-')} · 갱신 ${esc(D.data.now.slice(5) || '-')}</p>` : ''}</div>`;
+  if (!D.data) return `${head}${D.err ? `<div class="warn">${esc(D.err)}</div><div class="btns">${open}</div>` : '<p class="boot">불러오는 중…</p>'}`;
+  // 지난 마감과 날짜가 없는 것은 숨기고 오늘·내일·7일 이내·그 이후로 나눈다 (원본 사이트와 같다)
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const groups = { today: [], tomorrow: [], week: [], later: [] };
+  D.data.tasks.forEach((t) => {
+    const d = ddayDue(t?.due);
+    if (!d || d.end < now) return;
+    const diff = Math.round((d.day - today) / 864e5);
+    groups[diff === 0 ? 'today' : diff === 1 ? 'tomorrow' : diff <= 7 ? 'week' : 'later'].push({ t, d, diff });
+  });
+  const item = ({ t, d, diff }) => `<div class="card dd-item"><div class="dd-when"><div class="dd-md">${d.day.getMonth() + 1}/${d.day.getDate()}</div><div class="note">${WD[d.day.getDay()]}요일</div>
+    <div class="dd-d ${diff === 0 ? 'hot' : diff <= 2 ? 'warm' : ''}">${diff === 0 ? 'D-day' : `D-${diff}`}</div></div>
+    <div class="dd-body"><b>${esc(t.title)}</b><div class="note">${d.hm ? `<b>${d.hm}</b>${diff === 0 ? ' 까지' : ''}` : '시각 미정 (당일 중)'}</div>
+    ${t.detail ? `<div class="dd-detail">${esc(t.detail)}</div>` : ''}${t.room ? `<span class="pill">${esc(t.room)}</span>` : ''}</div></div>`;
+  const list = [['today', '오늘'], ['tomorrow', '내일'], ['week', '7일 이내'], ['later', '그 이후']]
+    .filter(([k]) => groups[k].length)
+    .map(([k, l]) => `<h2>${l} · ${groups[k].length}</h2>${groups[k].sort((a, b) => a.d.end - b.d.end).map(item).join('')}`)
+    .join('');
+  return `${head}${D.err ? `<div class="warn">${esc(D.err)} (전에 받아 둔 목록을 보여 줘요)</div>` : ''}
+  ${vStoreLink()}
+  ${list || '<p class="empty">다가오는 마감이 없어요.</p>'}
+  <div class="btns">${open}</div>`;
 }
 
 // 홈 화면에 앱으로 추가 (manifest.webmanifest). 안드로이드 크롬은 버튼, 아이폰은 Safari 공유 메뉴 안내.
@@ -874,7 +968,12 @@ function vManage() {
   <div class="card"><h2>학급 매점 링크</h2>
   <p class="hint" style="margin:0">넣으면 모든 화면의 현황판 맨 위에 "학급 매점 열기" 버튼이 생겨요. 비우고 저장하면 버튼이 사라져요. 구글 시트는 공유를 <b>"링크가 있는 모든 사용자 → 뷰어"</b>로 해 두세요 (편집자로 두면 학생 누구나 시트를 고칠 수 있어요).</p>
   <input id="store-url" type="url" inputmode="url" aria-label="학급 매점 링크" placeholder="https://docs.google.com/spreadsheets/..." value="${esc(S.links?.store || '')}" autocomplete="off">
-  <div class="btns"><button class="btn ghost" data-act="link-save">링크 저장</button>${storeUrl() ? `<a class="btn ghost small" href="${esc(storeUrl())}" target="_blank" rel="noopener noreferrer">열어 보기 ↗</a>` : ''}</div></div>
+  <div class="btns"><button class="btn ghost" data-act="link-save" data-id="store">링크 저장</button>${storeUrl() ? `<a class="btn ghost small" href="${esc(storeUrl())}" target="_blank" rel="noopener noreferrer">열어 보기 ↗</a>` : ''}</div></div>
+
+  <div class="card"><h2>디데이 링크</h2>
+  <p class="hint" style="margin:0">디데이 사이트 주소를 <b>보기 키(#k=…)까지 통째로</b> 붙여넣으세요. 넣으면 학생 화면의 첫 탭이 "디데이"가 되고, 그 사이트와 같은 마감 목록이 보여요. 비우고 저장하면 디데이 탭이 사라져요. 학생 앱 주소를 아는 사람은 누구나 이 목록을 볼 수 있어요.</p>
+  <input id="dday-url" type="url" inputmode="url" aria-label="디데이 링크" placeholder="https://koderjoon.github.io/notice-todo/#k=..." value="${esc(S.links?.dday || '')}" autocomplete="off">
+  <div class="btns"><button class="btn ghost" data-act="link-save" data-id="dday">링크 저장</button>${ddayUrl() ? `<a class="btn ghost small" href="${esc(ddayUrl())}" target="_blank" rel="noopener noreferrer">열어 보기 ↗</a>` : ''}</div></div>
 
   <div class="card"><h2>비밀번호</h2>
   <p class="hint" style="margin:0">인수인계할 때는 다음 사람에게 지금 비밀번호와 복구 코드를 알려주고, 그 사람이 로그인해서 자기 비밀번호로 바꾸면 끝이에요.</p>
@@ -1108,7 +1207,7 @@ function render() {
       : locked
         ? '<div class="mocknote">총대단과 부총대는 자기 직책의 비밀번호로 로그인해요.</div>'
         : `<div class="who"><b style="color:var(--ink)">${esc(UI.user)}</b>로 로그인됨 ${UI.role === 'officer' ? '<button class="btn ghost small" data-act="pw-open">비밀번호 바꾸기</button> ' : ''}<button class="btn ghost small" data-act="logout">로그아웃</button></div>`;
-  const V = { board: vBoard, excuse: vExcuse, react: vReact, request: vRequest, reqs: vReqs, attend: vAttend, record: vRecord, inbox: vInbox, notice: vNotice, history: vHistory, manage: vManage };
+  const V = { dday: vDday, board: vBoard, excuse: vExcuse, react: vReact, request: vRequest, reqs: vReqs, attend: vAttend, record: vRecord, inbox: vInbox, notice: vNotice, history: vHistory, manage: vManage };
   const codeCard =
     !locked && UI.role === 'admin' && UI.newCode
       ? `<div class="card" style="border-color:var(--warn)"><h2>새 복구 코드</h2><div class="mono" style="font-size:22px;letter-spacing:.06em">${esc(UI.newCode)}</div>
@@ -1468,10 +1567,15 @@ const A = {
     render();
     return toast('내 비밀번호를 바꿨어요');
   },
-  'link-save': async () => {
-    const url = val('store-url').trim();
+  'link-save': async (d) => {
+    const id = d.id === 'dday' ? 'dday' : 'store';
+    const url = val(`${id}-url`).trim();
     if (url && !/^https:\/\/[^\s"<>]+$/.test(url)) return toast('링크는 https:// 로 시작하는 주소여야 해요 (띄어쓰기 없이)');
-    await run('set_link', { p_id: 'store', p_url: url }, url ? '매점 링크를 저장했어요 · 현황판에 버튼이 생겼어요' : '매점 링크를 지웠어요');
+    if (id === 'dday' && url && !/[#&]k=[^&]+/.test(url)) return toast('디데이 링크는 보기 키(#k=…)까지 통째로 붙여넣어 주세요');
+    const msg = id === 'dday'
+      ? url ? '디데이 링크를 저장했어요 · 학생 화면 첫 탭이 디데이가 돼요' : '디데이 링크를 지웠어요'
+      : url ? '매점 링크를 저장했어요 · 현황판에 버튼이 생겼어요' : '매점 링크를 지웠어요';
+    await run('set_link', { p_id: id, p_url: url }, msg);
     return true;
   },
   'pw-reset': async () => {
@@ -2232,6 +2336,10 @@ async function boot() {
     clearTimeout(timer);
     timer = setTimeout(refreshBg, 300);
   });
+  // 디데이는 1분마다 다시 그린다 (지난 마감이 빠지고 D-숫자가 바뀐다)
+  setInterval(() => {
+    if (UI.tab === 'dday' && !document.hidden) softRender();
+  }, 60000);
   // 오래 켜 둔 화면이 날짜를 넘기면 오늘 날짜를 다시 맞춘다
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') refreshBg();

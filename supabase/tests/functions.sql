@@ -1222,6 +1222,14 @@ select pg_temp.ok((public_state() -> 'links')::jsonb = '{}', '링크 없는 옛 
 select (login('부총대', '1234')::json ->> 'token') as t \gset
 select restore_backup(:'t', :'lkdump'::jsonb);
 select pg_temp.ok(public_state() -> 'links' ->> 'store' = 'https://docs.google.com/spreadsheets/d/new', '백업에서 링크도 되살림');
+-- 디데이 링크: 보기 키까지, 따로 저장
+select pg_temp.expect_msg(format('select set_link(%L, ''dday'', ''https://koderjoon.github.io/notice-todo/'')', :'t'), '디데이 링크는 보기 키%', '키 없는 디데이 링크');
+select set_link(:'t', 'dday', 'https://koderjoon.github.io/notice-todo/#k=jnudent25');
+select pg_temp.ok(public_state() -> 'links' ->> 'dday' = 'https://koderjoon.github.io/notice-todo/#k=jnudent25'
+  and public_state() -> 'links' ->> 'store' = 'https://docs.google.com/spreadsheets/d/new', '디데이 링크와 매점 링크는 따로');
+select pg_temp.ok((ops_list(:'t', 1)::jsonb -> 0 ->> 'summary') = '디데이 링크 넣기', '디데이 링크도 작업 내역에');
+select set_link(:'t', 'dday', '');
+select pg_temp.ok(public_state() -> 'links' ->> 'dday' is null, '디데이 링크 지우기');
 \echo 25. 학급 매점 링크 통과
 
 \echo 모든 서버 함수 테스트 통과
