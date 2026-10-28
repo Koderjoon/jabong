@@ -927,8 +927,7 @@ begin
     n := _apply_attendance(r.period_id, r.statuses, who, r.requested_by);
     update attendance_requests set status = 'approved', reviewed_by = who, reviewed_at = now() where id = p_id;
   else
-    if coalesce(trim(p_note), '') = '' then raise exception '반려 사유를 입력하세요'; end if;
-    update attendance_requests set status = 'rejected', review_note = trim(p_note), reviewed_by = who, reviewed_at = now() where id = p_id;
+    update attendance_requests set status = 'rejected', review_note = nullif(left(trim(coalesce(p_note, '')), 500), ''), reviewed_by = who, reviewed_at = now() where id = p_id;
   end if;
   return n;
 end $$;
@@ -999,8 +998,7 @@ begin
     end loop;
     update requests set status = 'approved', reviewed_by = who, reviewed_at = now() where id = p_id;
   else
-    if coalesce(trim(p_note), '') = '' then raise exception '반려 사유를 입력하세요'; end if;
-    update requests set status = 'rejected', review_note = trim(p_note), reviewed_by = who, reviewed_at = now() where id = p_id;
+    update requests set status = 'rejected', review_note = nullif(left(trim(coalesce(p_note, '')), 500), ''), reviewed_by = who, reviewed_at = now() where id = p_id;
   end if;
   return n;
 end $$;
@@ -1012,7 +1010,6 @@ begin
   perform _wlock();
   select * into x from excuses where id = p_id for update;
   if not found or x.status <> 'pending' then raise exception '이미 처리된 신청이에요'; end if;
-  if not p_approve and coalesce(trim(p_note), '') = '' then raise exception '반려 사유를 입력하세요'; end if;
   -- 하루 전체 신청은 같은 grp의 대기 중인 것을 함께 처리한다
   select count(*) into n from excuses where status = 'pending' and (id = p_id or (x.grp is not null and grp = x.grp));
   perform _op(who, 'review_excuse', format('공결 %s: %s번 %s', case when p_approve then '승인' else '반려' end,
@@ -1045,7 +1042,7 @@ begin
       end if;
       update excuses set status = 'approved', reviewed_by = who, reviewed_at = now() where id = r.id;
     else
-      update excuses set status = 'rejected', review_note = trim(p_note), reviewed_by = who, reviewed_at = now() where id = r.id;
+      update excuses set status = 'rejected', review_note = nullif(left(trim(coalesce(p_note, '')), 500), ''), reviewed_by = who, reviewed_at = now() where id = r.id;
     end if;
   end loop;
 end $$;
@@ -1141,7 +1138,6 @@ declare who text := _session(p_token, true); r reactions; g uuid[]; mid uuid; n 
 begin
   perform _wlock();
   if coalesce(array_length(p_ids, 1), 0) = 0 then raise exception '고른 리액션이 없어요'; end if;
-  if not p_approve and coalesce(trim(p_note), '') = '' then raise exception '반려 사유를 입력하세요'; end if;
   if exists (select 1 from unnest(p_ids) i where not exists (select 1 from reactions where id = i and status = 'pending')) then
     raise exception '이미 처리된 리액션이 있어요. 새로 불러온 뒤 다시 해보세요';
   end if;
@@ -1160,7 +1156,7 @@ begin
         n := n + 1;
       end if;
     else
-      update reactions set status = 'rejected', review_note = trim(p_note), reviewed_by = who, reviewed_at = now() where id = r.id;
+      update reactions set status = 'rejected', review_note = nullif(left(trim(coalesce(p_note, '')), 500), ''), reviewed_by = who, reviewed_at = now() where id = r.id;
     end if;
   end loop;
   if n > 0 then update ops set summary = summary || format(' (상점 %s점)', n) where id = oid; end if;

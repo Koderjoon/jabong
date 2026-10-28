@@ -316,10 +316,10 @@ set role postgres;
 select pg_temp.ok(:'r1' <> :'r2' and (select statuses ->> :'s1' from attendance_requests where id = :'r1') = 'absent', '다른 사람 요청은 따로');
 select pg_temp.ok(not exists (select 1 from ledger where period_id = :'p2'), '요청만으로는 기록 없음');
 set role anon;
-select pg_temp.expect_msg(format('select review_attendance(%L, %L, false, %L)', :'t', :'r1', ' '), '반려 사유를 입력하세요', '출석 요청 반려 사유');
-select pg_temp.ok(review_attendance(:'t', :'r1', false, ' 중복 ') = 0, '출석 요청 반려');
+-- 반려 사유는 쓰지 않아도 된다 (빈칸은 사유 없음)
+select pg_temp.ok(review_attendance(:'t', :'r1', false, ' ') = 0, '출석 요청 반려 (사유 없이)');
 set role postgres;
-select pg_temp.ok((select status = 'rejected' and review_note = '중복' and reviewed_by = '부총대' and reviewed_at is not null from attendance_requests where id = :'r1'), '반려 기록');
+select pg_temp.ok((select status = 'rejected' and review_note is null and reviewed_by = '부총대' and reviewed_at is not null from attendance_requests where id = :'r1'), '반려 기록');
 set role anon;
 select request_attendance(:'ct', :'p2', format('{"%s":"late"}', :'s1')::jsonb) as r3 \gset
 select pg_temp.ok(:'r3' <> :'r1', '반려 뒤 다시 보내면 새 요청');
@@ -391,7 +391,6 @@ select pg_temp.ok(get_photo(:'ot', gen_random_uuid()) is null, '없는 사진');
 select pg_temp.ok(json_array_length(private_state(:'ot') -> 'requests') = 4, '총대단은 모든 요청을 봄 (면제 확인 요청 포함)');
 select pg_temp.ok(review_request(:'t', :'rq1', true, null) = 2, '요청 승인 → 학생 수만큼 기록');
 select pg_temp.expect_msg(format('select review_request(%L, %L, true, null)', :'t', :'rq1'), '이미 처리된 요청이에요', '두 번 승인');
-select pg_temp.expect_msg(format('select review_request(%L, %L, false, %L)', :'t', :'rq2', ''), '반려 사유를 입력하세요', '반려 사유 없음');
 select review_request(:'t', :'rq2', false, ' 중복 ');
 select roster_apply(:'t', format('[{"op":"remove","id":"%s"}]', :'s5')::jsonb, '[]', '2026-03-05');
 select pg_temp.ok(review_request(:'t', :'rq3', true, null) = 1, '제외된 학생에게도 요청 기록은 들어감');
@@ -437,7 +436,6 @@ select photo_id as ph_exc from excuses where id = :'x3' \gset
 set role anon;
 select pg_temp.expect(format('select get_photo(%L, %L)', :'ot', :'ph_exc'), '42501', '공결 증빙은 총대단이 못 봄');
 select pg_temp.ok(get_photo(:'t', :'ph_exc') = 'data:image/jpeg;base64,/9j/BBBB', '공결 증빙은 부총대가 봄');
-select pg_temp.expect_msg(format('select review_excuse(%L, %L, false, %L)', :'t', :'x1', ''), '반려 사유를 입력하세요', '공결 반려 사유');
 select review_excuse(:'t', :'x1', false, '증빙 없음');
 set role postgres;
 select pg_temp.ok((select status = 'rejected' and review_note = '증빙 없음' from excuses where id = :'x1') and (select voided_at is null from ledger where id = :'e_late'), '공결 반려는 기록을 건드리지 않음');
@@ -792,17 +790,16 @@ select pg_temp.ok((select status from attendance where period_id = :'dy1' and st
   and (select status from attendance where period_id = :'dy3' and student_id = :'d1') = 'absent', '그 두 교시만 공결로 (따로 신청한 것은 대기)');
 select pg_temp.ok((select summary from ops order by id desc limit 1) like '공결 승인: %번 6/20 하루 (2건)', '승인 요약');
 select pg_temp.ok((select pending_n from (select count(*) pending_n from excuses where ledger_id = :'dyl3' and status = 'pending') t) = 1, '따로 신청한 것은 그대로 대기');
--- 반려도 묶음째, 사유 필수
+-- 반려도 묶음째, 사유는 없어도 된다
 set role anon;
 select create_excuse_day(:'d2', '2026-06-20', '', null);
 set role postgres;
 select id as dyx2 from excuses where grp is not null and student_id = :'d2' limit 1 \gset
 set role anon;
-select pg_temp.expect_msg(format('select review_excuse(%L, %L, false, %L)', :'t', :'dyx2', ' '), '반려 사유를 입력하세요', '반려 사유 필수');
-select review_excuse(:'t', :'dyx2', false, '증빙 없음');
+select review_excuse(:'t', :'dyx2', false, null);
 select pg_temp.expect_msg(format('select review_excuse(%L, %L, true, null)', :'t', :'dyx2'), '이미 처리된 신청이에요', '이미 처리');
 set role postgres;
-select pg_temp.ok((select bool_and(status = 'rejected' and review_note = '증빙 없음') and count(*) = 2 from excuses where grp is not null and student_id = :'d2'), '묶음 전체 반려');
+select pg_temp.ok((select bool_and(status = 'rejected' and review_note is null) and count(*) = 2 from excuses where grp is not null and student_id = :'d2'), '묶음 전체 반려 (사유 없이)');
 -- 승인을 이 작업만 되돌리기 → 대기로, 자봉도 원래대로
 select max(id) as opx from ops where kind = 'review_excuse' and summary like '공결 승인:%하루%' \gset
 set role anon;
@@ -835,10 +832,9 @@ select pg_temp.ok((select count(*) from json_array_elements(private_state(:'t') 
 select pg_temp.ok(json_array_length(public_state() -> 'reactions') = 0 and position('하악신경' in public_state()::text) = 0, '공개 상태에는 리액션 글이 없다 (가볍게)');
 select pg_temp.ok((my_reactions(:'d1') ->> 'today')::int = 3 and json_array_length(my_reactions(:'d1') -> 'rows') = 3 and (my_reactions(:'d1') -> 'rows' -> 0 ->> 'q') = '질문', '학생 자기 리액션은 따로 (최신부터)');
 set role anon;
--- 승인·반려는 부총대만, 반려 사유 필수
+-- 승인·반려는 부총대만
 select pg_temp.expect(format('select review_reaction(%L, array[%L]::uuid[], true, null)', :'ct', :'rx1'), '42501', '총대는 승인 못 함');
 select pg_temp.expect_msg(format('select review_reaction(%L, array[]::uuid[], true, null)', :'t'), '고른 리액션이 없어요', '빈 목록');
-select pg_temp.expect_msg(format('select review_reaction(%L, array[%L]::uuid[], false, %L)', :'t', :'rx1', ' '), '반려 사유를 입력하세요', '반려 사유');
 -- 하나 반려하면 그날 한 번 더 낼 수 있다
 select review_reaction(:'t', array[:'rx3']::uuid[], false, '수업 내용 아님');
 select pg_temp.expect_msg(format('select review_reaction(%L, array[%L]::uuid[], true, null)', :'t', :'rx3'), '이미 처리된 리액션이 있어요%', '이미 처리');

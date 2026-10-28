@@ -413,7 +413,7 @@ function reqCard(r, admin) {
   <div class="chips">${r.sids.map((id) => `<span class="chip">${noL(id)} ${esc(stu(id)?.name || '')}</span>`).join('')}</div>
   ${r.reason ? `<div class="note">사유: ${esc(r.reason)}</div>` : ''}${photoView(r.photo)}
   ${r.note ? `<div class="note">${esc(r.reviewer || '')}: ${esc(r.note)}</div>` : ''}
-  ${admin && r.status === 'pending' ? `<input id="note-${r.id}" placeholder="반려 사유 (반려할 때 필수)" autocomplete="off" data-suggest="note"><div class="btns"><button class="btn ok small" data-act="req-ok" data-id="${r.id}">승인</button><button class="btn danger small" data-act="req-no" data-id="${r.id}">반려</button></div>` : ''}</div>`;
+  ${admin && r.status === 'pending' ? `<input id="note-${r.id}" placeholder="반려 사유 (선택)" autocomplete="off" data-suggest="note"><div class="btns"><button class="btn ok small" data-act="req-ok" data-id="${r.id}">승인</button><button class="btn danger small" data-act="req-no" data-id="${r.id}">반려</button></div>` : ''}</div>`;
 }
 
 // 출석 요청 카드: 교시, 요청자, 지각·결석·공결 명단
@@ -428,7 +428,7 @@ function attReqCard(a, admin) {
   ${groups.map(([k, l]) => `<div class="note">${ST[k][1]} ${l.length}명</div><div class="chips">${l.map((id) => `<span class="chip">${noL(id)} ${esc(stu(id)?.name || '')}</span>`).join('')}</div>`).join('') || '<div class="note">전원 출석</div>'}
   ${a.status !== 'pending' ? `<div class="note">${esc(a.reviewer || '')} · ${esc(a.reviewedAt || '')}${a.note ? ` · 반려 사유: ${esc(a.note)}` : ''}</div>` : ''}
   ${admin && a.status === 'pending' ? `${S.att[a.pid] ? '<div class="warn">이미 저장된 교시예요. 승인하면 이 요청 내용으로 바뀌어요.</div>' : ''}${others.length ? `<div class="warn">같은 교시에 ${others.map((o) => esc(o.by)).join(', ')}의 요청도 있어요.</div>` : ''}
-  <input id="note-${a.id}" placeholder="반려 사유 (반려할 때 필수)" autocomplete="off" data-suggest="note"><div class="btns"><button class="btn ok small" data-act="att-ok" data-id="${a.id}">승인 (출석 저장)</button><button class="btn danger small" data-act="att-no" data-id="${a.id}">반려</button></div>` : ''}</div>`;
+  <input id="note-${a.id}" placeholder="반려 사유 (선택)" autocomplete="off" data-suggest="note"><div class="btns"><button class="btn ok small" data-act="att-ok" data-id="${a.id}">승인 (출석 저장)</button><button class="btn danger small" data-act="att-no" data-id="${a.id}">반려</button></div>` : ''}</div>`;
 }
 
 function vReqs() {
@@ -680,7 +680,7 @@ function vAttend() {
           }).join('') || '<p class="empty">관리 탭에서 명단을 먼저 넣어 주세요.</p>'}</div>`) +
       recallSec(pid, d) +
       `${pendingHere.length ? `<div class="warn">이 교시에 ${pendingHere.map((a) => esc(a.by)).join(', ')}의 출석 요청이 있어요. 요청함에서 확인하세요.</div>` : ''}
-    ${mine?.status === 'rejected' ? `<div class="warn">지난 요청이 반려됐어요: ${esc(mine.note || '')}</div>` : ''}
+    ${mine?.status === 'rejected' ? `<div class="warn">지난 요청이 반려됐어요${mine.note ? `: ${esc(mine.note)}` : ' (사유 없음)'}</div>` : ''}
     <div class="att-foot"><span class="note">지각 ${c.late} · 결석 ${c.absent} · 공결 ${c.excused}<br>${state}</span>
     <div class="btns"><button class="btn ghost small" data-act="att-clear">전원 출석으로 되돌리기</button>${admin ? '<button class="btn" data-act="att-save">저장</button>' : `<button class="btn" data-act="att-request">${mine?.status === 'pending' ? '요청 다시 보내기' : '출석 요청 보내기'}</button>`}</div></div>
     ${UI.attConfirm ? `<div class="att-confirm"><span>지금 표시한 지각 ${c.late}명 · 결석 ${c.absent}명 · 공결 ${c.excused}명이 모두 출석으로 바뀌어요. 되돌릴까요?</span>
@@ -738,14 +738,14 @@ function vInbox() {
     const x = g[0];
     return `<div class="card"><div class="req-top"><span class="pill pending">대기${g.length > 1 ? ` · ${g.length}건` : ''}</span><span class="note">${esc(x.at)}</span></div>
     <div class="req-body"><b>${noL(x.sid)}번 ${esc(stu(x.sid)?.name || '')}</b> · ${excText(g, true)}</div>${x.reason ? `<div class="note">사유: ${esc(x.reason)}</div>` : '<div class="note">사유 없음</div>'}${x.photo ? photoView(x.photo) : '<div class="note">증빙 사진 없음</div>'}
-    <input id="note-${x.id}" aria-label="반려 사유" placeholder="반려 사유 (반려할 때 필수)" autocomplete="off" data-suggest="note"><div class="btns"><button class="btn ok small" data-act="exc-ok" data-id="${x.id}">${g.length > 1 ? `${g.length}건 모두 승인` : '승인'} (자봉 무효 처리)</button><button class="btn danger small" data-act="exc-no" data-id="${x.id}">반려</button></div></div>`;
+    <input id="note-${x.id}" aria-label="반려 사유" placeholder="반려 사유 (선택)" autocomplete="off" data-suggest="note"><div class="btns"><button class="btn ok small" data-act="exc-ok" data-id="${x.id}">${g.length > 1 ? `${g.length}건 모두 승인` : '승인'} (자봉 무효 처리)</button><button class="btn danger small" data-act="exc-no" data-id="${x.id}">반려</button></div></div>`;
   }).join('') || '<p class="empty">대기 중인 공결 신청이 없어요.</p>'}
   <h2>리액션 신청</h2>${rxBy.map((g) => {
     const sid = g[0].sid;
     const prog = S.reactProg?.[sid] || 0;
     return `<div class="card rx-card"><div class="req-top"><b>${noL(sid)}번 ${esc(stu(sid)?.name || '')}</b><span class="note">이월 ${prog}/${REACT_MAX} · 대기 ${g.length}건</span></div>
     ${g.map((r) => `<div class="rx-item"><div class="req-body">${rxText(r)}</div><div class="note">${esc(r.at)}</div>
-      <input id="note-rx-${r.id}" aria-label="반려 사유" placeholder="반려 사유 (반려할 때 필수)" autocomplete="off" data-suggest="note">
+      <input id="note-rx-${r.id}" aria-label="반려 사유" placeholder="반려 사유 (선택)" autocomplete="off" data-suggest="note">
       <div class="btns"><button class="btn ok small" data-act="rx-ok" data-ids="${r.id}">승인</button><button class="btn danger small" data-act="rx-no" data-id="${r.id}">반려</button></div></div>`).join('')}
     ${g.length > 1 ? `<button class="btn ok" data-act="rx-ok" data-ids="${g.map((r) => r.id).join(',')}">${noL(sid)}번 ${g.length}건 모두 승인</button>` : ''}</div>`;
   }).join('') || '<p class="empty">대기 중인 리액션 신청이 없어요.</p>'}

@@ -933,7 +933,7 @@ test('출석: 총대가 손대지 않은 교시는 부총대가 저장한 값을
 });
 
 // ───────── 요청함 (부총대) ─────────
-test('요청함: 알림 숫자, 출석 요청 승인, 사진 보기, 요청 승인·반려(사유 필수), 처리한 내역', async () => {
+test('요청함: 알림 숫자, 출석 요청 승인, 사진 보기, 요청 승인·반려, 처리한 내역', async () => {
   await A.reload();
   assert.equal(await A.text('#tabs [data-tab="inbox"] .badge'), '3');
   await A.tab('inbox');
@@ -947,7 +947,6 @@ test('요청함: 알림 숫자, 출석 요청 승인, 사진 보기, 요청 승�
   await A.click(`${reqCard('청소 불참')} [data-act="photo"]`);
   assert.match(await A.page.getAttribute(`${reqCard('청소 불참')} img.photo-big`, 'src'), /^data:image\/jpeg/);
   assert.equal(await A.toast(`${reqCard('청소 불참')} [data-act="req-ok"]`), '승인했어요 · 2명 반영');
-  assert.equal(await A.toast(`${reqCard('매점 도움')} [data-act="req-no"]`), '반려 사유를 입력하세요');
   const id = await A.page.getAttribute(`${reqCard('매점 도움')} [data-act="req-no"]`, 'data-id');
   await A.page.fill(`#note-${id}`, '중복');
   // 적어 둔 반려 사유는 다른 기기의 변경으로 화면을 다시 그려도 남는다
@@ -1094,7 +1093,7 @@ test('학생 "내 번호": 정하기(없는 번호 안내), 내 카드·칸 강�
 });
 
 // ───────── 출석 요청: 저장된 교시·같은 교시 경고, 반려 안내 ─────────
-test('출석 요청: 이미 저장된 교시·같은 교시 두 요청 경고, 반려 사유 필수, 요청자에게 반려 안내', async () => {
+test('출석 요청: 이미 저장된 교시·같은 교시 두 요청 경고, 반려 사유는 선택, 요청자에게 반려 안내', async () => {
   const before = await balances();
   await C.reload();
   await C.click('[data-act="pick-period"]:has-text("2교시 생리학")');
@@ -1116,16 +1115,17 @@ test('출석 요청: 이미 저장된 교시·같은 교시 두 요청 경고, �
   assert.match(await A.text(card('총대')), /이미 저장된 교시예요/);
   assert.match(await A.text(card('총대')), /같은 교시에 실습부장 1의 요청도 있어요/);
   assert.match(await A.text(card('실습부장 1')), /같은 교시에 총대의 요청도 있어요/);
-  assert.equal(await A.toast(`${card('총대')} [data-act="att-no"]`), '반려 사유를 입력하세요');
-  for (const [by, note] of [['총대', '다시 확인'], ['실습부장 1', '중복']]) {
+  // 반려 사유는 쓰지 않아도 된다
+  for (const [by, note] of [['총대', ''], ['실습부장 1', '중복']]) {
     const id = await A.page.getAttribute(`${card(by)} [data-act="att-no"]`, 'data-id');
-    await A.page.fill(`#note-${id}`, note);
+    if (note) await A.page.fill(`#note-${id}`, note);
     assert.equal(await A.toast(`${card(by)} [data-act="att-no"]`), '반려했어요');
   }
   assert.deepEqual(await balances(), before, '반려하면 점수는 그대로');
   await C.reload();
   await C.click('[data-act="pick-period"]:has-text("2교시 생리학")');
-  assert.match(await C.text(), /지난 요청이 반려됐어요: 다시 확인/);
+  assert.match(await C.text(), /지난 요청이 반려됐어요 \(사유 없음\)/);
+  assert.doesNotMatch(await C.text(), /반려 사유:|null/);
   await P1.page.context().close();
 });
 
@@ -1906,7 +1906,7 @@ test('리액션 상점: 학생은 오늘 것만 하루 3번(검사·교시 고�
   assert.equal(await S.has('#rx-q'), false);
   const rows = await q(`select date::text as d, status from reactions where student_id = $1`, [me.id]);
   assert.deepEqual(rows.map((r) => r.d), [TODAY, TODAY, TODAY], '날짜는 오늘');
-  // 부총대: 학생별 카드, 반려는 사유 필수
+  // 부총대: 학생별 카드
   await A.reload();
   await A.tab('inbox');
   assert.match(await A.text('h1 + .sub'), /리액션 3건/);
@@ -1914,7 +1914,6 @@ test('리액션 상점: 학생은 오늘 것만 하루 3번(검사·교시 고�
   assert.match(await A.text(card), /이월 0\/3 · 대기 3건/);
   await A.fits('리액션 요청함');
   const item = `${card} .rx-item:has-text("심박출량")`;
-  assert.equal(await A.toast(`${item} [data-act="rx-no"]`), '반려 사유를 입력하세요');
   // 다른 건을 먼저 승인해도 적던 반려 사유는 남는다
   await A.page.fill(`${item} input`, '수업 내용과 달라요');
   assert.equal(await A.toast(`${card} .rx-item:has-text("설골상근") [data-act="rx-ok"]`), '1건 승인했어요');
