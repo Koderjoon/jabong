@@ -2270,7 +2270,7 @@ test('디데이: 부총대가 링크(보기 키까지)를 넣으면 학생 첫 �
       calls.api++;
       if (down) return r.abort();
       const ok = new URL(r.request().url()).searchParams.get('k') === 'jnudent25';
-      return r.fulfill({ contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify(ok ? { ok: true, tasks, now: `${TODAY} 08:00`, lastMessage: `${TODAY} 07:30` } : { ok: false }) });
+      return r.fulfill({ contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify(ok ? { ok: true, tasks, rooms: [], lastSync: `${TODAY} 08:00` } : { ok: false }) });
     });
   };
   // 부총대: 보기 키 없는 주소는 막는다
@@ -2284,6 +2284,7 @@ test('디데이: 부총대가 링크(보기 키까지)를 넣으면 학생 첫 �
   assert.deepEqual(await P.tabs(), ['디데이', '자봉 현황', '공결 신청', '리액션']);
   await P.page.waitForSelector('.dd-item');
   const v = await P.text();
+  assert.match(v, new RegExp(`마지막 정리 ${TODAY.slice(5)} 08:00`));
   assert.match(v, /카톡 공지를 AI가 자동으로 정리한 목록입니다\. 빠지거나 틀릴 수 있으니 중요한 건 꼭 원문 공지를 확인하세요\./);
   // 칸마다 날짜·요일·D-숫자 다음에 제목
   assert.match(v, /오늘 · 1[\s\S]*D-day[\s\S]*<b>오늘<\/b> 마감[\s\S]*내일 · 1[\s\S]*D-1[\s\S]*내일 실습[\s\S]*09:00[\s\S]*7일 이내 · 1[\s\S]*D-5[\s\S]*이번 주 퀴즈[\s\S]*그 이후 · 1[\s\S]*D-20[\s\S]*그 이후 시험[\s\S]*범위: 1~3장[\s\S]*해부학/);

@@ -236,9 +236,11 @@ async function ddayFetch(src) {
   const html = await (await fetch(page, { credentials: 'omit', cache: 'no-cache' })).text();
   const api = /var\s+API\s*=\s*['"](https:\/\/script\.google\.com\/[^'"\s]+)['"]/.exec(html)?.[1];
   if (!api) throw Object.assign(new Error('디데이 사이트에서 목록 주소를 찾지 못했어요'), { kind: 'api' });
-  const d = await (await fetch(`${api}?format=json&k=${encodeURIComponent(key)}`, { credentials: 'omit' })).json();
+  // 디데이 사이트와 같은 방식으로 부른다 (t는 캐시를 피하려는 값)
+  const d = await (await fetch(`${api}?k=${encodeURIComponent(key)}&t=${Date.now()}`, { credentials: 'omit' })).json();
   if (!d || !d.ok) throw Object.assign(new Error('디데이 보기 키가 맞지 않아요. 부총대에게 알려 주세요'), { kind: 'key' });
-  return { tasks: Array.isArray(d.tasks) ? d.tasks : [], now: String(d.now || ''), lastMessage: String(d.lastMessage || '') };
+  // lastSync: 마지막으로 정리한 때 (예전 사이트는 now·lastMessage)
+  return { tasks: Array.isArray(d.tasks) ? d.tasks : [], lastSync: String(d.lastSync || d.now || '') };
 }
 function ddayLoad(src) {
   if (dday?.src !== src) dday = { src, ...(ddayCache(src) || {}), err: null, loading: false };
@@ -274,7 +276,7 @@ function vDday() {
   if (!src) return vBoard();
   const D = ddayLoad(src);
   const open = `<a class="btn ghost small" href="${esc(src)}" target="_blank" rel="noopener noreferrer">원본 사이트 열기 ↗</a>`;
-  const head = `<div><h1>디데이</h1><p class="sub">카톡 공지를 AI가 자동으로 정리한 목록입니다. 빠지거나 틀릴 수 있으니 중요한 건 꼭 원문 공지를 확인하세요.</p>${D.data ? `<p class="note">마지막 공지 ${esc(D.data.lastMessage.slice(5) || '-')} · 갱신 ${esc(D.data.now.slice(5) || '-')}</p>` : ''}</div>`;
+  const head = `<div><h1>디데이</h1><p class="sub">카톡 공지를 AI가 자동으로 정리한 목록입니다. 빠지거나 틀릴 수 있으니 중요한 건 꼭 원문 공지를 확인하세요.</p>${D.data ? `<p class="note">마지막 정리 ${esc(String(D.data.lastSync || '').slice(5) || '-')}</p>` : ''}</div>`;
   if (!D.data) return `${head}${D.err ? `<div class="warn">${esc(D.err)}</div><div class="btns">${open}</div>` : '<p class="boot">불러오는 중…</p>'}`;
   // 지난 마감과 날짜가 없는 것은 숨기고 오늘·내일·7일 이내·그 이후로 나눈다 (원본 사이트와 같다)
   const now = new Date();
