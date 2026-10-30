@@ -56,6 +56,8 @@ select ensure_period(:'t', '2026-04-03', '8교시 오타', false) as pren \gset
 select pg_temp.snap();
 select save_attendance(:'t', :'pren', format('{"%s":"late"}', :'s1')::jsonb); select pg_temp.snap();
 select rename_period(:'t', :'pren', '8교시 해부학'); select pg_temp.snap();
+select set_period_hours(:'t', :'pren', 3); select pg_temp.snap();
+select save_attendance(:'t', :'pren', format('{"%s":"late2","%s":"absent"}', :'s1', :'s3')::jsonb); select pg_temp.snap();
 select ensure_period(:'t', '2026-04-03', '7교시', false) as pday \gset
 select pg_temp.snap();
 select save_attendance(:'t', :'pday', format('{"%s":"absent"}', :'s1')::jsonb); select pg_temp.snap();
@@ -118,8 +120,8 @@ select save_attendance(:'t', :'p2', format('{"%s":"late"}', :'s2')::jsonb); sele
 
 select pg_temp.ok((select count(*) from sigs) = (select count(*) from ops) + 1, '작업마다 시점 하나 (+ 맨 처음)');
 select pg_temp.ok((select array_agg(distinct kind order by kind) from ops) = array['add_entries', 'create_excuse', 'create_excuse_day', 'create_reaction', 'create_request', 'delete_period', 'edit_entry', 'ensure_period',
-  'my_periods_save', 'my_presets_save', 'reaction_adjust', 'rename_period', 'request_attendance', 'review_attendance', 'review_excuse', 'review_reaction', 'review_request', 'roster_apply', 'save_attendance', 'set_link', 'void_entry'],
-  '데이터를 바꾸는 함수 21종 모두 사용');
+  'my_periods_save', 'my_presets_save', 'reaction_adjust', 'rename_period', 'request_attendance', 'review_attendance', 'review_excuse', 'review_reaction', 'review_request', 'roster_apply', 'save_attendance', 'set_link', 'set_period_hours', 'void_entry'],
+  '데이터를 바꾸는 함수 22종 모두 사용');
 select max(op) as last from sigs \gset
 select count(*) as nops from ops \gset
 \echo 시나리오 준비 (작업 :nops 개)

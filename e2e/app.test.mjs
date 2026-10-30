@@ -2348,6 +2348,74 @@ test('디데이: 부총대가 링크(보기 키까지)를 넣으면 학생 첫 �
   await W.page.context().close();
 });
 
+test('여러 시간 수업: 교시에 시간을 정하면 결석은 2점 × 시간, 지각은 누를 때마다 1점씩(시간을 넘으면 출석), 시간 바꾸면 점수도, 자주 쓰는 교시에 시간도', async () => {
+  const D = '2026-12-01';
+  const [x, y] = (await q(`select id, no from students where active and not exempt order by no limit 2`));
+  await A.tab('attend');
+  await A.click('[data-act="attview"][data-v="list"]');
+  await A.page.fill('#attDate', D);
+  await A.page.fill('#newPeriod', '1-3교시 구강해부학');
+  await A.page.selectOption('#newHours', '3');
+  assert.equal(await A.toast('[data-act="add-period"]'), '교시를 추가했어요 · 3시간 수업 (결석 6점)');
+  assert.equal(await A.page.inputValue('#newHours'), '1', '추가한 뒤에는 다시 1시간');
+  assert.match(await A.text('[data-act="pick-period"].on'), /1-3교시 구강해부학 · 3시간/);
+  assert.match(await A.text(), /3시간 수업이에요\. 지각은 누를 때마다 1점씩 1점 → 2점 → 3점, 한 번 더 누르면 출석이에요\. 결석은 6점이에요\./);
+  // 지각을 누를 때마다 1 → 2 → 3 → 출석
+  const late = `[data-act="setst"][data-sid="${x.id}"][data-v="late"]`;
+  const row = `.call:has([data-sid="${x.id}"])`;
+  for (const want of ['지각', '지각 2', '지각 3']) {
+    await A.click(late);
+    assert.equal((await A.text(late)).trim(), want);
+    assert.match(await A.page.getAttribute(row, 'class'), /late/);
+  }
+  await A.click(late);
+  assert.match(await A.page.getAttribute(row, 'class'), /present/, '시간을 넘으면 출석');
+  await A.click(late);
+  await A.click(late);
+  await A.click(`[data-act="setst"][data-sid="${y.id}"][data-v="absent"]`);
+  assert.match(await A.text('.att-foot'), /지각 1 · 결석 1/);
+  // 지각 다시 부르기: 출석으로 바꿨다가 다시 누르면 전의 횟수(2번)로
+  const rc = `#recall-sec [data-act="recall-tog"][data-sid="${x.id}"]`;
+  assert.match(await A.text(rc), /지각 2/);
+  await A.click(rc);
+  assert.match(await A.text(rc), /출석/);
+  await A.click(rc);
+  assert.match(await A.text(rc), /지각 2/);
+  assert.match(await A.toast('[data-act="att-save"]'), /저장했어요/);
+  const pts = async (id) => (await one(`select points::float as p from ledger l join periods p on p.id = l.period_id where p.date = $1 and l.student_id = $2 and l.voided_at is null`, [D, id]))?.p;
+  assert.equal(await pts(x.id), 2, '지각 2번 = 2점');
+  assert.equal(await pts(y.id), 6, '3시간 결석 = 6점');
+  // 수업 시간을 바꾸면 그 교시 결석 점수도 (지각 2번은 2시간 안이라 그대로)
+  assert.equal(await A.toast('[data-act="per-hours"][data-v="2"]'), '2시간 수업으로 바꿨어요 · 이 교시 자봉 1건의 점수도 고쳤어요');
+  assert.equal(await pts(y.id), 4);
+  assert.equal(await pts(x.id), 2);
+  assert.equal(await A.page.getAttribute('[data-act="per-hours"][data-v="2"]', 'aria-pressed'), 'true');
+  // 한눈에 보기: 출석 → 지각 → 지각 2 → 결석 → 공결 → 출석 (2시간)
+  await A.click('[data-act="attview"][data-v="grid"]');
+  const tile = `.att [data-act="cyc"][data-sid="${y.id}"]`;
+  const seen = [];
+  for (let i = 0; i < 6; i++) {
+    await A.click(tile);
+    seen.push((await A.text(`${tile} small`)).trim());
+  }
+  assert.deepEqual(seen, ['공', '✓', '지', '지2', '결', '공']);
+  await A.click('[data-act="attview"][data-v="list"]');
+  // 자주 쓰는 교시에 시간도 저장하고, 불러오면 시간도 함께 골라진다
+  await A.click('[data-act="pr-open"][data-fk="np"]');
+  await A.click('[data-act="pr-add"][data-fk="np"]');
+  await A.page.fill('#np-prname', '구강해부학 실습');
+  await A.page.selectOption('#np-prhours', '3');
+  assert.equal(await A.toast('[data-act="pr-save"][data-fk="np"]'), '자주 쓰는 교시에 넣었어요: 구강해부학 실습 (3시간)');
+  assert.match(await A.text('#np-prpop'), /구강해부학 실습 · 3시간/);
+  await A.click('#np-prpop [data-act="pr-use"]:has-text("구강해부학 실습")');
+  assert.equal(await A.page.inputValue('#newPeriod'), '구강해부학 실습');
+  assert.equal(await A.page.inputValue('#newHours'), '3');
+  await A.fits('여러 시간 수업');
+  await A.page.fill('#newPeriod', '');
+  await A.page.selectOption('#newHours', '1');
+  await A.page.fill('#attDate', TODAY);
+});
+
 test('새로고침해도 로그인 유지, 서버에서 로그인이 지워지면 다음 동작에서 로그아웃', async () => {
   await A.reload();
   assert.match(await A.text('#subbar'), /부총대로 로그인됨/);

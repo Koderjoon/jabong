@@ -24,7 +24,7 @@ const token = () => getSession()?.token;
 const blankForm = () => ({ date: TODAY, preset: '', item: '', points: 1, detail: '', nums: '', find: '', reason: '', photo: '' });
 const UI = {
   role: 'student', tab: 'board', sid: null, user: null, sort: 'no', q: '',
-  attDate: TODAY, attPid: null, attView: 'list', draft: {}, touched: {}, newPeriod: '', attConfirm: false, perDel: null, perEdit: null, perName: '', recalled: {},
+  attDate: TODAY, attPid: null, attView: 'list', draft: {}, touched: {}, newPeriod: '', newHours: '1', recallPrev: {}, attConfirm: false, perDel: null, perEdit: null, perName: '', recalled: {},
   recForm: blankForm(), reqForm: blankForm(), exForm: blankForm(), excForm: { no: '', eid: '', reason: '', photo: '' }, reactForm: { no: '', period: '', q: '', a: '' },
   recFilter: '', editId: null, voidId: null, openRev: {}, photos: {},
   noticeFrom: null, noticeTo: null, noticeText: null,
@@ -432,9 +432,9 @@ const myPeriodPresets = () => S.presets.filter((p) => UI.user && p.owner === UI.
 // fk가 'np'이면 출석 "교시 추가" 칸의 자주 쓰는 교시(이름만)
 function presetPop(fk) {
   if (fk === 'np') {
-    const list = myPeriodPresets().map((p) => `<div class="pr-row"><button type="button" class="pr-use" data-act="pr-use" data-fk="np" data-id="${p.id}">${esc(p.name)}</button><button type="button" class="pr-del" data-act="pr-del" data-fk="np" data-id="${p.id}" aria-label="${esc(p.name)} 삭제">×</button></div>`).join('');
+    const list = myPeriodPresets().map((p) => `<div class="pr-row"><button type="button" class="pr-use" data-act="pr-use" data-fk="np" data-id="${p.id}">${esc(p.name)}${p.points > 1 ? ` · ${p.points}시간` : ''}</button><button type="button" class="pr-del" data-act="pr-del" data-fk="np" data-id="${p.id}" aria-label="${esc(p.name)} 삭제">×</button></div>`).join('');
     const form = UI.prAdding === 'np'
-      ? `<div class="pr-new one"><input id="np-prname" placeholder="교시 이름 (예: 1교시 구강해부학)" autocomplete="off" enterkeyhint="done">
+      ? `<div class="pr-new one"><input id="np-prname" placeholder="교시 이름 (예: 1교시 구강해부학)" autocomplete="off" enterkeyhint="done">${hoursSel('np-prhours', 1)}
       <div class="btns"><button type="button" class="btn small" data-act="pr-save" data-fk="np">추가</button><button type="button" class="btn ghost small" data-act="pr-cancel" data-fk="np">취소</button></div></div>`
       : '<button type="button" class="pr-add" data-act="pr-add" data-fk="np">＋ 자주 쓰는 교시 추가</button>';
     return (list || '<p class="note" style="margin:0">아직 없어요. 아래 버튼으로 자주 쓰는 교시를 만들어 두세요.</p>') + form;
@@ -518,12 +518,12 @@ function reqCard(r, admin) {
 function attReqCard(a, admin) {
   const per = S.periods.find((p) => p.id === a.pid);
   const groups = ['late', 'absent', 'excused']
-    .map((k) => [k, Object.entries(a.statuses || {}).filter(([, v]) => v === k).map(([sid]) => sid).sort((x, y) => noOf(x) - noOf(y))])
+    .map((k) => [k, Object.entries(a.statuses || {}).filter(([, v]) => stKey(v) === k).map(([sid]) => sid).sort((x, y) => noOf(x) - noOf(y))])
     .filter(([, l]) => l.length);
   const others = admin ? (S.attRequests || []).filter((o) => o.pid === a.pid && o.id !== a.id && o.status === 'pending') : [];
   return `<div class="card"><div class="req-top"><span class="pill ${a.status}">출석 ${STATUS[a.status]}</span><span class="note">${esc(a.by)} · ${esc(a.at)}</span></div>
-  <div class="req-body"><b>${per ? `${mdw(per.date)} ${esc(per.label)}` : '지워진 교시'}</b></div>
-  ${groups.map(([k, l]) => `<div class="note">${ST[k][1]} ${l.length}명</div><div class="chips">${l.map((id) => `<span class="chip">${noL(id)} ${esc(stu(id)?.name || '')}</span>`).join('')}</div>`).join('') || '<div class="note">전원 출석</div>'}
+  <div class="req-body"><b>${per ? `${mdw(per.date)} ${esc(per.label)}${hoursTag(per)}` : '지워진 교시'}</b></div>
+  ${groups.map(([k, l]) => `<div class="note">${ST[k][1]} ${l.length}명</div><div class="chips">${l.map((id) => `<span class="chip">${noL(id)} ${esc(stu(id)?.name || '')}${lateN(a.statuses[id]) > 1 ? ` (${lateN(a.statuses[id])}번)` : ''}</span>`).join('')}</div>`).join('') || '<div class="note">전원 출석</div>'}
   ${a.status !== 'pending' ? `<div class="note">${esc(a.reviewer || '')} · ${esc(a.reviewedAt || '')}${a.note ? ` · 반려 사유: ${esc(a.note)}` : ''}</div>` : ''}
   ${admin && a.status === 'pending' ? `${S.att[a.pid] ? '<div class="warn">이미 저장된 교시예요. 승인하면 이 요청 내용으로 바뀌어요.</div>' : ''}${others.length ? `<div class="warn">같은 교시에 ${others.map((o) => esc(o.by)).join(', ')}의 요청도 있어요.</div>` : ''}
   <input id="note-${a.id}" placeholder="반려 사유 (선택)" autocomplete="off" data-suggest="note"><div class="btns"><button class="btn ok small" data-act="att-ok" data-id="${a.id}">승인 (출석 저장)</button><button class="btn danger small" data-act="att-no" data-id="${a.id}">반려</button></div>` : ''}</div>`;
@@ -710,8 +710,17 @@ function clearDrafts() {
   UI.draft = {};
   UI.touched = {};
   UI.recalled = {};
+  UI.recallPrev = {};
 }
 const ST = { present: ['✓', '출석'], late: ['지', '지각'], absent: ['결', '결석'], excused: ['공', '공결'] };
+// 여러 시간 수업의 지각은 횟수만큼 'late'(1번), 'late2'~'late4'로 쓴다 (서버 _att_norm·_att_pts와 같다)
+const lateN = (v) => (v === 'late' ? 1 : /^late[2-4]$/.test(v || '') ? Number(v.slice(4)) : 0);
+const lateV = (n) => (n <= 1 ? 'late' : `late${n}`);
+const stKey = (v) => (lateN(v) ? 'late' : v || 'present');
+const stLabel = (v) => (lateN(v) > 1 ? `지각 ${lateN(v)}` : ST[stKey(v)][1]);
+const stShort = (v) => (lateN(v) > 1 ? `지${lateN(v)}` : ST[stKey(v)][0]);
+const perHours = (pid) => S.periods.find((p) => p.id === pid)?.hours || 1;
+const hoursTag = (p) => (p.hours > 1 ? ` · ${p.hours}시간` : '');
 // 출결 초안과 저장된 출결이 같은지 (학생 순서와 무관하게)
 const sameAtt = (a, b) => Object.keys(a).length === Object.keys(b).length && Object.keys(a).every((k) => a[k] === b[k]);
 
@@ -732,22 +741,28 @@ function periodBar(pid) {
   // 처리하지 않은 출석 요청·공결 신청이 있으면 서버가 삭제를 거절하니 미리 알린다 (이름 바꾸기는 된다)
   const eids = new Set(S.ledger.filter((e) => e.pid === pid).map((e) => e.id));
   const blocked = (isAdmin() && (S.attRequests || []).some((a) => a.pid === pid && a.status === 'pending')) || (S.excuses || []).some((x) => x.status === 'pending' && eids.has(x.eid));
-  return `<div class="per-del">${blocked ? '<span class="note">처리하지 않은 출석 요청·공결 신청이 있어서 지금은 이 교시를 지울 수 없어요. 요청함에서 먼저 처리하세요.</span>' : ''}${per.morning ? '' : `<button class="btn ghost small" data-act="per-ren" data-id="${pid}">이름 바꾸기</button>`}${blocked ? '' : `<button class="btn ghost small" data-act="per-del" data-id="${pid}">이 교시 삭제</button>`}</div>`;
+  // 수업 시간 바꾸기: 저장된 교시면 이 교시의 결석·지각 점수도 함께 고쳐진다
+  const hrsBtns = per.morning ? '' : `<span class="hours-seg" role="group" aria-label="수업 시간 바꾸기">${[1, 2, 3, 4].map((h) => `<button class="btn ghost small ${per.hours === h ? 'on' : ''}" data-act="per-hours" data-id="${pid}" data-v="${h}" aria-pressed="${per.hours === h}">${h}시간</button>`).join('')}</span>`;
+  return `<div class="per-del">${blocked ? '<span class="note">처리하지 않은 출석 요청·공결 신청이 있어서 지금은 이 교시를 지울 수 없어요. 요청함에서 먼저 처리하세요.</span>' : ''}${hrsBtns}${per.morning ? '' : `<button class="btn ghost small" data-act="per-ren" data-id="${pid}">이름 바꾸기</button>`}${blocked ? '' : `<button class="btn ghost small" data-act="per-del" data-id="${pid}">이 교시 삭제</button>`}</div>`;
 }
 
 // 지각 다시 부르기: 출석을 한 바퀴 부르고 내려오면 목록 맨 아래(저장 바로 위)에 지각인 학생만 번호순으로 모여 있다.
 // 누르면 지각 ↔ 출석. 여기서 출석으로 바꾼 학생도(잘못 눌렀으면 되돌리도록) 저장·요청 전까지 남는다(UI.recalled).
 function recallSec(pid, d) {
   const back = UI.recalled[pid] || [];
-  const list = active().filter((s) => d[s.id] === 'late' || (!d[s.id] && back.includes(s.id)));
+  const list = active().filter((s) => lateN(d[s.id]) || (!d[s.id] && back.includes(s.id)));
   if (!list.length) return '';
   return `<div class="recall-sec" id="recall-sec"><div class="recall-bar"><b>지각 다시 부르기</b><span>지각 ${list.length}명 중 <b>${list.filter((s) => !d[s.id]).length}</b>명 출석</span></div>
   <p class="hint" style="margin:0">대답하면 칸을 눌러 출석으로 바꾸세요. 잘못 눌렀으면 한 번 더 누르면 지각으로 돌아가요.</p>
   <div class="att recall">${list.map((s) => {
     const st = d[s.id] || 'present';
-    return `<button class="${st}" data-act="recall-tog" data-sid="${s.id}" aria-label="${s.no}번 ${esc(s.name)} ${ST[st][1]}">${s.no}<span class="nm">${esc(s.name)}</span><small>${ST[st][1]}</small></button>`;
+    return `<button class="${stKey(st)}" data-act="recall-tog" data-sid="${s.id}" aria-label="${s.no}번 ${esc(s.name)} ${stLabel(st)}">${s.no}<span class="nm">${esc(s.name)}</span><small>${stLabel(st)}</small></button>`;
   }).join('')}</div></div>`;
 }
+
+// 수업 시간 고르기 (1~4시간)
+const hoursSel = (id, v, attrs = '') =>
+  `<select id="${id}" class="hours-sel" aria-label="수업 시간" ${attrs}>${[1, 2, 3, 4].map((h) => `<option value="${h}" ${String(v) === String(h) ? 'selected' : ''}>${h}시간</option>`).join('')}</select>`;
 
 function vAttend() {
   const ps = periodsOf(UI.attDate);
@@ -757,7 +772,8 @@ function vAttend() {
   if (pid) {
     const d = attDraft(pid);
     const c = { late: 0, absent: 0, excused: 0 };
-    Object.values(d).forEach((v) => c[v] != null && c[v]++);
+    Object.values(d).forEach((v) => c[stKey(v)] != null && c[stKey(v)]++);
+    const hrs = perHours(pid);
     const saved = !!S.att[pid];
     const dirty = !sameAtt(d, S.att[pid] || {});
     const admin = isAdmin();
@@ -770,13 +786,14 @@ function vAttend() {
       (UI.attView === 'grid'
         ? `<div class="att">${active().map((s) => {
             const st = d[s.id] || 'present';
-            return `<button class="${st}" data-act="cyc" data-sid="${s.id}" aria-label="${s.no}번 ${esc(s.name)} ${ST[st][1]}">${s.no}<span class="nm">${esc(s.name)}</span><small>${ST[st][0]}</small></button>`;
+            return `<button class="${stKey(st)}" data-act="cyc" data-sid="${s.id}" aria-label="${s.no}번 ${esc(s.name)} ${stLabel(st)}">${s.no}<span class="nm">${esc(s.name)}</span><small>${stShort(st)}</small></button>`;
           }).join('')}</div>`
         : `<div class="calls">${active().map((s) => {
             const st = d[s.id] || 'present';
-            return `<div class="call ${st}"><span class="no">${s.no}</span><span class="nm">${esc(s.name || '이름 없음')}${s.exempt ? ' <span class="ex">면제</span>' : ''}</span><div class="st4" role="group" aria-label="${s.no}번 출결">${Object.entries(ST).map(([k, [, l]]) => `<button class="${k} ${st === k ? 'on' : ''}" data-act="setst" data-sid="${s.id}" data-v="${k}">${l}</button>`).join('')}</div></div>`;
+            return `<div class="call ${stKey(st)}"><span class="no">${s.no}</span><span class="nm">${esc(s.name || '이름 없음')}${s.exempt ? ' <span class="ex">면제</span>' : ''}</span><div class="st4" role="group" aria-label="${s.no}번 출결">${Object.entries(ST).map(([k, [, l]]) => `<button class="${k} ${stKey(st) === k ? 'on' : ''}" data-act="setst" data-sid="${s.id}" data-v="${k}">${k === 'late' && lateN(st) > 1 ? `지각 ${lateN(st)}` : l}</button>`).join('')}</div></div>`;
           }).join('') || '<p class="empty">관리 탭에서 명단을 먼저 넣어 주세요.</p>'}</div>`) +
       recallSec(pid, d) +
+      (hrs > 1 ? `<p class="hint" style="margin:0">${hrs}시간 수업이에요. 지각은 누를 때마다 1점씩 ${Array.from({ length: hrs }, (_, i) => `${i + 1}점`).join(' → ')}, 한 번 더 누르면 출석이에요. 결석은 ${2 * hrs}점이에요.</p>` : '') +
       `${pendingHere.length ? `<div class="warn">이 교시에 ${pendingHere.map((a) => esc(a.by)).join(', ')}의 출석 요청이 있어요. 요청함에서 확인하세요.</div>` : ''}
     ${mine?.status === 'rejected' ? `<div class="warn">지난 요청이 반려됐어요${mine.note ? `: ${esc(mine.note)}` : ' (사유 없음)'}</div>` : ''}
     <div class="att-foot"><span class="note">지각 ${c.late} · 결석 ${c.absent} · 공결 ${c.excused}<br>${state}</span>
@@ -784,14 +801,14 @@ function vAttend() {
     ${UI.attConfirm ? `<div class="att-confirm"><span>지금 표시한 지각 ${c.late}명 · 결석 ${c.absent}명 · 공결 ${c.excused}명이 모두 출석으로 바뀌어요. 되돌릴까요?</span>
     <div class="btns"><button class="btn danger small" data-act="att-clear-yes">네, 전원 출석으로</button><button class="btn ghost small" data-act="att-clear-no">그만두기</button></div></div>` : ''}`;
   }
-  return `<div><h1>출석 체크</h1><p class="sub">${UI.attView === 'grid' ? '칸을 누를 때마다 출석 → 지각 → 결석 → 공결 순으로 바뀌어요.' : '번호순으로 이름을 부르면서 바로 출결을 고르세요.'} ${isAdmin() ? '저장하면 지각 +1, 결석 +2가 교시마다 기록돼요.' : '다 고른 뒤 요청을 보내면 부총대가 확인하고 저장해요.'} 이름은 총대단에게만 보여요.</p></div>
+  return `<div><h1>출석 체크</h1><p class="sub">${UI.attView === 'grid' ? '칸을 누를 때마다 출석 → 지각 → 결석 → 공결 순으로 바뀌어요.' : '번호순으로 이름을 부르면서 바로 출결을 고르세요.'} ${isAdmin() ? '저장하면 교시마다 지각 +1(여러 시간 수업은 누른 횟수만큼), 결석 +2 × 수업 시간이 기록돼요.' : '다 고른 뒤 요청을 보내면 부총대가 확인하고 저장해요.'} 이름은 총대단에게만 보여요.</p></div>
   <div class="seg"><button class="${UI.attView !== 'grid' ? 'on' : ''}" data-act="attview" data-v="list">호명 목록</button><button class="${UI.attView === 'grid' ? 'on' : ''}" data-act="attview" data-v="grid">한눈에 보기</button></div>
   <div class="toolbar"><input type="date" id="attDate" value="${UI.attDate}" data-bind="attDate" data-rerender="1" style="width:auto"></div>
-  <div class="seg" style="flex-wrap:wrap">${ps.map((p) => `<button class="${p.id === pid ? 'on' : ''}" data-act="pick-period" data-id="${p.id}">${esc(p.label)}${S.att[p.id] ? ' ·저장됨' : ''}</button>`).join('')}</div>
+  <div class="seg" style="flex-wrap:wrap">${ps.map((p) => `<button class="${p.id === pid ? 'on' : ''}" data-act="pick-period" data-id="${p.id}">${esc(p.label)}${hoursTag(p)}${S.att[p.id] ? ' ·저장됨' : ''}</button>`).join('')}</div>
   ${periodBar(pid)}
   <div class="toolbar"><div class="itembox"><input id="newPeriod" placeholder="교시 추가 (예: 1교시 구강해부학)" value="${esc(UI.newPeriod)}" autocomplete="off" data-bind="newPeriod" data-suggest="period">
   <button type="button" class="itemdrop" data-act="pr-open" data-fk="np" aria-expanded="${UI.prOpen === 'np'}">불러오기</button>
-  <div class="prpop" id="np-prpop" ${UI.prOpen === 'np' ? '' : 'hidden'}>${UI.prOpen === 'np' ? presetPop('np') : ''}</div></div><button class="btn ghost small" data-act="add-period">추가</button></div>
+  <div class="prpop" id="np-prpop" ${UI.prOpen === 'np' ? '' : 'hidden'}>${UI.prOpen === 'np' ? presetPop('np') : ''}</div></div>${hoursSel('newHours', UI.newHours, 'data-bind="newHours"')}<button class="btn ghost small" data-act="add-period">추가</button></div>
   ${body}`;
 }
 
@@ -1693,27 +1710,38 @@ const A = {
   setst: (d) => {
     const dr = attDraft(UI.attPid);
     UI.touched[UI.attPid] = true;
-    if (d.v === 'present') delete dr[d.sid];
+    const h = perHours(UI.attPid);
+    const n = lateN(dr[d.sid]);
+    // 여러 시간 수업: 지각을 다시 누를 때마다 지각 횟수 +1, 시간을 넘으면 출석으로
+    if (d.v === 'late' && h > 1 && n) {
+      if (n < h) dr[d.sid] = lateV(n + 1);
+      else delete dr[d.sid];
+    } else if (d.v === 'present') delete dr[d.sid];
     else dr[d.sid] = d.v;
   },
   cyc: (d) => {
     const dr = attDraft(UI.attPid);
     UI.touched[UI.attPid] = true;
-    const order = ['present', 'late', 'absent', 'excused'];
-    const n = order[(order.indexOf(dr[d.sid] || 'present') + 1) % 4];
+    // 출석 → 지각(시간만큼 1번, 2번 …) → 결석 → 공결 → 출석
+    const h = perHours(UI.attPid);
+    const order = ['present', ...Array.from({ length: h }, (_, i) => lateV(i + 1)), 'absent', 'excused'];
+    const n = order[(order.indexOf(dr[d.sid] || 'present') + 1) % order.length];
     if (n === 'present') delete dr[d.sid];
     else dr[d.sid] = n;
   },
   'recall-tog': (d) => {
     const dr = attDraft(UI.attPid);
     // 지각 ↔ 출석만. 그사이 다른 기기에서 결석·공결이 된 학생은 건드리지 않는다
-    if (dr[d.sid] && dr[d.sid] !== 'late') return toast('결석·공결인 학생은 위 목록에서 바꾸세요');
+    if (dr[d.sid] && !lateN(dr[d.sid])) return toast('결석·공결인 학생은 위 목록에서 바꾸세요');
     UI.touched[UI.attPid] = true;
     const back = (UI.recalled[UI.attPid] ||= []);
-    if (dr[d.sid] === 'late') {
+    const prev = (UI.recallPrev[UI.attPid] ||= {});
+    if (lateN(dr[d.sid])) {
+      // 출석으로 바꾼 학생은 다시 누르면 전의 지각 횟수로 돌아간다
+      prev[d.sid] = dr[d.sid];
       delete dr[d.sid];
       if (!back.includes(d.sid)) back.push(d.sid);
-    } else dr[d.sid] = 'late';
+    } else dr[d.sid] = prev[d.sid] || 'late';
   },
   'att-clear': () => {
     UI.attConfirm = true;
@@ -1727,6 +1755,13 @@ const A = {
   },
   'att-clear-no': () => {
     UI.attConfirm = false;
+  },
+  'per-hours': async (d) => {
+    const per = S.periods.find((p) => p.id === d.id);
+    const h = Number(d.v);
+    if (!per || per.hours === h) return;
+    await run('set_period_hours', { p_id: d.id, p_hours: h }, (n) => `${h}시간 수업으로 바꿨어요${n ? ` · 이 교시 자봉 ${n}건의 점수도 고쳤어요` : ''}`);
+    return true;
   },
   'pick-period': (d) => {
     UI.attPid = d.id;
@@ -1784,12 +1819,14 @@ const A = {
       return toast('이미 있는 교시예요 · 그 교시를 골랐어요');
     }
     // 교시 추가에는 되돌리기 버튼을 붙이지 않는다: 다른 기기가 방금 같은 교시를 만들었으면 새 작업이 없어서 엉뚱한 작업을 가리킬 수 있다
-    const id = await rpc('ensure_period', { p_token: token(), p_date: UI.attDate, p_label: l, p_morning: false });
+    const h = Number(UI.newHours) || 1;
+    const id = await rpc('ensure_period', { p_token: token(), p_date: UI.attDate, p_label: l, p_morning: false, ...(h > 1 ? { p_hours: h } : {}) });
     UI.attPid = id;
     UI.newPeriod = '';
+    UI.newHours = '1';
     await refresh();
     render();
-    return toast('교시를 추가했어요');
+    return toast(h > 1 ? `교시를 추가했어요 · ${h}시간 수업 (결석 ${2 * h}점)` : '교시를 추가했어요');
   },
   'att-save': async () => {
     await saveAttendance(false);
@@ -2186,6 +2223,10 @@ const A = {
     if (d.fk === 'np') {
       UI.newPeriod = p.name;
       document.getElementById('newPeriod').value = p.name;
+      // 자주 쓰는 교시에 저장한 수업 시간도 함께 (points 칸, 0이면 1시간)
+      UI.newHours = String(Math.max(1, p.points || 1));
+      const hs = document.getElementById('newHours');
+      if (hs) hs.value = UI.newHours;
       closePresetPops();
       return true;
     }
@@ -2215,7 +2256,9 @@ const A = {
       if (!name) return toast('교시 이름을 적어 주세요');
       if (myPeriodPresets().some((p) => p.name === name)) return toast('이미 있는 교시예요');
       UI.prOpen = 'np';
-      await run('my_periods_save', { p_list: [...myPeriodPresets().map((p) => p.name), name] }, `자주 쓰는 교시에 넣었어요: ${name}`);
+      const hrs = Number(val('np-prhours')) || 1;
+      const keep = myPeriodPresets().map((p) => ({ name: p.name, hours: Math.max(1, p.points || 1) }));
+      await run('my_periods_save', { p_list: [...keep, { name, hours: hrs }] }, `자주 쓰는 교시에 넣었어요: ${name}${hrs > 1 ? ` (${hrs}시간)` : ''}`);
       // 서버가 거절하면 적던 이름이 남도록 저장된 뒤에만 입력칸을 닫는다
       UI.prAdding = null;
       openPresetPop('np');
@@ -2237,7 +2280,7 @@ const A = {
     const gone = S.presets.find((p) => p.id === d.id);
     if (d.fk === 'np') {
       UI.prOpen = 'np';
-      await run('my_periods_save', { p_list: myPeriodPresets().filter((p) => p.id !== d.id).map((p) => p.name) }, `자주 쓰는 교시에서 뺐어요: ${gone?.name || ''}`);
+      await run('my_periods_save', { p_list: myPeriodPresets().filter((p) => p.id !== d.id).map((p) => ({ name: p.name, hours: Math.max(1, p.points || 1) })) }, `자주 쓰는 교시에서 뺐어요: ${gone?.name || ''}`);
       return true;
     }
     const list = myPresets().filter((p) => p.id !== d.id).map((p) => ({ name: p.name, points: p.points }));

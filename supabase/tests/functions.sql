@@ -35,8 +35,8 @@ select pg_temp.ok(
   = (select array_agg(x order by x) from unnest(array['public_state', 'create_excuse', 'create_excuse_day', 'create_reaction', 'my_reactions', 'reaction_feed', 'reaction_adjust', 'reaction_export', 'review_reaction', 'login', 'recover', 'private_state', 'logout', 'get_photo',
       'create_request', 'change_pw', 'reset_pw', 'new_recovery', 'ensure_period', 'delete_period', 'rename_period', 'save_attendance', 'request_attendance', 'review_attendance',
       'add_entries', 'edit_entry', 'void_entry', 'review_request', 'review_excuse', 'roster_apply', 'my_presets_save', 'my_periods_save', 'purge', 'backup_dump',
-      'restore_backup', 'history_move', 'history_drop', 'history_restore', 'ops_list', 'set_link']) x),
-  '브라우저(anon)에 열린 함수가 정확히 화면이 쓰는 40개');
+      'restore_backup', 'history_move', 'history_drop', 'history_restore', 'ops_list', 'set_link', 'set_period_hours']) x),
+  '브라우저(anon)에 열린 함수가 정확히 화면이 쓰는 41개');
 select pg_temp.ok(not exists (select 1 from pg_proc p where p.pronamespace = 'public'::regnamespace
   and has_function_privilege('anon', p.oid, 'execute') <> has_function_privilege('authenticated', p.oid, 'execute')), 'anon과 authenticated 권한이 같음');
 select pg_temp.ok(not exists (select 1 from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname !~ '^_'
@@ -76,7 +76,8 @@ declare
     'select private_state(%s)', 'select get_photo(%s, gen_random_uuid())',
     'select create_request(%s, current_date, array[gen_random_uuid()], ''x'', '''', 1, '''', null)',
     'select change_pw(%s, ''x'', ''abcd'')', 'select my_presets_save(%s, ''[]'')'];
-  attend text[] := array['select ensure_period(%s, current_date, ''x'', false)', 'select request_attendance(%s, gen_random_uuid(), ''{}'')'];
+  attend text[] := array['select ensure_period(%s, current_date, ''x'', false)', 'select request_attendance(%s, gen_random_uuid(), ''{}'')',
+    'select set_period_hours(%s, gen_random_uuid(), 2)'];
   q text; tok text; want text; st text; n int := 0;
 begin
   foreach q in array admin_only || any_login || attend loop
@@ -93,7 +94,7 @@ begin
       n := n + 1;
     end loop;
   end loop;
-  if n <> 17 * 5 + 5 * 2 + 2 * 3 then raise exception 'FAIL: 권한 검사 수 %', n; end if;
+  if n <> 17 * 5 + 5 * 2 + 3 * 3 then raise exception 'FAIL: 권한 검사 수 %', n; end if;
 end $$;
 -- 로그인 없이 부를 수 있는 함수
 select pg_temp.ok(public_state() is not null and backup_dump() is not null, '공개 함수');
@@ -258,7 +259,7 @@ set role anon;
 select my_presets_save(:'ot', '[{"name":"청소","points":2},{"name":"도움","points":-1}]');
 set role postgres;
 select pg_temp.ok((select count(*) from presets where owner = '학습부장' and kind = 'period') = 2, '항목을 저장해도 교시는 그대로');
-select pg_temp.ok((select json_agg(x) from json_array_elements(public_state() -> 'presets') x where x ->> 'kind' = 'period' and x ->> 'owner' = '학습부장')::jsonb @> '[{"name":"2교시","points":0}]', '화면 상태에 kind가 실린다');
+select pg_temp.ok((select json_agg(x) from json_array_elements(public_state() -> 'presets') x where x ->> 'kind' = 'period' and x ->> 'owner' = '학습부장')::jsonb @> '[{"name":"2교시","points":1}]', '화면 상태에 kind가 실린다');
 set role anon;
 select pg_temp.expect_msg(format('select my_periods_save(%L, %L)', :'ot', '[1]'), '교시 이름은 글자%', '글자가 아닌 교시');
 select pg_temp.expect_msg(format('select my_periods_save(%L, %L)', :'ot', '{"a":1}'), '교시 목록이 올바르지%', '배열이 아님');
@@ -1242,5 +1243,89 @@ select restore_backup(:'t', :'admdump'::jsonb);
 select (login('부총대', '1234')::json ->> 'token') as t \gset
 select pg_temp.ok(private_state(:'t') -> 'links' ->> 'dday_admin' = 'https://koderjoon.github.io/notice-todo/#k=admin-test-key', '백업에서 되살려도 관리자 링크는 그대로');
 \echo 25. 학급 매점 링크 통과
+
+-- ───────── 26. 여러 시간 수업 (결석 2점 × 시간, 지각은 횟수만큼) ─────────
+set role anon;
+select (login('부총대', '1234')::json ->> 'token') as t \gset
+select (login('총대', '1234')::json ->> 'token') as ct \gset
+set role postgres;
+select id as h1 from students where active order by no limit 1 \gset
+select id as h2 from students where active order by no offset 1 limit 1 \gset
+select id as h3 from students where active order by no offset 2 limit 1 \gset
+update students set exempt = false where id in (:'h1', :'h2', :'h3');
+set role anon;
+select pg_temp.expect_msg(format('select ensure_period(%L, ''2026-08-10'', ''x'', false, 5)', :'t'), '수업 시간은 1~4시간이에요', '5시간은 안 됨');
+select pg_temp.expect_msg(format('select ensure_period(%L, ''2026-08-10'', ''아침 출석'', true, 2)', :'t'), '수업 시간은 1~4시간이에요', '아침 출석은 1시간');
+select ensure_period(:'t', '2026-08-10', '1-3교시 구강해부학', false, 3) as hp \gset
+select pg_temp.ok(exists (select 1 from json_array_elements(public_state() -> 'periods') x where x ->> 'id' = :'hp' and (x ->> 'hours')::int = 3), '상태에 시간');
+select ensure_period(:'t', '2026-08-10', '4교시', false) as hp1 \gset
+set role postgres;
+select pg_temp.ok((select hours from periods where id = :'hp') = 3, '3시간 교시');
+select pg_temp.ok((select hours from periods where id = :'hp1') = 1, '시간을 안 주면 1시간');
+set role anon;
+select save_attendance(:'t', :'hp', format('{"%s":"absent","%s":"late3","%s":"late4"}', :'h1', :'h2', :'h3')::jsonb);
+set role postgres;
+select pg_temp.ok((select points from ledger where period_id = :'hp' and student_id = :'h1' and voided_at is null) = 6, '3시간 결석은 6점');
+select pg_temp.ok((select points from ledger where period_id = :'hp' and student_id = :'h2' and voided_at is null and item = '지각') = 3, '지각 3번은 3점');
+select pg_temp.ok((select points from ledger where period_id = :'hp' and student_id = :'h3' and voided_at is null) = 3
+  and (select status from attendance where period_id = :'hp' and student_id = :'h3') = 'late3', '지각 횟수는 시간까지만 (4번 → 3번)');
+-- 지각 횟수만 바꾸면 같은 기록의 점수만 고친다 (수정 이력)
+select id as hl2 from ledger where period_id = :'hp' and student_id = :'h2' and voided_at is null \gset
+set role anon;
+select save_attendance(:'t', :'hp', format('{"%s":"absent","%s":"late","%s":"late3"}', :'h1', :'h2', :'h3')::jsonb);
+set role postgres;
+select pg_temp.ok((select points from ledger where id = :'hl2') = 1 and (select voided_at is null from ledger where id = :'hl2')
+  and exists (select 1 from ledger_revisions where ledger_id = :'hl2' and reason = '출석 정정 (지각 횟수)' and (before ->> 'points')::numeric = 3 and (after ->> 'points')::numeric = 1), '지각 3번 → 1번');
+select pg_temp.ok((select count(*) from ledger where period_id = :'hp' and student_id = :'h2') = 1, '새 기록을 만들지 않는다');
+-- 수업 시간을 바꾸면 결석·지각 점수도 (부총대가 손으로 고친 점수는 그대로)
+select id as hl1 from ledger where period_id = :'hp' and student_id = :'h1' and voided_at is null \gset
+set role anon;
+select pg_temp.expect_msg(format('select set_period_hours(%L, %L, 2)', :'ct', :'hp'), '출석이 저장됐거나%', '저장된 교시는 총대단이 못 바꿈');
+select pg_temp.expect_msg(format('select set_period_hours(%L, %L, 3)', :'t', :'hp'), '지금과 같아요', '같은 시간');
+select pg_temp.expect_msg(format('select set_period_hours(%L, %L, 0)', :'t', :'hp'), '수업 시간은 1~4시간이에요', '0시간');
+select pg_temp.ok(set_period_hours(:'t', :'hp', 2) = 2, '결석 1건·지각 1건 고침');
+set role postgres;
+select pg_temp.ok((select points from ledger where id = :'hl1') = 4
+  and exists (select 1 from ledger_revisions where ledger_id = :'hl1' and reason = '수업 시간 변경 (3시간 → 2시간)'), '결석 6 → 4');
+select pg_temp.ok((select points from ledger where period_id = :'hp' and student_id = :'h3' and voided_at is null) = 2
+  and (select status from attendance where period_id = :'hp' and student_id = :'h3') = 'late2', '지각 3번 → 2번');
+select pg_temp.ok((select points from ledger where id = :'hl2') = 1, '지각 1번은 그대로');
+set role anon;
+select edit_entry(:'t', :'hl1', '2026-08-10', '결석', '1-3교시 구강해부학', 2, '1시간만 빠짐');
+select set_period_hours(:'t', :'hp', 1);
+set role postgres;
+select pg_temp.ok((select points from ledger where id = :'hl1') = 2, '손으로 고친 결석 점수는 그대로');
+set role anon;
+-- 되돌리면 점수도 돌아온다
+select set_period_hours(:'t', :'hp', 3);
+set role postgres;
+select max(id) as hop from ops \gset
+set role anon;
+select history_drop(:'t', :hop, false);
+set role postgres;
+select pg_temp.ok((select hours from periods where id = :'hp') = 1, '시간 바꾸기 되돌리기');
+-- 총대단의 출석 요청도 지각 횟수, 아직 저장 안 한 자기 교시는 총대단도 시간을 바꾼다
+set role anon;
+select ensure_period(:'ct', '2026-08-11', '5-6교시', false, 2) as hq \gset
+select set_period_hours(:'ct', :'hq', 3);
+select request_attendance(:'ct', :'hq', format('{"%s":"late2"}', :'h2')::jsonb) as hrq \gset
+select pg_temp.ok(position('지각 1' in (ops_list(:'t', 1)::jsonb -> 0 ->> 'summary')) > 0, '요청 요약에 지각 학생 수');
+select review_attendance(:'t', :'hrq', true, null);
+set role postgres;
+select pg_temp.ok((select points from ledger where period_id = :'hq' and student_id = :'h2' and voided_at is null) = 2, '요청으로 들어온 지각 2번');
+-- 자주 쓰는 교시에 시간도
+set role anon;
+select pg_temp.expect_msg(format('select my_periods_save(%L, %L)', :'t', '[{"name":"해부학","hours":5}]'), '수업 시간은 1~4시간이에요', '자주 쓰는 교시 5시간');
+select my_periods_save(:'t', '["1교시", {"name":"구강해부학","hours":3}]');
+set role postgres;
+select pg_temp.ok((select points from presets where owner = '부총대' and kind = 'period' and name = '구강해부학') = 3
+  and (select points from presets where owner = '부총대' and kind = 'period' and name = '1교시') = 1, '자주 쓰는 교시의 시간');
+-- 시간 칸이 없던 옛 백업도 되살린다
+set role anon;
+select backup_dump()::jsonb as hdump \gset
+select restore_backup(:'t', (select jsonb_set(:'hdump'::jsonb, '{tables,periods}', (select jsonb_agg(x - 'hours') from jsonb_array_elements(:'hdump'::jsonb -> 'tables' -> 'periods') x))));
+set role postgres;
+select pg_temp.ok(not exists (select 1 from periods where hours <> 1) and exists (select 1 from periods), '옛 백업의 교시는 1시간');
+\echo 26. 여러 시간 수업 통과
 
 \echo 모든 서버 함수 테스트 통과

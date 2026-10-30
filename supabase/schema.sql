@@ -46,13 +46,20 @@ create table if not exists periods (
   saved_at timestamptz,
   unique (date, label)
 );
+-- 몇 시간짜리 수업인지 (1~4). 결석은 2점 × 시간, 지각은 누른 횟수만큼(시간까지) 1점씩
+alter table periods add column if not exists hours smallint not null default 1;
+alter table periods drop constraint if exists periods_hours_check;
+alter table periods add constraint periods_hours_check check (hours between 1 and 4);
 
 create table if not exists attendance (
   period_id uuid not null references periods on delete cascade,
   student_id uuid not null references students on delete cascade,
-  status text not null check (status in ('late', 'absent', 'excused')),
+  status text not null check (status in ('late', 'late2', 'late3', 'late4', 'absent', 'excused')),
   primary key (period_id, student_id)
 );
+-- late2~late4: 여러 시간 수업에서 지각을 그만큼 (전에 만든 표는 검사를 새로 건다)
+alter table attendance drop constraint if exists attendance_status_check;
+alter table attendance add constraint attendance_status_check check (status in ('late', 'late2', 'late3', 'late4', 'absent', 'excused'));
 
 -- (0.5점 도입 전에 만든 DB라면) 점수 칸을 0.5 단위로 바꾸고, 정수 버전 함수를 지운다
 do $$ begin
@@ -242,6 +249,10 @@ where tbl = 'excuses' and ((before is not null and not before ? 'grp') or (after
 update op_changes set before = case when before is not null and not before ? 'kind' then before || '{"kind": "item"}' else before end,
   after = case when after is not null and not after ? 'kind' then after || '{"kind": "item"}' else after end
 where tbl = 'presets' and ((before is not null and not before ? 'kind') or (after is not null and not after ? 'kind'));
+-- 교시 표에 시간(hours) 칸이 생기기 전의 작업 기록
+update op_changes set before = case when before is not null and not before ? 'hours' then before || '{"hours": 1}' else before end,
+  after = case when after is not null and not after ? 'hours' then after || '{"hours": 1}' else after end
+where tbl = 'periods' and ((before is not null and not before ? 'hours') or (after is not null and not after ? 'hours'));
 
 -- 직책별 계정. role이 곧 화면에 보이는 이름이다.
 create table if not exists accounts (
@@ -488,9 +499,17 @@ $$;
 create or replace function _per(p_period uuid) returns text language sql stable security definer set search_path = public as $$
   select to_char(date, 'FMMM/FMDD') || ' ' || label from periods where id = p_period
 $$;
+-- 출결 값을 교시 시간에 맞춘다: 지각 횟수(late, late2~late4)는 그 교시의 시간까지만
+create or replace function _att_norm(v text, h int) returns text language sql immutable as $$
+  select case when v ~ '^late[2-4]$' and substring(v from 5)::int > h then case when h <= 1 then 'late' else 'late' || h end else v end
+$$;
+-- 출결 값의 점수: 지각은 횟수, 결석은 2점 × 시간
+create or replace function _att_pts(v text, h int) returns int language sql immutable as $$
+  select case when v = 'late' then 1 when v ~ '^late[2-4]$' then least(substring(v from 5)::int, h) when v = 'absent' then 2 * h end
+$$;
 create or replace function _attn(p_statuses jsonb) returns text language sql immutable as $$
   select format('지각 %s · 결석 %s · 공결 %s',
-    (select count(*) from jsonb_each_text(coalesce(p_statuses, '{}')) where value = 'late'),
+    (select count(*) from jsonb_each_text(coalesce(p_statuses, '{}')) where value ~ '^late[2-4]?$'),
     (select count(*) from jsonb_each_text(coalesce(p_statuses, '{}')) where value = 'absent'),
     (select count(*) from jsonb_each_text(coalesce(p_statuses, '{}')) where value = 'excused'))
 $$;
@@ -507,7 +526,7 @@ language sql stable security definer set search_path = public as $$
         else json_build_object('id', id, 'no', no, 'active', active, 'exempt', exempt) end order by active desc, no), '[]')
       from students),
     'presets', (select coalesce(json_agg(json_build_object('id', id, 'name', name, 'points', points, 'owner', owner, 'kind', kind) order by sort, name), '[]') from presets),
-    'periods', (select coalesce(json_agg(json_build_object('id', id, 'date', date, 'label', label, 'morning', morning, 'savedAt', _kst(saved_at))
+    'periods', (select coalesce(json_agg(json_build_object('id', id, 'date', date, 'label', label, 'morning', morning, 'hours', hours, 'savedAt', _kst(saved_at))
       order by date, morning desc, nullif(substring(label from '^[0-9]{1,9}'), '')::int nulls last, label), '[]') from periods),
     -- 명단에서 빠진 학생의 출결은 표에는 남기되(다시 들어오면 쓴다) 화면에는 싣지 않는다 (출석 화면의 지각·결석 수에 섞이지 않게)
     'att', (select coalesce(json_object_agg(p.id, (select coalesce(json_object_agg(a.student_id, a.status), '{}') from attendance a
@@ -757,11 +776,14 @@ begin
   return code;
 end $$;
 
-create or replace function ensure_period(p_token uuid, p_date date, p_label text, p_morning boolean) returns uuid
+-- p_hours: 몇 시간짜리 수업인지 (1~4, 이미 있는 교시면 무시)
+drop function if exists ensure_period(uuid, date, text, boolean);
+create or replace function ensure_period(p_token uuid, p_date date, p_label text, p_morning boolean, p_hours int default 1) returns uuid
 language plpgsql security definer set search_path = public as $$
-declare who text := _session_attend(p_token); pid uuid;
+declare who text := _session_attend(p_token); pid uuid; h int := coalesce(p_hours, 1);
 begin
   perform _wlock();
+  if h < 1 or h > 4 or (coalesce(p_morning, false) and h <> 1) then raise exception '수업 시간은 1~4시간이에요'; end if;
   if coalesce(trim(p_label), '') = '' then raise exception '교시 이름을 입력하세요'; end if;
   if length(trim(p_label)) > 40 then raise exception '교시 이름은 40자까지예요'; end if;
   -- "아침 출석"은 부총대의 아침 출석만 쓰는 이름이다 (다른 교시가 쓰면 아침 출석 저장이 그 교시를 덮어쓴다)
@@ -771,9 +793,9 @@ begin
     raise exception '같은 이름의 교시가 이미 있어요. 다른 이름을 써 주세요';
   end if;
   if pid is null then
-    perform _op(who, 'ensure_period', format('교시 추가: %s %s', to_char(p_date, 'FMMM/FMDD'), trim(p_label)));
+    perform _op(who, 'ensure_period', format('교시 추가: %s %s%s', to_char(p_date, 'FMMM/FMDD'), trim(p_label), case when h > 1 then format(' (%s시간)', h) else '' end));
     -- 두 사람이 같은 교시를 동시에 추가해도 오류 없이 같은 교시로
-    insert into periods (date, label, morning) values (p_date, trim(p_label), coalesce(p_morning, false))
+    insert into periods (date, label, morning, hours) values (p_date, trim(p_label), coalesce(p_morning, false), h)
     on conflict (date, label) do nothing returning id into pid;
     if pid is null then select id into pid from periods where date = p_date and label = trim(p_label); end if;
   end if;
@@ -837,7 +859,39 @@ begin
   update ledger set detail = lbl where period_id = p_id and src = 'att' and detail = per.label;
 end $$;
 
--- 한 교시의 출결을 저장한다. p_statuses = {학생 id: 'late'|'absent'|'excused'} (없으면 출석)
+-- 교시의 수업 시간 바꾸기. 이 교시로 준 결석은 2점 × 새 시간으로, 지각은 새 시간을 넘지 않게 고친다 (수정 이력이 남는다).
+-- 부총대가 손으로 고친 점수(옛 시간 기준 점수가 아닌 것)는 그대로 둔다. 권한은 이름 바꾸기와 같다.
+create or replace function set_period_hours(p_token uuid, p_id uuid, p_hours int) returns int
+language plpgsql security definer set search_path = public as $$
+declare who text := _session_attend(p_token); per periods; h int := p_hours; e record; np int; n int := 0;
+begin
+  perform _wlock();
+  if h is null or h < 1 or h > 4 then raise exception '수업 시간은 1~4시간이에요'; end if;
+  select * into per from periods where id = p_id for update;
+  if not found then raise exception '교시를 찾을 수 없어요'; end if;
+  if per.morning then raise exception '아침 출석은 시간을 바꿀 수 없어요'; end if;
+  if h = per.hours then raise exception '지금과 같아요'; end if;
+  if not exists (select 1 from accounts where role = who and is_admin) and (per.saved_at is not null
+      or exists (select 1 from ledger where period_id = p_id)
+      or exists (select 1 from attendance_requests where period_id = p_id and requested_by <> who)) then
+    raise exception '출석이 저장됐거나 다른 사람의 출석 요청이 있는 교시는 부총대만 시간을 바꿀 수 있어요';
+  end if;
+  perform _op(who, 'set_period_hours', format('수업 시간 바꾸기: %s %s %s시간 → %s시간', to_char(per.date, 'FMMM/FMDD'), per.label, per.hours, h));
+  update periods set hours = h where id = p_id;
+  update attendance set status = _att_norm(status, h) where period_id = p_id and status <> _att_norm(status, h);
+  for e in select * from ledger where period_id = p_id and src = 'att' and voided_at is null and item in ('결석', '지각') loop
+    np := case when e.item = '결석' and e.points = 2 * per.hours then 2 * h when e.item = '지각' and e.points > h then h else e.points end;
+    if np <> e.points then
+      update ledger set points = np where id = e.id;
+      insert into ledger_revisions (ledger_id, before, after, reason, edited_by)
+      values (e.id, jsonb_build_object('points', e.points), jsonb_build_object('points', np), format('수업 시간 변경 (%s시간 → %s시간)', per.hours, h), who);
+      n := n + 1;
+    end if;
+  end loop;
+  return n;
+end $$;
+
+-- 한 교시의 출결을 저장한다. p_statuses = {학생 id: 'late'|'late2'~'late4'(지각 횟수)|'absent'|'excused'} (없으면 출석)
 -- 한 교시의 출결을 반영한다. p_by는 저장(승인)한 사람, p_requested_by는 출석 요청을 보낸 사람
 create or replace function _apply_attendance(p_period uuid, p_statuses jsonb, p_by text, p_requested_by text) returns int
 language plpgsql security definer set search_path = public as $$
@@ -853,20 +907,27 @@ begin
   -- 명단에서 빠진 학생의 출결은 그대로 둔다 (지우면 다시 들어온 뒤 재저장할 때 그 학생의 지각·결석이 "출석 정정"으로 무효가 된다)
   delete from attendance where period_id = p_period and student_id in (select id from students where active);
   insert into attendance (period_id, student_id, status)
-  select p_period, s.id, e.value from jsonb_each_text(coalesce(p_statuses, '{}')) e
+  select p_period, s.id, _att_norm(e.value, per.hours) from jsonb_each_text(coalesce(p_statuses, '{}')) e
   join students s on s.id = e.key::uuid and s.active
-  where e.value in ('late', 'absent', 'excused');
+  where e.value in ('late', 'late2', 'late3', 'late4', 'absent', 'excused');
   for st in select id from students where active loop
-    want := coalesce(p_statuses ->> st.id::text, 'present');
-    want_item := case want when 'late' then '지각' when 'absent' then '결석' end;
+    want := _att_norm(coalesce(p_statuses ->> st.id::text, 'present'), per.hours);
+    if want not in ('late', 'late2', 'late3', 'late4', 'absent', 'excused') then want := 'present'; end if;
+    want_item := case when want like 'late%' then '지각' when want = 'absent' then '결석' end;
     cur := null;
     select * into cur from ledger where period_id = p_period and student_id = st.id and src = 'att' and voided_at is null limit 1;
     if cur.id is not null and cur.item is distinct from want_item then
       perform _void(cur.id, case when want = 'excused' then '공결 처리' else '출석 정정' end, who);
     end if;
+    pts := _att_pts(want, per.hours);
+    -- 같은 지각인데 횟수만 바뀌었으면 점수만 고친다 (수정 이력)
+    if cur.id is not null and cur.item = want_item and want is distinct from old ->> st.id::text and cur.points <> pts then
+      update ledger set points = pts where id = cur.id;
+      insert into ledger_revisions (ledger_id, before, after, reason, edited_by)
+      values (cur.id, jsonb_build_object('points', cur.points), jsonb_build_object('points', pts), '출석 정정 (지각 횟수)', who);
+    end if;
     if want_item is not null and (cur.id is null or cur.item <> want_item) and (cur.id is not null or old ->> st.id::text is distinct from want) then
-      -- 출석 점수는 지각 +1, 결석 +2로 고정한다
-      pts := case want_item when '지각' then 1 else 2 end;
+      -- 출석 점수: 지각은 누른 횟수(시간까지)만큼 1점씩, 결석은 2점 × 수업 시간
       nid := _entry(per.date, st.id, want_item, per.label, pts, 'att', p_period, null, who,
         p_requested_by, case when p_requested_by is not null then who end);
       if nid is not null then n := n + 1; end if;
@@ -1247,18 +1308,24 @@ end $$;
 -- 출석 "교시 추가" 칸의 자주 쓰는 교시. p_list는 교시 이름 배열이다. 항목과 마찬가지로 직책마다 따로.
 create or replace function my_periods_save(p_token uuid, p_list jsonb) returns void
 language plpgsql security definer set search_path = public as $$
-declare who text := _session(p_token, false); p jsonb; i int := 0;
+declare who text := _session(p_token, false); p jsonb; i int := 0; nm text; hh int;
 begin
   perform _wlock();
   if jsonb_typeof(coalesce(p_list, '[]')) <> 'array' then raise exception '교시 목록이 올바르지 않아요'; end if;
   perform _op(who, 'my_periods_save', format('자주 쓰는 교시 저장 (%s개)', jsonb_array_length(coalesce(p_list, '[]'))));
   delete from presets where owner = who and kind = 'period';
+  -- 항목: 교시 이름(글자) 또는 {name, hours}. 몇 시간짜리 수업인지는 points 칸에 둔다 (0이나 1이면 1시간)
   for p in select * from jsonb_array_elements(coalesce(p_list, '[]')) loop
-    if jsonb_typeof(p) <> 'string' then raise exception '교시 이름은 글자여야 해요'; end if;
-    if trim(p #>> '{}') <> '' and not exists (select 1 from presets where owner = who and kind = 'period' and name = trim(p #>> '{}')) then
+    if jsonb_typeof(p) = 'string' then nm := trim(p #>> '{}'); hh := 1;
+    elsif jsonb_typeof(p) = 'object' and jsonb_typeof(p -> 'name') = 'string' then
+      nm := trim(p ->> 'name');
+      if coalesce(p ->> 'hours', '1') !~ '^[1-4]$' then raise exception '수업 시간은 1~4시간이에요'; end if;
+      hh := coalesce((p ->> 'hours')::int, 1);
+    else raise exception '교시 이름은 글자여야 해요'; end if;
+    if nm <> '' and not exists (select 1 from presets where owner = who and kind = 'period' and name = nm) then
       i := i + 1;
-      if length(trim(p #>> '{}')) > 40 then raise exception '교시 이름은 40자까지예요'; end if;
-      insert into presets (name, points, sort, owner, kind) values (trim(p #>> '{}'), 0, 100 + i, who, 'period');
+      if length(nm) > 40 then raise exception '교시 이름은 40자까지예요'; end if;
+      insert into presets (name, points, sort, owner, kind) values (nm, hh, 100 + i, who, 'period');
     end if;
   end loop;
   if i > 30 then raise exception '자주 쓰는 교시는 30개까지 만들 수 있어요'; end if;
@@ -1537,7 +1604,8 @@ begin
   -- 교시 저장(kind)이 생기기 전 백업의 항목은 모두 'item'이다
   -- 직책별 항목(owner)이 생기기 전 백업의 항목은 부총대 것
   insert into presets select (jsonb_populate_record(null::presets, '{"kind": "item", "owner": "부총대"}'::jsonb || jsonb_strip_nulls(e))).* from jsonb_array_elements(t -> 'presets') e;
-  insert into periods select * from jsonb_populate_recordset(null::periods, t -> 'periods');
+  -- 시간(hours) 칸이 생기기 전 백업은 1시간
+  insert into periods select (jsonb_populate_record(null::periods, '{"hours": 1}'::jsonb || e)).* from jsonb_array_elements(t -> 'periods') e;
   insert into attendance select * from jsonb_populate_recordset(null::attendance, t -> 'attendance');
   insert into ledger select * from jsonb_populate_recordset(null::ledger, t -> 'ledger');
   insert into ledger_private select * from jsonb_populate_recordset(null::ledger_private, t -> 'ledger_private');
@@ -1624,7 +1692,7 @@ do $$ declare f text; begin
     foreach f in array array[
       'public_state()', 'create_excuse(uuid,uuid,text,text)', 'create_excuse_day(uuid,date,text,text)', 'create_reaction(uuid,text,text,text)', 'my_reactions(uuid)', 'reaction_feed(integer)', 'reaction_adjust(uuid,jsonb)', 'reaction_export(uuid,date,date)', 'review_reaction(uuid,uuid[],boolean,text)', 'login(text,text)', 'recover(text,text,text)',
       'private_state(uuid)', 'logout(uuid)', 'get_photo(uuid,uuid)', 'create_request(uuid,date,uuid[],text,text,numeric,text,text)',
-      'change_pw(uuid,text,text)', 'reset_pw(uuid,text,text)', 'new_recovery(uuid,text)', 'ensure_period(uuid,date,text,boolean)', 'delete_period(uuid,uuid)', 'rename_period(uuid,uuid,text)',
+      'change_pw(uuid,text,text)', 'reset_pw(uuid,text,text)', 'new_recovery(uuid,text)', 'ensure_period(uuid,date,text,boolean,integer)', 'set_period_hours(uuid,uuid,integer)', 'delete_period(uuid,uuid)', 'rename_period(uuid,uuid,text)',
       'save_attendance(uuid,uuid,jsonb)', 'request_attendance(uuid,uuid,jsonb)', 'review_attendance(uuid,uuid,boolean,text)', 'add_entries(uuid,date,uuid[],text,text,numeric)', 'edit_entry(uuid,uuid,date,text,text,numeric,text)',
       'void_entry(uuid,uuid,text)', 'review_request(uuid,uuid,boolean,text)', 'review_excuse(uuid,uuid,boolean,text)',
       'roster_apply(uuid,jsonb,jsonb,date)', 'my_presets_save(uuid,jsonb)', 'my_periods_save(uuid,jsonb)', 'purge(uuid,date)', 'backup_dump()', 'restore_backup(uuid,jsonb)', 'history_move(uuid,bigint,boolean)', 'history_drop(uuid,bigint,boolean)', 'history_restore(uuid,bigint,boolean)', 'ops_list(uuid,integer)', 'set_link(uuid,text,text)'
