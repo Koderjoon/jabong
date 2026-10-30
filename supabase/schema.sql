@@ -558,7 +558,8 @@ language sql stable security definer set search_path = public as $$
     -- 맨 위 작업 (부총대 화면의 "되돌리기" 버튼이 방금 한 작업인지 알아보는 데 쓴다)
     'lastOp', case when p_private then (select json_build_object('id', id, 'actor', actor, 'undoable', undoable, 'undone', undone, 'dropped', dropped)
       from ops where kind <> 'scratch' order by id desc limit 1) end,
-    'links', (select coalesce(json_object_agg(id, url), '{}') from links),
+    -- dday_admin(디데이 관리자 키가 든 링크)은 로그인한 총대단·부총대에게만 (학생이 보는 공개 상태에는 없다)
+    'links', (select coalesce(json_object_agg(id, url), '{}') from links where p_private or id <> 'dday_admin'),
     'updatedAt', (select _kst(updated_at) from app_version where id = 1)
   )
 $$;
@@ -1157,14 +1158,14 @@ end $$;
 create or replace function set_link(p_token uuid, p_id text, p_url text) returns void
 language plpgsql security definer set search_path = public as $$
 declare who text := _session(p_token, true); u text := trim(coalesce(p_url, '')); cur text;
-  label text := case p_id when 'store' then '매점 링크' when 'dday' then '디데이 링크' end;
+  label text := case p_id when 'store' then '매점 링크' when 'dday' then '디데이 링크' when 'dday_admin' then '디데이 관리자 링크' end;
 begin
   perform _wlock();
   if label is null then raise exception '없는 링크예요'; end if;
   if u <> '' and (u !~ '^https://[^[:space:]<>"]+$' or length(u) > 1000) then
     raise exception '링크는 https:// 로 시작하는 주소여야 해요 (띄어쓰기 없이, 1000자까지)';
   end if;
-  if p_id = 'dday' and u <> '' and u !~ '[#&]k=[^&]+' then
+  if p_id in ('dday', 'dday_admin') and u <> '' and u !~ '[#&]k=[^&]+' then
     raise exception '디데이 링크는 보기 키(#k=…)까지 통째로 붙여넣어 주세요';
   end if;
   select url into cur from links where id = p_id;
@@ -1281,7 +1282,8 @@ create or replace function _dump() returns jsonb language sql stable security de
       'excuses', (select coalesce(jsonb_agg(to_jsonb(x)), '[]') from excuses x),
       'attendance_requests', (select coalesce(jsonb_agg(to_jsonb(x)), '[]') from attendance_requests x),
       'reactions', (select coalesce(jsonb_agg(to_jsonb(x)), '[]') from reactions x),
-      'links', (select coalesce(jsonb_agg(to_jsonb(x)), '[]') from links x)
+      -- 백업은 로그인 없이 받을 수 있고 공개 저장소에도 올라가므로 관리자 키 링크는 넣지 않는다
+      'links', (select coalesce(jsonb_agg(to_jsonb(x)), '[]') from links x where id <> 'dday_admin')
     ))
 $$;
 
@@ -1552,8 +1554,9 @@ begin
   -- adj 칸이 생기기 전 백업에는 없으니 false로
   insert into reactions select (jsonb_populate_record(null::reactions, '{"adj": false}'::jsonb || e)).* from jsonb_array_elements(coalesce(t -> 'reactions', '[]')) e;
   -- 링크가 생기기 전 백업에는 없다 (그때는 링크도 없었으니 비운다)
-  delete from links where true;
-  insert into links select * from jsonb_populate_recordset(null::links, coalesce(t -> 'links', '[]'));
+  -- 관리자 키 링크는 백업에 없으니 지금 것을 그대로 둔다
+  delete from links where id <> 'dday_admin';
+  insert into links select * from jsonb_populate_recordset(null::links, coalesce(t -> 'links', '[]')) where id <> 'dday_admin';
   return json_build_object('students', (select count(*) from students), 'ledger', (select count(*) from ledger), 'createdAt', p_data ->> 'createdAt');
 end $$;
 

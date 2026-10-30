@@ -1230,6 +1230,17 @@ select pg_temp.ok(public_state() -> 'links' ->> 'dday' = 'https://koderjoon.gith
 select pg_temp.ok((ops_list(:'t', 1)::jsonb -> 0 ->> 'summary') = '디데이 링크 넣기', '디데이 링크도 작업 내역에');
 select set_link(:'t', 'dday', '');
 select pg_temp.ok(public_state() -> 'links' ->> 'dday' is null, '디데이 링크 지우기');
+-- 디데이 관리자 링크: 로그인한 총대단·부총대에게만, 백업에도 없다
+select pg_temp.expect(format('select set_link(%L, ''dday_admin'', ''https://x/#k=a'')', :'ot'), '42501', '총대단은 못 바꿈');
+select set_link(:'t', 'dday_admin', 'https://koderjoon.github.io/notice-todo/#k=admin-test-key');
+select pg_temp.ok(public_state() -> 'links' ->> 'dday_admin' is null and position('admin-test-key' in public_state()::text) = 0, '학생 상태에는 관리자 링크 없음');
+select pg_temp.ok(private_state(:'ot') -> 'links' ->> 'dday_admin' = 'https://koderjoon.github.io/notice-todo/#k=admin-test-key', '총대단은 받음');
+select pg_temp.ok(private_state(:'t') -> 'links' ->> 'dday_admin' is not null, '부총대도 받음');
+select pg_temp.ok(position('admin-test-key' in backup_dump()::text) = 0, '백업에는 관리자 링크 없음');
+select backup_dump()::jsonb as admdump \gset
+select restore_backup(:'t', :'admdump'::jsonb);
+select (login('부총대', '1234')::json ->> 'token') as t \gset
+select pg_temp.ok(private_state(:'t') -> 'links' ->> 'dday_admin' = 'https://koderjoon.github.io/notice-todo/#k=admin-test-key', '백업에서 되살려도 관리자 링크는 그대로');
 \echo 25. 학급 매점 링크 통과
 
 \echo 모든 서버 함수 테스트 통과

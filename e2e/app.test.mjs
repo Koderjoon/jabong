@@ -2326,6 +2326,19 @@ test('디데이: 부총대가 링크(보기 키까지)를 넣으면 학생 첫 �
   await W.page.waitForSelector('#view .warn');
   assert.match(await W.text(), /디데이 보기 키가 맞지 않아요/);
   assert.ok(await W.has('a:has-text("원본 사이트 열기")'));
+  // 디데이 관리자 링크: 로그인한 총대단·부총대 화면 맨 위에만 버튼, 학생 화면·공개 상태에는 없다
+  await A.page.fill('#dday_admin-url', `${SITE}#k=admin-test-key`);
+  assert.equal(await A.toast('[data-act="link-save"][data-id="dday_admin"]'), '디데이 관리자 링크를 저장했어요 · 총대단·부총대 화면 맨 위에 버튼이 생겼어요');
+  assert.equal(await A.page.getAttribute('#subbar .dday-admin', 'href'), `${SITE}#k=admin-test-key`);
+  await O.reload();
+  assert.equal(await O.page.getAttribute('#subbar .dday-admin', 'href'), `${SITE}#k=admin-test-key`);
+  await O.tab('reqs');
+  assert.ok(await O.has('#subbar .dday-admin'), '어느 탭에서나');
+  await O.fits('디데이 관리 버튼');
+  await W.reload();
+  assert.equal(await W.has('.dday-admin'), false);
+  const pub = await W.page.evaluate(() => fetch('/rest/v1/rpc/public_state', { method: 'POST' }).then((r) => r.text()));
+  assert.ok(pub.includes('"links"') && pub.includes('jnudent25') === false && !pub.includes('admin-test-key'), '학생이 받는 상태에 관리자 키 없음');
   // 지우면 디데이 탭이 사라지고 현황판부터
   await A.page.fill('#dday-url', '');
   assert.equal(await A.toast('[data-act="link-save"][data-id="dday"]'), '디데이 링크를 지웠어요');

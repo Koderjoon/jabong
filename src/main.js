@@ -220,6 +220,8 @@ function vStoreLink() {
 // 마지막으로 받은 목록은 이 폰에 기억해 두어(jabong-dday) 다음에 열 때 바로 보이고, 뒤에서 새로 받는다.
 // 목록의 칸은 title·due("YYYY-MM-DD" 또는 "YYYY-MM-DD HH:MM")·detail·room만 쓴다. 모르는 칸은 무시한다.
 const ddayUrl = () => (/^https:\/\/[^\s"<>]+[#&]k=[^&\s]+/.test(S?.links?.dday || '') ? S.links.dday : null);
+// 디데이 관리자 링크(관리자 키): 서버가 로그인한 총대단·부총대의 상태에만 싣는다. 새 창에서 디데이 사이트를 관리자 모드로 연다
+const ddayAdminUrl = () => (UI.user && /^https:\/\/[^\s"<>]+[#&]k=[^&\s]+/.test(S?.links?.dday_admin || '') ? S.links.dday_admin : null);
 const DDAY_KEY = 'jabong-dday';
 let dday = null; // { src, data, at, err, loading }
 function ddayCache(src) {
@@ -975,7 +977,11 @@ function vManage() {
   <div class="card"><h2>디데이 링크</h2>
   <p class="hint" style="margin:0">디데이 사이트 주소를 <b>보기 키(#k=…)까지 통째로</b> 붙여넣으세요. 넣으면 학생 화면의 첫 탭이 "디데이"가 되고, 그 사이트와 같은 마감 목록이 보여요. 비우고 저장하면 디데이 탭이 사라져요. 학생 앱 주소를 아는 사람은 누구나 이 목록을 볼 수 있어요.</p>
   <input id="dday-url" type="url" inputmode="url" aria-label="디데이 링크" placeholder="https://koderjoon.github.io/notice-todo/#k=..." value="${esc(S.links?.dday || '')}" autocomplete="off">
-  <div class="btns"><button class="btn ghost" data-act="link-save" data-id="dday">링크 저장</button>${ddayUrl() ? `<a class="btn ghost small" href="${esc(ddayUrl())}" target="_blank" rel="noopener noreferrer">열어 보기 ↗</a>` : ''}</div></div>
+  <div class="btns"><button class="btn ghost" data-act="link-save" data-id="dday">링크 저장</button>${ddayUrl() ? `<a class="btn ghost small" href="${esc(ddayUrl())}" target="_blank" rel="noopener noreferrer">열어 보기 ↗</a>` : ''}</div>
+  <h2 style="font-size:14px">디데이 관리자 링크</h2>
+  <p class="hint" style="margin:0">관리자 키(#k=…)가 든 주소를 넣으면 <b>로그인한 총대단·부총대</b> 화면 맨 위에 "디데이 관리" 버튼이 생겨요. 누르면 디데이 사이트가 관리자 모드로 열려 추가·수정·삭제할 수 있어요. 학생 화면과 백업 파일에는 들어가지 않아요.</p>
+  <input id="dday_admin-url" type="url" inputmode="url" aria-label="디데이 관리자 링크" placeholder="https://koderjoon.github.io/notice-todo/#k=..." value="${esc(S.links?.dday_admin || '')}" autocomplete="off">
+  <div class="btns"><button class="btn ghost" data-act="link-save" data-id="dday_admin">링크 저장</button></div></div>
 
   <div class="card"><h2>비밀번호</h2>
   <p class="hint" style="margin:0">인수인계할 때는 다음 사람에게 지금 비밀번호와 복구 코드를 알려주고, 그 사람이 로그인해서 자기 비밀번호로 바꾸면 끝이에요.</p>
@@ -1208,7 +1214,8 @@ function render() {
       ? UI.user ? `<div class="who"><b style="color:var(--ink)">${esc(UI.user)}</b>로 로그인됨 · 학생 화면 보는 중</div>` : ''
       : locked
         ? '<div class="mocknote">총대단과 부총대는 자기 직책의 비밀번호로 로그인해요.</div>'
-        : `<div class="who"><b style="color:var(--ink)">${esc(UI.user)}</b>로 로그인됨 ${UI.role === 'officer' ? '<button class="btn ghost small" data-act="pw-open">비밀번호 바꾸기</button> ' : ''}<button class="btn ghost small" data-act="logout">로그아웃</button></div>`;
+        : `<div class="who"><b style="color:var(--ink)">${esc(UI.user)}</b>로 로그인됨 ${UI.role === 'officer' ? '<button class="btn ghost small" data-act="pw-open">비밀번호 바꾸기</button> ' : ''}<button class="btn ghost small" data-act="logout">로그아웃</button></div>${
+            ddayAdminUrl() ? `<a class="btn store-btn dday-admin" href="${esc(ddayAdminUrl())}" target="_blank" rel="noopener noreferrer">📅 디데이 관리 (추가·수정·삭제) <span aria-hidden="true">↗</span></a>` : ''}`;
   const V = { dday: vDday, board: vBoard, excuse: vExcuse, react: vReact, request: vRequest, reqs: vReqs, attend: vAttend, record: vRecord, inbox: vInbox, notice: vNotice, history: vHistory, manage: vManage };
   const codeCard =
     !locked && UI.role === 'admin' && UI.newCode
@@ -1570,13 +1577,15 @@ const A = {
     return toast('내 비밀번호를 바꿨어요');
   },
   'link-save': async (d) => {
-    const id = d.id === 'dday' ? 'dday' : 'store';
+    const id = ['dday', 'dday_admin'].includes(d.id) ? d.id : 'store';
     const url = val(`${id}-url`).trim();
     if (url && !/^https:\/\/[^\s"<>]+$/.test(url)) return toast('링크는 https:// 로 시작하는 주소여야 해요 (띄어쓰기 없이)');
-    if (id === 'dday' && url && !/[#&]k=[^&]+/.test(url)) return toast('디데이 링크는 보기 키(#k=…)까지 통째로 붙여넣어 주세요');
-    const msg = id === 'dday'
-      ? url ? '디데이 링크를 저장했어요 · 학생 화면 첫 탭이 디데이가 돼요' : '디데이 링크를 지웠어요'
-      : url ? '매점 링크를 저장했어요 · 자봉 현황에 버튼이 생겼어요' : '매점 링크를 지웠어요';
+    if (id !== 'store' && url && !/[#&]k=[^&]+/.test(url)) return toast('디데이 링크는 보기 키(#k=…)까지 통째로 붙여넣어 주세요');
+    const msg = {
+      dday: url ? '디데이 링크를 저장했어요 · 학생 화면 첫 탭이 디데이가 돼요' : '디데이 링크를 지웠어요',
+      dday_admin: url ? '디데이 관리자 링크를 저장했어요 · 총대단·부총대 화면 맨 위에 버튼이 생겼어요' : '디데이 관리자 링크를 지웠어요',
+      store: url ? '매점 링크를 저장했어요 · 자봉 현황에 버튼이 생겼어요' : '매점 링크를 지웠어요',
+    }[id];
     await run('set_link', { p_id: id, p_url: url }, msg);
     return true;
   },
