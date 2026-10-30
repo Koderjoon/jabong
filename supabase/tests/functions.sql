@@ -1339,6 +1339,53 @@ select backup_dump()::jsonb as hdump \gset
 select restore_backup(:'t', (select jsonb_set(:'hdump'::jsonb, '{tables,periods}', (select jsonb_agg(x - 'hours') from jsonb_array_elements(:'hdump'::jsonb -> 'tables' -> 'periods') x))));
 set role postgres;
 select pg_temp.ok(not exists (select 1 from periods where hours <> 1) and exists (select 1 from periods), '옛 백업의 교시는 1시간');
+-- 지각과 결석을 함께 (지각 1시간 + 결석 2시간 = 지각 +1, 결석 +4 두 줄)
+set role anon;
+select ensure_period(:'t', '2026-08-12', '1-3교시 생리학', false, 3) as hc \gset
+select save_attendance(:'t', :'hc', format('{"%s":"late1absent2","%s":"late2absent2","%s":"late1absent1"}', :'h1', :'h2', :'h3')::jsonb);
+set role postgres;
+create or replace function pg_temp.att_pts(p uuid, s uuid, it text) returns numeric language sql as $$
+  select points from ledger where period_id = p and student_id = s and item = it and voided_at is null $$;
+select pg_temp.ok(pg_temp.att_pts(:'hc', :'h1', '지각') = 1 and pg_temp.att_pts(:'hc', :'h1', '결석') = 4, '지각 1 + 결석 2 = 두 줄');
+select pg_temp.ok(pg_temp.att_pts(:'hc', :'h2', '지각') = 2 and pg_temp.att_pts(:'hc', :'h2', '결석') = 2
+  and (select status from attendance where period_id = :'hc' and student_id = :'h2') = 'late2absent1', '합이 시간을 넘으면 결석부터 줄인다');
+select id as cl from ledger where period_id = :'hc' and student_id = :'h1' and item = '지각' and voided_at is null \gset
+select id as ca from ledger where period_id = :'hc' and student_id = :'h1' and item = '결석' and voided_at is null \gset
+set role anon;
+select save_attendance(:'t', :'hc', format('{"%s":"absent3","%s":"late2absent1","%s":"late1absent1"}', :'h1', :'h2', :'h3')::jsonb);
+set role postgres;
+select pg_temp.ok((select void_reason = '출석 정정' from ledger where id = :'cl') and (select points from ledger where id = :'ca') = 6 and pg_temp.att_pts(:'hc', :'h1', '지각') is null, '지각을 빼면 지각 줄만 무효, 결석은 같은 줄 점수만');
+set role anon;
+select save_attendance(:'t', :'hc', format('{"%s":"late1absent2","%s":"late2absent1","%s":"late1absent1"}', :'h1', :'h2', :'h3')::jsonb);
+set role postgres;
+select pg_temp.ok(pg_temp.att_pts(:'hc', :'h1', '지각') = 1 and (select points from ledger where id = :'ca') = 4
+  and (select count(*) from ledger where period_id = :'hc' and student_id = :'h1') = 3, '다시 지각을 넣으면 새 지각 줄, 결석은 같은 줄');
+-- 같은 출결로 다시 저장해도 아무것도 바뀌지 않는다
+select count(*) as cn0 from ledger \gset
+select count(*) as cr0 from ledger_revisions \gset
+set role anon;
+select pg_temp.ok(save_attendance(:'t', :'hc', format('{"%s":"late1absent2","%s":"late2absent1","%s":"late1absent1"}', :'h1', :'h2', :'h3')::jsonb) = 0, '같은 출결은 새 기록 없음');
+set role postgres;
+select pg_temp.ok((select count(*) from ledger) = :cn0 and (select count(*) from ledger_revisions) = :cr0, '같은 출결은 수정 이력도 없음');
+-- 수업 시간을 줄이면 결석부터 줄인다
+set role anon;
+select pg_temp.ok(set_period_hours(:'t', :'hc', 2) = 2, '두 줄 고침');
+set role postgres;
+select pg_temp.ok(pg_temp.att_pts(:'hc', :'h1', '지각') = 1 and pg_temp.att_pts(:'hc', :'h1', '결석') = 2
+  and (select status from attendance where period_id = :'hc' and student_id = :'h1') = 'late1absent1', '지각 1 + 결석 2 → 2시간이면 결석 1');
+select pg_temp.ok(pg_temp.att_pts(:'hc', :'h2', '지각') = 2 and pg_temp.att_pts(:'hc', :'h2', '결석') is null
+  and (select status from attendance where period_id = :'hc' and student_id = :'h2') = 'late2', '지각 2 + 결석 1 → 2시간이면 지각 2만 (결석 점수 0은 남지 않게)');
+-- 공결이면 두 줄 모두 무효
+set role anon;
+select save_attendance(:'t', :'hc', format('{"%s":"excused","%s":"late2","%s":"late1absent1"}', :'h1', :'h2', :'h3')::jsonb);
+set role postgres;
+select pg_temp.ok(not exists (select 1 from ledger where period_id = :'hc' and student_id = :'h1' and voided_at is null)
+  and (select count(*) from ledger where period_id = :'hc' and student_id = :'h1' and void_reason = '공결 처리') = 2, '공결이면 지각·결석 모두 공결 처리');
+-- 요청 요약은 지각·결석에 모두 센다
+set role anon;
+select request_attendance(:'ct', :'hq', format('{"%s":"late1absent1"}', :'h1')::jsonb);
+select pg_temp.ok(position('지각 1 · 결석 1' in (ops_list(:'t', 1)::jsonb -> 0 ->> 'summary')) > 0, '요청 요약에 함께');
+select pg_temp.expect(format('select save_attendance(%L, %L, %L)', :'t', :'hc', format('{"%s":"late0absent9"}', :'h1')), null, '모르는 값은 출석으로 (오류 없이)');
 \echo 26. 여러 시간 수업 통과
 
 \echo 모든 서버 함수 테스트 통과

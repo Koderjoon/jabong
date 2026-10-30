@@ -2383,11 +2383,42 @@ test('여러 시간 수업: 지각은 누를 때마다 1점씩, 결석은 2점�
   await A.click(abs);
   assert.match(await A.page.getAttribute(rowY, 'class'), /present/, '시간을 넘으면 출석');
   for (let i = 0; i < 3; i++) await A.click(abs);
-  // 지각이던 학생이 결석을 누르면 결석 1시간부터
-  await A.click(`[data-act="setst"][data-sid="${z.id}"][data-v="late"]`);
-  await A.click(`[data-act="setst"][data-sid="${z.id}"][data-v="absent"]`);
-  assert.equal((await A.text(`[data-act="setst"][data-sid="${z.id}"][data-v="absent"]`)).trim(), '결석');
-  assert.match(await A.text('.att-foot'), /지각 1 · 결석 2/);
+  // 지각과 결석을 함께: 지각 1 → 결석을 누르면 지각 1 · 결석 1 → 결석 → 지각 1 · 결석 2 → (3시간이 찼으니) 결석을 누르면 지각에서 가져와 결석 3
+  const zl = `[data-act="setst"][data-sid="${z.id}"][data-v="late"]`;
+  const za = `[data-act="setst"][data-sid="${z.id}"][data-v="absent"]`;
+  const rowZ = `.call:has([data-sid="${z.id}"])`;
+  await A.click(zl);
+  await A.click(za);
+  assert.match(await A.page.getAttribute(rowZ, 'class'), /mixed/);
+  assert.match(await A.page.getAttribute(zl, 'class'), /\bon\b/);
+  assert.match(await A.page.getAttribute(za, 'class'), /\bon\b/);
+  await A.click(za);
+  assert.equal((await A.text(zl)).trim(), '지각');
+  assert.equal((await A.text(za)).trim(), '결석 2');
+  await A.click(za);
+  assert.equal((await A.text(za)).trim(), '결석 3');
+  assert.match(await A.page.getAttribute(rowZ, 'class'), /absent/);
+  // 지각을 누르면 결석에서 한 시간 가져온다 → 지각 1 · 결석 2, 한 번 더 → 지각 2 · 결석 1
+  await A.click(zl);
+  assert.equal((await A.text(zl)).trim(), '지각');
+  assert.equal((await A.text(za)).trim(), '결석 2');
+  await A.click(zl);
+  assert.equal((await A.text(zl)).trim(), '지각 2');
+  assert.equal((await A.text(za)).trim(), '결석');
+  // 지각 1 · 결석 1로 맞춘다 (출석 → 지각 → 결석)
+  await A.click(`[data-act="setst"][data-sid="${z.id}"][data-v="present"]`);
+  await A.click(zl);
+  await A.click(za);
+  assert.match(await A.text('.att-foot'), /지각 2 · 결석 2/, '지각 + 결석인 학생은 둘 다에 센다');
+  // 지각 다시 부르기: 지각만 지우고 결석은 남긴다, 다시 누르면 지각 1 · 결석 1로
+  const rz = `#recall-sec [data-act="recall-tog"][data-sid="${z.id}"]`;
+  assert.match(await A.text(rz), /지각 1 · 결석 1/);
+  await A.click(rz);
+  assert.match(await A.text(rz), /출석/);
+  assert.equal(await A.page.getAttribute(zl, 'class').then((c) => /\bon\b/.test(c)), false);
+  assert.match(await A.page.getAttribute(za, 'class'), /\bon\b/, '결석은 그대로');
+  await A.click(rz);
+  assert.match(await A.text(rz), /지각 1 · 결석 1/);
   // 지각 다시 부르기: 출석으로 바꿨다가 다시 누르면 전의 횟수(2번)로
   const rc = `#recall-sec [data-act="recall-tog"][data-sid="${x.id}"]`;
   assert.match(await A.text(rc), /지각 2/);
@@ -2396,10 +2427,11 @@ test('여러 시간 수업: 지각은 누를 때마다 1점씩, 결석은 2점�
   await A.click(rc);
   assert.match(await A.text(rc), /지각 2/);
   assert.match(await A.toast('[data-act="att-save"]'), /저장했어요/);
-  const pts = async (id) => (await one(`select points::float as p from ledger l join periods p on p.id = l.period_id where p.date = $1 and l.student_id = $2 and l.voided_at is null`, [D, id]))?.p;
-  assert.equal(await pts(x.id), 2, '지각 2번 = 2점');
-  assert.equal(await pts(y.id), 6, '결석 3시간 = 6점');
-  assert.equal(await pts(z.id), 2, '결석 1시간 = 2점');
+  // 학생의 그 교시 점수 (지각·결석 줄을 "지각 2 결석 4"처럼)
+  const pts = async (id) => (await q(`select l.item, l.points::float as p from ledger l join periods p on p.id = l.period_id where p.date = $1 and l.student_id = $2 and l.voided_at is null order by l.item desc`, [D, id])).map((r) => `${r.item} ${r.p}`).join(' ');
+  assert.equal(await pts(x.id), '지각 2', '지각 2번 = 2점');
+  assert.equal(await pts(y.id), '결석 6', '결석 3시간 = 6점');
+  assert.equal(await pts(z.id), '지각 1 결석 2', '지각 1 + 결석 1 = 두 줄');
   // 공지: 교시 이름 뒤에 시간, 점수별로 작은 것부터
   const notice = async () => {
     await A.tab('notice');
@@ -2409,15 +2441,21 @@ test('여러 시간 수업: 지각은 누를 때마다 1점씩, 결석은 2점�
     return A.page.inputValue('#notice-text');
   };
   const nos = (...r) => r.map((s) => s.no).sort((a, b) => a - b).join(', ');
-  assert.equal(await notice(), ['😿 12/1 자봉, 상점 공지하겠습니다.', '[1-3교시 구강해부학 (3시간)]', `지각(+2): ${x.no}`, `결석(+2): ${z.no}`, `결석(+6): ${y.no}`].join('\n'));
+  assert.equal(await notice(), ['😿 12/1 자봉, 상점 공지하겠습니다.', '[1-3교시 구강해부학 (3시간)]', `지각(+1): ${z.no}`, `지각(+2): ${x.no}`, `결석(+2): ${z.no}`, `결석(+6): ${y.no}`].join('\n'));
   await A.tab('attend');
-  // 수업 시간을 줄이면 넘는 결석만 줄인다 (결석 3시간 → 2시간, 지각 2번·결석 1시간은 그대로)
+  // 수업 시간을 줄이면 넘는 결석만 줄인다 (결석 3시간 → 2시간, 지각 2번·지각 1 + 결석 1은 그대로)
   assert.equal(await A.toast('[data-act="per-hours"][data-v="2"]'), '2시간 수업으로 바꿨어요 · 이 교시 자봉 1건의 점수도 고쳤어요');
-  assert.equal(await pts(y.id), 4);
-  assert.equal(await pts(x.id), 2);
-  assert.equal(await pts(z.id), 2);
-  assert.equal(await notice(), ['😿 12/1 자봉, 상점 공지하겠습니다.', '[1-3교시 구강해부학 (2시간)]', `지각(+2): ${x.no}`, `결석(+2): ${z.no}`, `결석(+4): ${y.no}`].join('\n'));
-  // 지각 다시 줄이고 결석을 늘려 다시 저장해도 공지가 따라간다 (같은 점수는 한 줄에 번호순)
+  assert.equal(await pts(y.id), '결석 4');
+  assert.equal(await pts(x.id), '지각 2');
+  assert.equal(await pts(z.id), '지각 1 결석 2');
+  assert.equal(await notice(), ['😿 12/1 자봉, 상점 공지하겠습니다.', '[1-3교시 구강해부학 (2시간)]', `지각(+1): ${z.no}`, `지각(+2): ${x.no}`, `결석(+2): ${z.no}`, `결석(+4): ${y.no}`].join('\n'));
+  // 한눈에 보기에도 함께 보인다
+  await A.tab('attend');
+  await A.click('[data-act="attview"][data-v="grid"]');
+  assert.equal((await A.text(`.att [data-act="cyc"][data-sid="${z.id}"] small`)).trim(), '지1결1');
+  assert.match(await A.page.getAttribute(`.att [data-act="cyc"][data-sid="${z.id}"]`, 'class'), /mixed/);
+  await A.click('[data-act="attview"][data-v="list"]');
+  // 지각을 결석으로 돌려 다시 저장해도 공지가 따라간다 (지각 줄은 무효, 같은 점수는 한 줄에 번호순)
   await A.tab('attend');
   await A.click('[data-act="attview"][data-v="list"]');
   await A.click(`[data-act="setst"][data-sid="${x.id}"][data-v="absent"]`);
@@ -2425,6 +2463,8 @@ test('여러 시간 수업: 지각은 누를 때마다 1점씩, 결석은 2점�
   await A.click(`[data-act="setst"][data-sid="${z.id}"][data-v="absent"]`);
   assert.match(await A.toast('[data-act="att-save"]'), /저장했어요/);
   assert.equal(await notice(), ['😿 12/1 자봉, 상점 공지하겠습니다.', '[1-3교시 구강해부학 (2시간)]', `결석(+4): ${nos(x, y, z)}`].join('\n'));
+  assert.equal(await pts(z.id), '결석 4');
+  assert.equal(await pts(x.id), '결석 4');
   await A.tab('attend');
   assert.equal(await A.page.getAttribute('[data-act="per-hours"][data-v="2"]', 'aria-pressed'), 'true');
   // 한눈에 보기: 출석 → 지각 → 지각 2 → 결석 → 결석 2 → 공결 → 출석 (2시간)

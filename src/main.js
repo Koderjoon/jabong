@@ -517,13 +517,15 @@ function reqCard(r, admin) {
 // 출석 요청 카드: 교시, 요청자, 지각·결석·공결 명단
 function attReqCard(a, admin) {
   const per = S.periods.find((p) => p.id === a.pid);
+  // 지각 + 결석인 학생은 두 무리에 모두 (시간 수와 함께)
+  const has = (k, v) => (k === 'late' ? attOf(v).l : k === 'absent' ? attOf(v).a : v === k);
   const groups = ['late', 'absent', 'excused']
-    .map((k) => [k, Object.entries(a.statuses || {}).filter(([, v]) => stKey(v) === k).map(([sid]) => sid).sort((x, y) => noOf(x) - noOf(y))])
+    .map((k) => [k, Object.entries(a.statuses || {}).filter(([, v]) => has(k, v)).map(([sid]) => sid).sort((x, y) => noOf(x) - noOf(y))])
     .filter(([, l]) => l.length);
   const others = admin ? (S.attRequests || []).filter((o) => o.pid === a.pid && o.id !== a.id && o.status === 'pending') : [];
   return `<div class="card"><div class="req-top"><span class="pill ${a.status}">출석 ${STATUS[a.status]}</span><span class="note">${esc(a.by)} · ${esc(a.at)}</span></div>
   <div class="req-body"><b>${per ? `${mdw(per.date)} ${esc(per.label)}${hoursTag(per)}` : '지워진 교시'}</b></div>
-  ${groups.map(([k, l]) => `<div class="note">${ST[k][1]} ${l.length}명</div><div class="chips">${l.map((id) => `<span class="chip">${noL(id)} ${esc(stu(id)?.name || '')}${attN(a.statuses[id]) > 1 ? ` (${attN(a.statuses[id])}${k === 'absent' ? '시간' : '번'})` : ''}</span>`).join('')}</div>`).join('') || '<div class="note">전원 출석</div>'}
+  ${groups.map(([k, l]) => `<div class="note">${ST[k][1]} ${l.length}명</div><div class="chips">${l.map((id) => `<span class="chip">${noL(id)} ${esc(stu(id)?.name || '')}${(k === 'late' ? attOf(a.statuses[id]).l : k === 'absent' ? attOf(a.statuses[id]).a : 0) > 1 ? ` (${k === 'late' ? `${attOf(a.statuses[id]).l}번` : `${attOf(a.statuses[id]).a}시간`})` : ''}</span>`).join('')}</div>`).join('') || '<div class="note">전원 출석</div>'}
   ${a.status !== 'pending' ? `<div class="note">${esc(a.reviewer || '')} · ${esc(a.reviewedAt || '')}${a.note ? ` · 반려 사유: ${esc(a.note)}` : ''}</div>` : ''}
   ${admin && a.status === 'pending' ? `${S.att[a.pid] ? '<div class="warn">이미 저장된 교시예요. 승인하면 이 요청 내용으로 바뀌어요.</div>' : ''}${others.length ? `<div class="warn">같은 교시에 ${others.map((o) => esc(o.by)).join(', ')}의 요청도 있어요.</div>` : ''}
   <input id="note-${a.id}" placeholder="반려 사유 (선택)" autocomplete="off" data-suggest="note"><div class="btns"><button class="btn ok small" data-act="att-ok" data-id="${a.id}">승인 (출석 저장)</button><button class="btn danger small" data-act="att-no" data-id="${a.id}">반려</button></div>` : ''}</div>`;
@@ -713,15 +715,33 @@ function clearDrafts() {
   UI.recallPrev = {};
 }
 const ST = { present: ['✓', '출석'], late: ['지', '지각'], absent: ['결', '결석'], excused: ['공', '공결'] };
-// 여러 시간 수업의 지각·결석은 횟수(시간)만큼 'late'·'absent'(1번), 'late2'~'late4'·'absent2'~'absent4'로 쓴다
-// (서버 _att_norm·_att_pts와 같다: 지각 1점씩, 결석 2점씩, 수업 시간까지)
-const ATT_RE = /^(late|absent)([2-4])?$/;
-const attN = (v) => (ATT_RE.test(v || '') ? Number(ATT_RE.exec(v)[2] || 1) : 0);
-const lateN = (v) => (/^late/.test(v || '') ? attN(v) : 0);
+// 여러 시간 수업의 지각·결석은 시간 수로 쓴다: 'late'·'absent'(1시간), 'late2'~'late4'·'absent2'~'absent4',
+// 함께면 'late1absent2'(지각 1시간 + 결석 2시간). 서버 _att_l·_att_a·_att_str·_att_norm과 같다 (지각 1점, 결석 2점씩)
+const attOf = (v) => {
+  let m = /^late([1-4])absent([1-4])$/.exec(v || '');
+  if (m) return { l: +m[1], a: +m[2] };
+  m = /^late([2-4])?$/.exec(v || '');
+  if (m) return { l: +(m[1] || 1), a: 0 };
+  m = /^absent([2-4])?$/.exec(v || '');
+  return m ? { l: 0, a: +(m[1] || 1) } : { l: 0, a: 0 };
+};
 const attV = (k, n) => (n <= 1 ? k : `${k}${n}`);
-const stKey = (v) => (ATT_RE.test(v || '') ? ATT_RE.exec(v)[1] : v || 'present');
-const stLabel = (v) => (attN(v) > 1 ? `${ST[stKey(v)][1]} ${attN(v)}` : ST[stKey(v)][1]);
-const stShort = (v) => (attN(v) > 1 ? `${ST[stKey(v)][0]}${attN(v)}` : ST[stKey(v)][0]);
+const attStr = (l, a) => (l && a ? `late${l}absent${a}` : l ? attV('late', l) : a ? attV('absent', a) : null);
+const lateN = (v) => attOf(v).l;
+const stKey = (v) => {
+  const { l, a } = attOf(v);
+  return l && a ? 'mixed' : l ? 'late' : a ? 'absent' : v || 'present';
+};
+const stLabel = (v) => {
+  const { l, a } = attOf(v);
+  if (l && a) return `지각 ${l} · 결석 ${a}`;
+  return l > 1 ? `지각 ${l}` : a > 1 ? `결석 ${a}` : ST[stKey(v)][1];
+};
+const stShort = (v) => {
+  const { l, a } = attOf(v);
+  if (l && a) return `지${l}결${a}`;
+  return l > 1 ? `지${l}` : a > 1 ? `결${a}` : ST[stKey(v)][0];
+};
 const perHours = (pid) => S.periods.find((p) => p.id === pid)?.hours || 1;
 const hoursTag = (p) => (p.hours > 1 ? ` · ${p.hours}시간` : '');
 // 출결 초안과 저장된 출결이 같은지 (학생 순서와 무관하게)
@@ -753,12 +773,15 @@ function periodBar(pid) {
 // 누르면 지각 ↔ 출석. 여기서 출석으로 바꾼 학생도(잘못 눌렀으면 되돌리도록) 저장·요청 전까지 남는다(UI.recalled).
 function recallSec(pid, d) {
   const back = UI.recalled[pid] || [];
-  const list = active().filter((s) => lateN(d[s.id]) || (!d[s.id] && back.includes(s.id)));
+  // 여기서 출석으로 바꾼 학생은 그 뒤 그대로일 때만 남긴다 (그사이 다른 기기에서 결석 등이 되면 빠진다)
+  const rec = UI.recallPrev[pid] || {};
+  const list = active().filter((s) => lateN(d[s.id]) || (back.includes(s.id) && (d[s.id] || null) === (rec[s.id]?.left ?? null)));
   if (!list.length) return '';
-  return `<div class="recall-sec" id="recall-sec"><div class="recall-bar"><b>지각 다시 부르기</b><span>지각 ${list.length}명 중 <b>${list.filter((s) => !d[s.id]).length}</b>명 출석</span></div>
+  return `<div class="recall-sec" id="recall-sec"><div class="recall-bar"><b>지각 다시 부르기</b><span>지각 ${list.length}명 중 <b>${list.filter((s) => !lateN(d[s.id])).length}</b>명 출석</span></div>
   <p class="hint" style="margin:0">대답하면 칸을 눌러 출석으로 바꾸세요. 잘못 눌렀으면 한 번 더 누르면 지각으로 돌아가요.</p>
   <div class="att recall">${list.map((s) => {
-    const st = d[s.id] || 'present';
+    // 지각을 지운 학생의 남은 결석은 여기서는 출석으로 보인다 (지각 다시 부르기는 지각만 다룬다)
+    const st = lateN(d[s.id]) ? d[s.id] : 'present';
     return `<button class="${stKey(st)}" data-act="recall-tog" data-sid="${s.id}" aria-label="${s.no}번 ${esc(s.name)} ${stLabel(st)}">${s.no}<span class="nm">${esc(s.name)}</span><small>${stLabel(st)}</small></button>`;
   }).join('')}</div></div>`;
 }
@@ -775,7 +798,13 @@ function vAttend() {
   if (pid) {
     const d = attDraft(pid);
     const c = { late: 0, absent: 0, excused: 0 };
-    Object.values(d).forEach((v) => c[stKey(v)] != null && c[stKey(v)]++);
+    // 지각 + 결석인 학생은 둘 다에 센다
+    Object.values(d).forEach((v) => {
+      const { l, a } = attOf(v);
+      if (l) c.late++;
+      if (a) c.absent++;
+      if (v === 'excused') c.excused++;
+    });
     const hrs = perHours(pid);
     const saved = !!S.att[pid];
     const dirty = !sameAtt(d, S.att[pid] || {});
@@ -793,10 +822,10 @@ function vAttend() {
           }).join('')}</div>`
         : `<div class="calls">${active().map((s) => {
             const st = d[s.id] || 'present';
-            return `<div class="call ${stKey(st)}"><span class="no">${s.no}</span><span class="nm">${esc(s.name || '이름 없음')}${s.exempt ? ' <span class="ex">면제</span>' : ''}</span><div class="st4" role="group" aria-label="${s.no}번 출결">${Object.entries(ST).map(([k, [, l]]) => `<button class="${k} ${stKey(st) === k ? 'on' : ''}" data-act="setst" data-sid="${s.id}" data-v="${k}">${stKey(st) === k && attN(st) > 1 ? stLabel(st) : l}</button>`).join('')}</div></div>`;
+            return `<div class="call ${stKey(st)}"><span class="no">${s.no}</span><span class="nm">${esc(s.name || '이름 없음')}${s.exempt ? ' <span class="ex">면제</span>' : ''}</span><div class="st4" role="group" aria-label="${s.no}번 출결">${Object.entries(ST).map(([k, [, l]]) => `<button class="${k} ${stKey(st) === k || (stKey(st) === 'mixed' && (k === 'late' || k === 'absent')) ? 'on' : ''}" data-act="setst" data-sid="${s.id}" data-v="${k}">${k === 'late' && attOf(st).l > 1 ? `지각 ${attOf(st).l}` : k === 'absent' && attOf(st).a > 1 ? `결석 ${attOf(st).a}` : l}</button>`).join('')}</div></div>`;
           }).join('') || '<p class="empty">관리 탭에서 명단을 먼저 넣어 주세요.</p>'}</div>`) +
       recallSec(pid, d) +
-      (hrs > 1 ? `<p class="hint" style="margin:0">${hrs}시간 수업이에요. 지각·결석은 누를 때마다 한 시간씩 늘어요. 지각 ${Array.from({ length: hrs }, (_, i) => `${i + 1}점`).join(' → ')}, 결석 ${Array.from({ length: hrs }, (_, i) => `${2 * (i + 1)}점`).join(' → ')}, 한 번 더 누르면 출석이에요.</p>` : '') +
+      (hrs > 1 ? `<p class="hint" style="margin:0">${hrs}시간 수업이에요. 지각·결석은 누를 때마다 한 시간씩 늘어요. 지각 ${Array.from({ length: hrs }, (_, i) => `${i + 1}점`).join(' → ')}, 결석 ${Array.from({ length: hrs }, (_, i) => `${2 * (i + 1)}점`).join(' → ')}, 한 번 더 누르면 출석이에요. 지각과 결석을 함께 누르면 "지각 1 · 결석 2"처럼 나눠 기록돼요 (합은 ${hrs}시간까지).</p>` : '') +
       `${pendingHere.length ? `<div class="warn">이 교시에 ${pendingHere.map((a) => esc(a.by)).join(', ')}의 출석 요청이 있어요. 요청함에서 확인하세요.</div>` : ''}
     ${mine?.status === 'rejected' ? `<div class="warn">지난 요청이 반려됐어요${mine.note ? `: ${esc(mine.note)}` : ' (사유 없음)'}</div>` : ''}
     <div class="att-foot"><span class="note">지각 ${c.late} · 결석 ${c.absent} · 공결 ${c.excused}<br>${state}</span>
@@ -1714,10 +1743,19 @@ const A = {
     const dr = attDraft(UI.attPid);
     UI.touched[UI.attPid] = true;
     const h = perHours(UI.attPid);
-    const n = attN(dr[d.sid]);
-    // 여러 시간 수업: 지각·결석을 다시 누를 때마다 한 시간씩 늘고, 시간을 넘으면 출석으로
-    if ((d.v === 'late' || d.v === 'absent') && h > 1 && stKey(dr[d.sid]) === d.v) {
-      if (n < h) dr[d.sid] = attV(d.v, n + 1);
+    // 여러 시간 수업: 지각·결석은 누를 때마다 그 시간을 하나 늘린다. 합이 수업 시간만큼 찼으면 다른 쪽에서 한 시간을 가져오고,
+    // 다른 쪽도 없으면(그것만으로 다 찼으면) 그 항목을 지운다. 예) 3시간: 지각 → 지각 2 → 지각 3 → 출석, 지각 1에서 결석 두 번 → 지각 1 · 결석 2
+    if ((d.v === 'late' || d.v === 'absent') && h > 1) {
+      let { l, a } = attOf(dr[d.sid]);
+      if (d.v === 'late') {
+        if (l + a < h) l++;
+        else if (a) (a--, l++);
+        else l = 0;
+      } else if (l + a < h) a++;
+      else if (l) (l--, a++);
+      else a = 0;
+      const v = attStr(l, a);
+      if (v) dr[d.sid] = v;
       else delete dr[d.sid];
     } else if (d.v === 'present') delete dr[d.sid];
     else dr[d.sid] = d.v;
@@ -1735,16 +1773,21 @@ const A = {
   'recall-tog': (d) => {
     const dr = attDraft(UI.attPid);
     // 지각 ↔ 출석만. 그사이 다른 기기에서 결석·공결이 된 학생은 건드리지 않는다
-    if (dr[d.sid] && !lateN(dr[d.sid])) return toast('결석·공결인 학생은 위 목록에서 바꾸세요');
+    // 지각만 지운다 (함께 있던 결석은 남는다). 다시 누르면 전의 지각 횟수로 돌아간다 (rec: 바꾸기 전 값과 남긴 값)
+    const rec = (UI.recallPrev[UI.attPid] ||= {});
+    const r = rec[d.sid];
+    const cur = dr[d.sid] || null;
+    if (!lateN(cur) && !(r && cur === r.left) && cur) return toast('결석·공결인 학생은 위 목록에서 바꾸세요');
     UI.touched[UI.attPid] = true;
     const back = (UI.recalled[UI.attPid] ||= []);
-    const prev = (UI.recallPrev[UI.attPid] ||= {});
-    if (lateN(dr[d.sid])) {
-      // 출석으로 바꾼 학생은 다시 누르면 전의 지각 횟수로 돌아간다
-      prev[d.sid] = dr[d.sid];
-      delete dr[d.sid];
+    let next;
+    if (lateN(cur)) {
+      next = attStr(0, attOf(cur).a);
+      rec[d.sid] = { from: cur, left: next };
       if (!back.includes(d.sid)) back.push(d.sid);
-    } else dr[d.sid] = prev[d.sid] || 'late';
+    } else next = r && cur === r.left ? r.from : 'late';
+    if (next) dr[d.sid] = next;
+    else delete dr[d.sid];
   },
   'att-clear': () => {
     UI.attConfirm = true;
