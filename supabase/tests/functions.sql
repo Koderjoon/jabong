@@ -1244,7 +1244,7 @@ select (login('부총대', '1234')::json ->> 'token') as t \gset
 select pg_temp.ok(private_state(:'t') -> 'links' ->> 'dday_admin' = 'https://koderjoon.github.io/notice-todo/#k=admin-test-key', '백업에서 되살려도 관리자 링크는 그대로');
 \echo 25. 학급 매점 링크 통과
 
--- ───────── 26. 여러 시간 수업 (결석 2점 × 시간, 지각은 횟수만큼) ─────────
+-- ───────── 26. 여러 시간 수업 (지각은 횟수 × 1점, 결석은 횟수(빠진 시간) × 2점) ─────────
 set role anon;
 select (login('부총대', '1234')::json ->> 'token') as t \gset
 select (login('총대', '1234')::json ->> 'token') as ct \gset
@@ -1263,21 +1263,33 @@ set role postgres;
 select pg_temp.ok((select hours from periods where id = :'hp') = 3, '3시간 교시');
 select pg_temp.ok((select hours from periods where id = :'hp1') = 1, '시간을 안 주면 1시간');
 set role anon;
-select save_attendance(:'t', :'hp', format('{"%s":"absent","%s":"late3","%s":"late4"}', :'h1', :'h2', :'h3')::jsonb);
+select save_attendance(:'t', :'hp', format('{"%s":"absent4","%s":"late3","%s":"late4"}', :'h1', :'h2', :'h3')::jsonb);
 set role postgres;
-select pg_temp.ok((select points from ledger where period_id = :'hp' and student_id = :'h1' and voided_at is null) = 6, '3시간 결석은 6점');
+select pg_temp.ok((select points from ledger where period_id = :'hp' and student_id = :'h1' and voided_at is null) = 6
+  and (select status from attendance where period_id = :'hp' and student_id = :'h1') = 'absent3', '결석 4번 → 3시간 수업이라 3시간(6점)');
 select pg_temp.ok((select points from ledger where period_id = :'hp' and student_id = :'h2' and voided_at is null and item = '지각') = 3, '지각 3번은 3점');
 select pg_temp.ok((select points from ledger where period_id = :'hp' and student_id = :'h3' and voided_at is null) = 3
   and (select status from attendance where period_id = :'hp' and student_id = :'h3') = 'late3', '지각 횟수는 시간까지만 (4번 → 3번)');
 -- 지각 횟수만 바꾸면 같은 기록의 점수만 고친다 (수정 이력)
 select id as hl2 from ledger where period_id = :'hp' and student_id = :'h2' and voided_at is null \gset
 set role anon;
-select save_attendance(:'t', :'hp', format('{"%s":"absent","%s":"late","%s":"late3"}', :'h1', :'h2', :'h3')::jsonb);
+select save_attendance(:'t', :'hp', format('{"%s":"absent3","%s":"late","%s":"late3"}', :'h1', :'h2', :'h3')::jsonb);
 set role postgres;
 select pg_temp.ok((select points from ledger where id = :'hl2') = 1 and (select voided_at is null from ledger where id = :'hl2')
   and exists (select 1 from ledger_revisions where ledger_id = :'hl2' and reason = '출석 정정 (지각 횟수)' and (before ->> 'points')::numeric = 3 and (after ->> 'points')::numeric = 1), '지각 3번 → 1번');
 select pg_temp.ok((select count(*) from ledger where period_id = :'hp' and student_id = :'h2') = 1, '새 기록을 만들지 않는다');
--- 수업 시간을 바꾸면 결석·지각 점수도 (부총대가 손으로 고친 점수는 그대로)
+-- 결석 시간만 바꾸면 같은 기록의 점수만 (3시간 → 1시간 → 3시간)
+select id as hl1 from ledger where period_id = :'hp' and student_id = :'h1' and voided_at is null \gset
+set role anon;
+select save_attendance(:'t', :'hp', format('{"%s":"absent","%s":"late","%s":"late3"}', :'h1', :'h2', :'h3')::jsonb);
+set role postgres;
+select pg_temp.ok((select points from ledger where id = :'hl1') = 2 and (select voided_at is null from ledger where id = :'hl1')
+  and exists (select 1 from ledger_revisions where ledger_id = :'hl1' and reason = '출석 정정 (결석 시간)'), '결석 1시간은 2점, 같은 기록');
+set role anon;
+select save_attendance(:'t', :'hp', format('{"%s":"absent3","%s":"late","%s":"late3"}', :'h1', :'h2', :'h3')::jsonb);
+set role postgres;
+select pg_temp.ok((select points from ledger where id = :'hl1') = 6 and (select count(*) from ledger where period_id = :'hp' and student_id = :'h1') = 1, '결석 3시간은 6점');
+-- 수업 시간을 줄이면 넘는 결석·지각 점수도 줄인다 (새 시간 안의 점수는 그대로)
 select id as hl1 from ledger where period_id = :'hp' and student_id = :'h1' and voided_at is null \gset
 set role anon;
 select pg_temp.expect_msg(format('select set_period_hours(%L, %L, 2)', :'ct', :'hp'), '출석이 저장됐거나%', '저장된 교시는 총대단이 못 바꿈');
@@ -1294,7 +1306,7 @@ set role anon;
 select edit_entry(:'t', :'hl1', '2026-08-10', '결석', '1-3교시 구강해부학', 2, '1시간만 빠짐');
 select set_period_hours(:'t', :'hp', 1);
 set role postgres;
-select pg_temp.ok((select points from ledger where id = :'hl1') = 2, '손으로 고친 결석 점수는 그대로');
+select pg_temp.ok((select points from ledger where id = :'hl1') = 2, '1시간 안의 결석 점수는 그대로');
 set role anon;
 -- 되돌리면 점수도 돌아온다
 select set_period_hours(:'t', :'hp', 3);
@@ -1308,11 +1320,12 @@ select pg_temp.ok((select hours from periods where id = :'hp') = 1, '시간 바�
 set role anon;
 select ensure_period(:'ct', '2026-08-11', '5-6교시', false, 2) as hq \gset
 select set_period_hours(:'ct', :'hq', 3);
-select request_attendance(:'ct', :'hq', format('{"%s":"late2"}', :'h2')::jsonb) as hrq \gset
-select pg_temp.ok(position('지각 1' in (ops_list(:'t', 1)::jsonb -> 0 ->> 'summary')) > 0, '요청 요약에 지각 학생 수');
+select request_attendance(:'ct', :'hq', format('{"%s":"late2","%s":"absent2"}', :'h2', :'h3')::jsonb) as hrq \gset
+select pg_temp.ok(position('지각 1 · 결석 1' in (ops_list(:'t', 1)::jsonb -> 0 ->> 'summary')) > 0, '요청 요약에 지각·결석 학생 수');
 select review_attendance(:'t', :'hrq', true, null);
 set role postgres;
-select pg_temp.ok((select points from ledger where period_id = :'hq' and student_id = :'h2' and voided_at is null) = 2, '요청으로 들어온 지각 2번');
+select pg_temp.ok((select points from ledger where period_id = :'hq' and student_id = :'h2' and voided_at is null) = 2
+  and (select points from ledger where period_id = :'hq' and student_id = :'h3' and voided_at is null) = 4, '요청으로 들어온 지각 2번, 결석 2시간');
 -- 자주 쓰는 교시에 시간도
 set role anon;
 select pg_temp.expect_msg(format('select my_periods_save(%L, %L)', :'t', '[{"name":"해부학","hours":5}]'), '수업 시간은 1~4시간이에요', '자주 쓰는 교시 5시간');

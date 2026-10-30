@@ -46,7 +46,7 @@ create table if not exists periods (
   saved_at timestamptz,
   unique (date, label)
 );
--- 몇 시간짜리 수업인지 (1~4). 결석은 2점 × 시간, 지각은 누른 횟수만큼(시간까지) 1점씩
+-- 몇 시간짜리 수업인지 (1~4). 지각은 누른 횟수만큼 1점씩, 결석은 누른 횟수(빠진 시간)만큼 2점씩 (시간까지)
 alter table periods add column if not exists hours smallint not null default 1;
 alter table periods drop constraint if exists periods_hours_check;
 alter table periods add constraint periods_hours_check check (hours between 1 and 4);
@@ -54,12 +54,12 @@ alter table periods add constraint periods_hours_check check (hours between 1 an
 create table if not exists attendance (
   period_id uuid not null references periods on delete cascade,
   student_id uuid not null references students on delete cascade,
-  status text not null check (status in ('late', 'late2', 'late3', 'late4', 'absent', 'excused')),
+  status text not null check (status in ('late', 'late2', 'late3', 'late4', 'absent', 'absent2', 'absent3', 'absent4', 'excused')),
   primary key (period_id, student_id)
 );
--- late2~late4: 여러 시간 수업에서 지각을 그만큼 (전에 만든 표는 검사를 새로 건다)
+-- late2~late4·absent2~absent4: 여러 시간 수업에서 지각·결석을 그 시간만큼 (전에 만든 표는 검사를 새로 건다)
 alter table attendance drop constraint if exists attendance_status_check;
-alter table attendance add constraint attendance_status_check check (status in ('late', 'late2', 'late3', 'late4', 'absent', 'excused'));
+alter table attendance add constraint attendance_status_check check (status in ('late', 'late2', 'late3', 'late4', 'absent', 'absent2', 'absent3', 'absent4', 'excused'));
 
 -- (0.5점 도입 전에 만든 DB라면) 점수 칸을 0.5 단위로 바꾸고, 정수 버전 함수를 지운다
 do $$ begin
@@ -499,18 +499,20 @@ $$;
 create or replace function _per(p_period uuid) returns text language sql stable security definer set search_path = public as $$
   select to_char(date, 'FMMM/FMDD') || ' ' || label from periods where id = p_period
 $$;
--- 출결 값을 교시 시간에 맞춘다: 지각 횟수(late, late2~late4)는 그 교시의 시간까지만
+-- 출결 값을 교시 시간에 맞춘다: 지각·결석 횟수(late·absent = 1번, late2~4·absent2~4)는 그 교시의 시간까지만
 create or replace function _att_norm(v text, h int) returns text language sql immutable as $$
-  select case when v ~ '^late[2-4]$' and substring(v from 5)::int > h then case when h <= 1 then 'late' else 'late' || h end else v end
+  select case when v ~ '^(late|absent)[2-4]$' and right(v, 1)::int > h
+    then case when h <= 1 then rtrim(v, '234') else rtrim(v, '234') || h end else v end
 $$;
--- 출결 값의 점수: 지각은 횟수, 결석은 2점 × 시간
+-- 출결 값의 점수: 지각은 횟수 × 1점, 결석은 횟수(빠진 시간) × 2점 (시간까지)
 create or replace function _att_pts(v text, h int) returns int language sql immutable as $$
-  select case when v = 'late' then 1 when v ~ '^late[2-4]$' then least(substring(v from 5)::int, h) when v = 'absent' then 2 * h end
+  select case when v ~ '^late[2-4]?$' then least(coalesce(nullif(right(v, 1), 'e')::int, 1), h)
+    when v ~ '^absent[2-4]?$' then 2 * least(coalesce(nullif(right(v, 1), 't')::int, 1), h) end
 $$;
 create or replace function _attn(p_statuses jsonb) returns text language sql immutable as $$
   select format('지각 %s · 결석 %s · 공결 %s',
     (select count(*) from jsonb_each_text(coalesce(p_statuses, '{}')) where value ~ '^late[2-4]?$'),
-    (select count(*) from jsonb_each_text(coalesce(p_statuses, '{}')) where value = 'absent'),
+    (select count(*) from jsonb_each_text(coalesce(p_statuses, '{}')) where value ~ '^absent[2-4]?$'),
     (select count(*) from jsonb_each_text(coalesce(p_statuses, '{}')) where value = 'excused'))
 $$;
 
@@ -859,8 +861,8 @@ begin
   update ledger set detail = lbl where period_id = p_id and src = 'att' and detail = per.label;
 end $$;
 
--- 교시의 수업 시간 바꾸기. 이 교시로 준 결석은 2점 × 새 시간으로, 지각은 새 시간을 넘지 않게 고친다 (수정 이력이 남는다).
--- 부총대가 손으로 고친 점수(옛 시간 기준 점수가 아닌 것)는 그대로 둔다. 권한은 이름 바꾸기와 같다.
+-- 교시의 수업 시간 바꾸기. 이 교시의 지각·결석 횟수가 새 시간을 넘으면 새 시간까지로 줄이고 점수도 고친다 (수정 이력이 남는다).
+-- 새 시간 안의 점수(손으로 고친 것 포함)는 그대로 둔다. 권한은 이름 바꾸기와 같다.
 create or replace function set_period_hours(p_token uuid, p_id uuid, p_hours int) returns int
 language plpgsql security definer set search_path = public as $$
 declare who text := _session_attend(p_token); per periods; h int := p_hours; e record; np int; n int := 0;
@@ -880,7 +882,7 @@ begin
   update periods set hours = h where id = p_id;
   update attendance set status = _att_norm(status, h) where period_id = p_id and status <> _att_norm(status, h);
   for e in select * from ledger where period_id = p_id and src = 'att' and voided_at is null and item in ('결석', '지각') loop
-    np := case when e.item = '결석' and e.points = 2 * per.hours then 2 * h when e.item = '지각' and e.points > h then h else e.points end;
+    np := case when e.item = '결석' and e.points > 2 * h then 2 * h when e.item = '지각' and e.points > h then h else e.points end;
     if np <> e.points then
       update ledger set points = np where id = e.id;
       insert into ledger_revisions (ledger_id, before, after, reason, edited_by)
@@ -891,7 +893,7 @@ begin
   return n;
 end $$;
 
--- 한 교시의 출결을 저장한다. p_statuses = {학생 id: 'late'|'late2'~'late4'(지각 횟수)|'absent'|'excused'} (없으면 출석)
+-- 한 교시의 출결을 저장한다. p_statuses = {학생 id: 'late'|'late2'~'late4'(지각 횟수)|'absent'|'absent2'~'absent4'(결석 시간)|'excused'} (없으면 출석)
 -- 한 교시의 출결을 반영한다. p_by는 저장(승인)한 사람, p_requested_by는 출석 요청을 보낸 사람
 create or replace function _apply_attendance(p_period uuid, p_statuses jsonb, p_by text, p_requested_by text) returns int
 language plpgsql security definer set search_path = public as $$
@@ -909,25 +911,25 @@ begin
   insert into attendance (period_id, student_id, status)
   select p_period, s.id, _att_norm(e.value, per.hours) from jsonb_each_text(coalesce(p_statuses, '{}')) e
   join students s on s.id = e.key::uuid and s.active
-  where e.value in ('late', 'late2', 'late3', 'late4', 'absent', 'excused');
+  where e.value in ('late', 'late2', 'late3', 'late4', 'absent', 'absent2', 'absent3', 'absent4', 'excused');
   for st in select id from students where active loop
     want := _att_norm(coalesce(p_statuses ->> st.id::text, 'present'), per.hours);
-    if want not in ('late', 'late2', 'late3', 'late4', 'absent', 'excused') then want := 'present'; end if;
-    want_item := case when want like 'late%' then '지각' when want = 'absent' then '결석' end;
+    if want not in ('late', 'late2', 'late3', 'late4', 'absent', 'absent2', 'absent3', 'absent4', 'excused') then want := 'present'; end if;
+    want_item := case when want like 'late%' then '지각' when want like 'absent%' then '결석' end;
     cur := null;
     select * into cur from ledger where period_id = p_period and student_id = st.id and src = 'att' and voided_at is null limit 1;
     if cur.id is not null and cur.item is distinct from want_item then
       perform _void(cur.id, case when want = 'excused' then '공결 처리' else '출석 정정' end, who);
     end if;
     pts := _att_pts(want, per.hours);
-    -- 같은 지각인데 횟수만 바뀌었으면 점수만 고친다 (수정 이력)
+    -- 같은 지각·결석인데 횟수만 바뀌었으면 점수만 고친다 (수정 이력)
     if cur.id is not null and cur.item = want_item and want is distinct from old ->> st.id::text and cur.points <> pts then
       update ledger set points = pts where id = cur.id;
       insert into ledger_revisions (ledger_id, before, after, reason, edited_by)
-      values (cur.id, jsonb_build_object('points', cur.points), jsonb_build_object('points', pts), '출석 정정 (지각 횟수)', who);
+      values (cur.id, jsonb_build_object('points', cur.points), jsonb_build_object('points', pts), case want_item when '지각' then '출석 정정 (지각 횟수)' else '출석 정정 (결석 시간)' end, who);
     end if;
     if want_item is not null and (cur.id is null or cur.item <> want_item) and (cur.id is not null or old ->> st.id::text is distinct from want) then
-      -- 출석 점수: 지각은 누른 횟수(시간까지)만큼 1점씩, 결석은 2점 × 수업 시간
+      -- 출석 점수: 지각은 누른 횟수만큼 1점씩, 결석은 누른 횟수만큼 2점씩 (수업 시간까지)
       nid := _entry(per.date, st.id, want_item, per.label, pts, 'att', p_period, null, who,
         p_requested_by, case when p_requested_by is not null then who end);
       if nid is not null then n := n + 1; end if;

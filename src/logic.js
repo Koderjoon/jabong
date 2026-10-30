@@ -91,7 +91,8 @@ export function genNotice(S, from, to) {
     att.forEach((e) => {
       const k = e.pid || e.detail;
       const per = (S.periods || []).find((p) => p.id === e.pid);
-      if (!pers.has(k)) pers.set(k, { label: per?.label || e.detail || '출석', morning: per?.morning ? 1 : 0, es: [] });
+      // 여러 시간 수업은 교시 이름 뒤에 시간을 붙인다 (지각·결석 점수가 횟수만큼이라 읽는 사람이 알 수 있게)
+      if (!pers.has(k)) pers.set(k, { label: (per?.label || e.detail || '출석') + (per?.hours > 1 ? ` (${per.hours}시간)` : ''), morning: per?.morning ? 1 : 0, es: [] });
       pers.get(k).es.push(e);
     });
     [...pers.values()]
@@ -107,7 +108,8 @@ export function genNotice(S, from, to) {
             if (!byPts.has(k)) byPts.set(k, []);
             byPts.get(k).push(e);
           });
-          byPts.forEach((l, pts) => blk.push(`${item}(${sgn(pts)}): ${nums(l).join(', ')}`));
+          // 점수가 작은 것부터 (여러 시간 수업은 지각(+1), 지각(+2)…처럼 나뉜다)
+          [...byPts].sort((a, b) => a[0] - b[0]).forEach(([pts, l]) => blk.push(`${item}(${sgn(pts)}): ${nums(l).join(', ')}`));
         });
       });
     // 나머지: 항목·점수별

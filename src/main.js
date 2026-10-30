@@ -523,7 +523,7 @@ function attReqCard(a, admin) {
   const others = admin ? (S.attRequests || []).filter((o) => o.pid === a.pid && o.id !== a.id && o.status === 'pending') : [];
   return `<div class="card"><div class="req-top"><span class="pill ${a.status}">출석 ${STATUS[a.status]}</span><span class="note">${esc(a.by)} · ${esc(a.at)}</span></div>
   <div class="req-body"><b>${per ? `${mdw(per.date)} ${esc(per.label)}${hoursTag(per)}` : '지워진 교시'}</b></div>
-  ${groups.map(([k, l]) => `<div class="note">${ST[k][1]} ${l.length}명</div><div class="chips">${l.map((id) => `<span class="chip">${noL(id)} ${esc(stu(id)?.name || '')}${lateN(a.statuses[id]) > 1 ? ` (${lateN(a.statuses[id])}번)` : ''}</span>`).join('')}</div>`).join('') || '<div class="note">전원 출석</div>'}
+  ${groups.map(([k, l]) => `<div class="note">${ST[k][1]} ${l.length}명</div><div class="chips">${l.map((id) => `<span class="chip">${noL(id)} ${esc(stu(id)?.name || '')}${attN(a.statuses[id]) > 1 ? ` (${attN(a.statuses[id])}${k === 'absent' ? '시간' : '번'})` : ''}</span>`).join('')}</div>`).join('') || '<div class="note">전원 출석</div>'}
   ${a.status !== 'pending' ? `<div class="note">${esc(a.reviewer || '')} · ${esc(a.reviewedAt || '')}${a.note ? ` · 반려 사유: ${esc(a.note)}` : ''}</div>` : ''}
   ${admin && a.status === 'pending' ? `${S.att[a.pid] ? '<div class="warn">이미 저장된 교시예요. 승인하면 이 요청 내용으로 바뀌어요.</div>' : ''}${others.length ? `<div class="warn">같은 교시에 ${others.map((o) => esc(o.by)).join(', ')}의 요청도 있어요.</div>` : ''}
   <input id="note-${a.id}" placeholder="반려 사유 (선택)" autocomplete="off" data-suggest="note"><div class="btns"><button class="btn ok small" data-act="att-ok" data-id="${a.id}">승인 (출석 저장)</button><button class="btn danger small" data-act="att-no" data-id="${a.id}">반려</button></div>` : ''}</div>`;
@@ -713,12 +713,15 @@ function clearDrafts() {
   UI.recallPrev = {};
 }
 const ST = { present: ['✓', '출석'], late: ['지', '지각'], absent: ['결', '결석'], excused: ['공', '공결'] };
-// 여러 시간 수업의 지각은 횟수만큼 'late'(1번), 'late2'~'late4'로 쓴다 (서버 _att_norm·_att_pts와 같다)
-const lateN = (v) => (v === 'late' ? 1 : /^late[2-4]$/.test(v || '') ? Number(v.slice(4)) : 0);
-const lateV = (n) => (n <= 1 ? 'late' : `late${n}`);
-const stKey = (v) => (lateN(v) ? 'late' : v || 'present');
-const stLabel = (v) => (lateN(v) > 1 ? `지각 ${lateN(v)}` : ST[stKey(v)][1]);
-const stShort = (v) => (lateN(v) > 1 ? `지${lateN(v)}` : ST[stKey(v)][0]);
+// 여러 시간 수업의 지각·결석은 횟수(시간)만큼 'late'·'absent'(1번), 'late2'~'late4'·'absent2'~'absent4'로 쓴다
+// (서버 _att_norm·_att_pts와 같다: 지각 1점씩, 결석 2점씩, 수업 시간까지)
+const ATT_RE = /^(late|absent)([2-4])?$/;
+const attN = (v) => (ATT_RE.test(v || '') ? Number(ATT_RE.exec(v)[2] || 1) : 0);
+const lateN = (v) => (/^late/.test(v || '') ? attN(v) : 0);
+const attV = (k, n) => (n <= 1 ? k : `${k}${n}`);
+const stKey = (v) => (ATT_RE.test(v || '') ? ATT_RE.exec(v)[1] : v || 'present');
+const stLabel = (v) => (attN(v) > 1 ? `${ST[stKey(v)][1]} ${attN(v)}` : ST[stKey(v)][1]);
+const stShort = (v) => (attN(v) > 1 ? `${ST[stKey(v)][0]}${attN(v)}` : ST[stKey(v)][0]);
 const perHours = (pid) => S.periods.find((p) => p.id === pid)?.hours || 1;
 const hoursTag = (p) => (p.hours > 1 ? ` · ${p.hours}시간` : '');
 // 출결 초안과 저장된 출결이 같은지 (학생 순서와 무관하게)
@@ -790,10 +793,10 @@ function vAttend() {
           }).join('')}</div>`
         : `<div class="calls">${active().map((s) => {
             const st = d[s.id] || 'present';
-            return `<div class="call ${stKey(st)}"><span class="no">${s.no}</span><span class="nm">${esc(s.name || '이름 없음')}${s.exempt ? ' <span class="ex">면제</span>' : ''}</span><div class="st4" role="group" aria-label="${s.no}번 출결">${Object.entries(ST).map(([k, [, l]]) => `<button class="${k} ${stKey(st) === k ? 'on' : ''}" data-act="setst" data-sid="${s.id}" data-v="${k}">${k === 'late' && lateN(st) > 1 ? `지각 ${lateN(st)}` : l}</button>`).join('')}</div></div>`;
+            return `<div class="call ${stKey(st)}"><span class="no">${s.no}</span><span class="nm">${esc(s.name || '이름 없음')}${s.exempt ? ' <span class="ex">면제</span>' : ''}</span><div class="st4" role="group" aria-label="${s.no}번 출결">${Object.entries(ST).map(([k, [, l]]) => `<button class="${k} ${stKey(st) === k ? 'on' : ''}" data-act="setst" data-sid="${s.id}" data-v="${k}">${stKey(st) === k && attN(st) > 1 ? stLabel(st) : l}</button>`).join('')}</div></div>`;
           }).join('') || '<p class="empty">관리 탭에서 명단을 먼저 넣어 주세요.</p>'}</div>`) +
       recallSec(pid, d) +
-      (hrs > 1 ? `<p class="hint" style="margin:0">${hrs}시간 수업이에요. 지각은 누를 때마다 1점씩 ${Array.from({ length: hrs }, (_, i) => `${i + 1}점`).join(' → ')}, 한 번 더 누르면 출석이에요. 결석은 ${2 * hrs}점이에요.</p>` : '') +
+      (hrs > 1 ? `<p class="hint" style="margin:0">${hrs}시간 수업이에요. 지각·결석은 누를 때마다 한 시간씩 늘어요. 지각 ${Array.from({ length: hrs }, (_, i) => `${i + 1}점`).join(' → ')}, 결석 ${Array.from({ length: hrs }, (_, i) => `${2 * (i + 1)}점`).join(' → ')}, 한 번 더 누르면 출석이에요.</p>` : '') +
       `${pendingHere.length ? `<div class="warn">이 교시에 ${pendingHere.map((a) => esc(a.by)).join(', ')}의 출석 요청이 있어요. 요청함에서 확인하세요.</div>` : ''}
     ${mine?.status === 'rejected' ? `<div class="warn">지난 요청이 반려됐어요${mine.note ? `: ${esc(mine.note)}` : ' (사유 없음)'}</div>` : ''}
     <div class="att-foot"><span class="note">지각 ${c.late} · 결석 ${c.absent} · 공결 ${c.excused}<br>${state}</span>
@@ -801,7 +804,7 @@ function vAttend() {
     ${UI.attConfirm ? `<div class="att-confirm"><span>지금 표시한 지각 ${c.late}명 · 결석 ${c.absent}명 · 공결 ${c.excused}명이 모두 출석으로 바뀌어요. 되돌릴까요?</span>
     <div class="btns"><button class="btn danger small" data-act="att-clear-yes">네, 전원 출석으로</button><button class="btn ghost small" data-act="att-clear-no">그만두기</button></div></div>` : ''}`;
   }
-  return `<div><h1>출석 체크</h1><p class="sub">${UI.attView === 'grid' ? '칸을 누를 때마다 출석 → 지각 → 결석 → 공결 순으로 바뀌어요.' : '번호순으로 이름을 부르면서 바로 출결을 고르세요.'} ${isAdmin() ? '저장하면 교시마다 지각 +1(여러 시간 수업은 누른 횟수만큼), 결석 +2 × 수업 시간이 기록돼요.' : '다 고른 뒤 요청을 보내면 부총대가 확인하고 저장해요.'} 이름은 총대단에게만 보여요.</p></div>
+  return `<div><h1>출석 체크</h1><p class="sub">${UI.attView === 'grid' ? '칸을 누를 때마다 출석 → 지각 → 결석 → 공결 순으로 바뀌어요.' : '번호순으로 이름을 부르면서 바로 출결을 고르세요.'} ${isAdmin() ? '저장하면 교시마다 지각 +1, 결석 +2가 기록돼요 (여러 시간 수업은 누른 횟수만큼).' : '다 고른 뒤 요청을 보내면 부총대가 확인하고 저장해요.'} 이름은 총대단에게만 보여요.</p></div>
   <div class="seg"><button class="${UI.attView !== 'grid' ? 'on' : ''}" data-act="attview" data-v="list">호명 목록</button><button class="${UI.attView === 'grid' ? 'on' : ''}" data-act="attview" data-v="grid">한눈에 보기</button></div>
   <div class="toolbar"><input type="date" id="attDate" value="${UI.attDate}" data-bind="attDate" data-rerender="1" style="width:auto"></div>
   <div class="seg" style="flex-wrap:wrap">${ps.map((p) => `<button class="${p.id === pid ? 'on' : ''}" data-act="pick-period" data-id="${p.id}">${esc(p.label)}${hoursTag(p)}${S.att[p.id] ? ' ·저장됨' : ''}</button>`).join('')}</div>
@@ -1711,10 +1714,10 @@ const A = {
     const dr = attDraft(UI.attPid);
     UI.touched[UI.attPid] = true;
     const h = perHours(UI.attPid);
-    const n = lateN(dr[d.sid]);
-    // 여러 시간 수업: 지각을 다시 누를 때마다 지각 횟수 +1, 시간을 넘으면 출석으로
-    if (d.v === 'late' && h > 1 && n) {
-      if (n < h) dr[d.sid] = lateV(n + 1);
+    const n = attN(dr[d.sid]);
+    // 여러 시간 수업: 지각·결석을 다시 누를 때마다 한 시간씩 늘고, 시간을 넘으면 출석으로
+    if ((d.v === 'late' || d.v === 'absent') && h > 1 && stKey(dr[d.sid]) === d.v) {
+      if (n < h) dr[d.sid] = attV(d.v, n + 1);
       else delete dr[d.sid];
     } else if (d.v === 'present') delete dr[d.sid];
     else dr[d.sid] = d.v;
@@ -1722,9 +1725,9 @@ const A = {
   cyc: (d) => {
     const dr = attDraft(UI.attPid);
     UI.touched[UI.attPid] = true;
-    // 출석 → 지각(시간만큼 1번, 2번 …) → 결석 → 공결 → 출석
+    // 출석 → 지각(시간만큼 1번, 2번 …) → 결석(1시간, 2시간 …) → 공결 → 출석
     const h = perHours(UI.attPid);
-    const order = ['present', ...Array.from({ length: h }, (_, i) => lateV(i + 1)), 'absent', 'excused'];
+    const order = ['present', ...Array.from({ length: h }, (_, i) => attV('late', i + 1)), ...Array.from({ length: h }, (_, i) => attV('absent', i + 1)), 'excused'];
     const n = order[(order.indexOf(dr[d.sid] || 'present') + 1) % order.length];
     if (n === 'present') delete dr[d.sid];
     else dr[d.sid] = n;
@@ -1826,7 +1829,7 @@ const A = {
     UI.newHours = '1';
     await refresh();
     render();
-    return toast(h > 1 ? `교시를 추가했어요 · ${h}시간 수업 (결석 ${2 * h}점)` : '교시를 추가했어요');
+    return toast(h > 1 ? `교시를 추가했어요 · ${h}시간 수업 (지각·결석은 누르는 횟수만큼)` : '교시를 추가했어요');
   },
   'att-save': async () => {
     await saveAttendance(false);

@@ -58,6 +58,7 @@ select save_attendance(:'t', :'pren', format('{"%s":"late"}', :'s1')::jsonb); se
 select rename_period(:'t', :'pren', '8교시 해부학'); select pg_temp.snap();
 select set_period_hours(:'t', :'pren', 3); select pg_temp.snap();
 select save_attendance(:'t', :'pren', format('{"%s":"late2","%s":"absent"}', :'s1', :'s3')::jsonb); select pg_temp.snap();
+select save_attendance(:'t', :'pren', format('{"%s":"late3","%s":"absent2"}', :'s1', :'s3')::jsonb); select pg_temp.snap();
 select ensure_period(:'t', '2026-04-03', '7교시', false) as pday \gset
 select pg_temp.snap();
 select save_attendance(:'t', :'pday', format('{"%s":"absent"}', :'s1')::jsonb); select pg_temp.snap();
