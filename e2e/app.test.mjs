@@ -2358,10 +2358,13 @@ test('여러 시간 수업: 지각은 누를 때마다 1점씩, 결석은 2점�
   await A.tab('attend');
   await A.click('[data-act="attview"][data-v="list"]');
   await A.page.fill('#attDate', D);
+  // 교시 추가 칸에는 시간 고르기가 없다: 추가한 뒤 교시 아래 "1시간~4시간" 버튼으로 바꾼다
+  assert.equal(await A.has('#newHours'), false);
   await A.page.fill('#newPeriod', '1-3교시 구강해부학');
-  await A.page.selectOption('#newHours', '3');
-  assert.equal(await A.toast('[data-act="add-period"]'), '교시를 추가했어요 · 3시간 수업 (지각·결석은 누르는 횟수만큼)');
-  assert.equal(await A.page.inputValue('#newHours'), '1', '추가한 뒤에는 다시 1시간');
+  assert.equal(await A.toast('[data-act="add-period"]'), '교시를 추가했어요');
+  assert.doesNotMatch(await A.text('[data-act="pick-period"].on'), /시간/);
+  assert.equal(await A.page.getAttribute('[data-act="per-hours"][data-v="1"]', 'aria-pressed'), 'true');
+  assert.equal(await A.toast('[data-act="per-hours"][data-v="3"]'), '3시간 수업으로 바꿨어요');
   assert.match(await A.text('[data-act="pick-period"].on'), /1-3교시 구강해부학 · 3시간/);
   assert.match(await A.text(), /3시간 수업이에요\. 지각·결석은 누를 때마다 한 시간씩 늘어요\. 지각 1점 → 2점 → 3점, 결석 2점 → 4점 → 6점, 한 번 더 누르면 출석이에요\./);
   // 지각을 누를 때마다 1 → 2 → 3 → 출석
@@ -2483,7 +2486,7 @@ test('여러 시간 수업: 지각은 누를 때마다 1점씩, 결석은 2점�
   await A.click('[data-act="att-clear"]');
   await A.click('[data-act="att-clear-no"]');
   await A.click('[data-act="attview"][data-v="list"]');
-  // 자주 쓰는 교시에 시간도 저장하고, 불러오면 시간도 함께 골라진다
+  // 자주 쓰는 교시에 시간도 저장하고, 그 교시를 불러와 추가하면 그 시간으로 만들어진다
   await A.click('[data-act="pr-open"][data-fk="np"]');
   await A.click('[data-act="pr-add"][data-fk="np"]');
   await A.page.fill('#np-prname', '구강해부학 실습');
@@ -2492,10 +2495,10 @@ test('여러 시간 수업: 지각은 누를 때마다 1점씩, 결석은 2점�
   assert.match(await A.text('#np-prpop'), /구강해부학 실습 · 3시간/);
   await A.click('#np-prpop [data-act="pr-use"]:has-text("구강해부학 실습")');
   assert.equal(await A.page.inputValue('#newPeriod'), '구강해부학 실습');
-  assert.equal(await A.page.inputValue('#newHours'), '3');
+  assert.equal(await A.toast('[data-act="add-period"]'), '교시를 추가했어요 · 3시간 수업 (지각·결석은 누르는 횟수만큼)');
+  assert.match(await A.text('[data-act="pick-period"].on'), /구강해부학 실습 · 3시간/);
+  assert.equal((await one(`select hours from periods where date = $1 and label = '구강해부학 실습'`, [D])).hours, 3);
   await A.fits('여러 시간 수업');
-  await A.page.fill('#newPeriod', '');
-  await A.page.selectOption('#newHours', '1');
   await A.page.fill('#attDate', TODAY);
 });
 

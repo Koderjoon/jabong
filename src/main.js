@@ -24,7 +24,7 @@ const token = () => getSession()?.token;
 const blankForm = () => ({ date: TODAY, preset: '', item: '', points: 1, detail: '', nums: '', find: '', reason: '', photo: '' });
 const UI = {
   role: 'student', tab: 'board', sid: null, user: null, sort: 'no', q: '',
-  attDate: TODAY, attPid: null, attView: 'list', draft: {}, touched: {}, newPeriod: '', newHours: '1', recallPrev: {}, attConfirm: false, perDel: null, perEdit: null, perName: '', recalled: {},
+  attDate: TODAY, attPid: null, attView: 'list', draft: {}, touched: {}, newPeriod: '', recallPrev: {}, attConfirm: false, perDel: null, perEdit: null, perName: '', recalled: {},
   recForm: blankForm(), reqForm: blankForm(), exForm: blankForm(), excForm: { no: '', eid: '', reason: '', photo: '' }, reactForm: { no: '', period: '', q: '', a: '' },
   recFilter: '', editId: null, voidId: null, openRev: {}, photos: {},
   noticeFrom: null, noticeTo: null, noticeText: null,
@@ -836,7 +836,7 @@ function vAttend() {
   // 교시 추가가 맨 위(탭 바로 아래), 그 아래 날짜와 그날의 교시들, 그 아래 출석 체크
   return `<div class="toolbar"><div class="itembox"><input id="newPeriod" placeholder="교시 추가 (예: 1교시 구강해부학)" value="${esc(UI.newPeriod)}" autocomplete="off" data-bind="newPeriod" data-suggest="period">
   <button type="button" class="itemdrop" data-act="pr-open" data-fk="np" aria-expanded="${UI.prOpen === 'np'}">불러오기</button>
-  <div class="prpop" id="np-prpop" ${UI.prOpen === 'np' ? '' : 'hidden'}>${UI.prOpen === 'np' ? presetPop('np') : ''}</div></div>${hoursSel('newHours', UI.newHours, 'data-bind="newHours"')}<button class="btn ghost small" data-act="add-period">추가</button></div>
+  <div class="prpop" id="np-prpop" ${UI.prOpen === 'np' ? '' : 'hidden'}>${UI.prOpen === 'np' ? presetPop('np') : ''}</div></div><button class="btn ghost small" data-act="add-period">추가</button></div>
   <div class="toolbar"><input type="date" id="attDate" value="${UI.attDate}" data-bind="attDate" data-rerender="1" style="width:auto"></div>
   <div class="seg" style="flex-wrap:wrap">${ps.map((p) => `<button class="${p.id === pid ? 'on' : ''}" data-act="pick-period" data-id="${p.id}">${esc(p.label)}${hoursTag(p)}${S.att[p.id] ? ' ·저장됨' : ''}</button>`).join('')}</div>
   ${periodBar(pid)}
@@ -1866,11 +1866,11 @@ const A = {
       return toast('이미 있는 교시예요 · 그 교시를 골랐어요');
     }
     // 교시 추가에는 되돌리기 버튼을 붙이지 않는다: 다른 기기가 방금 같은 교시를 만들었으면 새 작업이 없어서 엉뚱한 작업을 가리킬 수 있다
-    const h = Number(UI.newHours) || 1;
+    // 수업 시간은 교시를 고른 뒤 아래 "1시간~4시간" 버튼으로 바꾼다. 자주 쓰는 교시에 시간을 저장해 뒀으면 그 시간으로
+    const h = Math.max(1, myPeriodPresets().find((p) => p.name === l)?.points || 1);
     const id = await rpc('ensure_period', { p_token: token(), p_date: UI.attDate, p_label: l, p_morning: false, ...(h > 1 ? { p_hours: h } : {}) });
     UI.attPid = id;
     UI.newPeriod = '';
-    UI.newHours = '1';
     await refresh();
     render();
     return toast(h > 1 ? `교시를 추가했어요 · ${h}시간 수업 (지각·결석은 누르는 횟수만큼)` : '교시를 추가했어요');
@@ -2270,10 +2270,6 @@ const A = {
     if (d.fk === 'np') {
       UI.newPeriod = p.name;
       document.getElementById('newPeriod').value = p.name;
-      // 자주 쓰는 교시에 저장한 수업 시간도 함께 (points 칸, 0이면 1시간)
-      UI.newHours = String(Math.max(1, p.points || 1));
-      const hs = document.getElementById('newHours');
-      if (hs) hs.value = UI.newHours;
       closePresetPops();
       return true;
     }
