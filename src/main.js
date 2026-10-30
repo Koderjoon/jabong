@@ -833,14 +833,15 @@ function vAttend() {
     ${UI.attConfirm ? `<div class="att-confirm"><span>지금 표시한 지각 ${c.late}명 · 결석 ${c.absent}명 · 공결 ${c.excused}명이 모두 출석으로 바뀌어요. 되돌릴까요?</span>
     <div class="btns"><button class="btn danger small" data-act="att-clear-yes">네, 전원 출석으로</button><button class="btn ghost small" data-act="att-clear-no">그만두기</button></div></div>` : ''}`;
   }
-  return `<div><h1>출석 체크</h1><p class="sub">${UI.attView === 'grid' ? '칸을 누를 때마다 출석 → 지각 → 결석 → 공결 순으로 바뀌어요.' : '번호순으로 이름을 부르면서 바로 출결을 고르세요.'} ${isAdmin() ? '저장하면 교시마다 지각 +1, 결석 +2가 기록돼요 (여러 시간 수업은 누른 횟수만큼).' : '다 고른 뒤 요청을 보내면 부총대가 확인하고 저장해요.'} 이름은 총대단에게만 보여요.</p></div>
-  <div class="seg"><button class="${UI.attView !== 'grid' ? 'on' : ''}" data-act="attview" data-v="list">호명 목록</button><button class="${UI.attView === 'grid' ? 'on' : ''}" data-act="attview" data-v="grid">한눈에 보기</button></div>
+  // 교시 추가가 맨 위(탭 바로 아래), 그 아래 날짜와 그날의 교시들, 그 아래 출석 체크
+  return `<div class="toolbar"><div class="itembox"><input id="newPeriod" placeholder="교시 추가 (예: 1교시 구강해부학)" value="${esc(UI.newPeriod)}" autocomplete="off" data-bind="newPeriod" data-suggest="period">
+  <button type="button" class="itemdrop" data-act="pr-open" data-fk="np" aria-expanded="${UI.prOpen === 'np'}">불러오기</button>
+  <div class="prpop" id="np-prpop" ${UI.prOpen === 'np' ? '' : 'hidden'}>${UI.prOpen === 'np' ? presetPop('np') : ''}</div></div>${hoursSel('newHours', UI.newHours, 'data-bind="newHours"')}<button class="btn ghost small" data-act="add-period">추가</button></div>
   <div class="toolbar"><input type="date" id="attDate" value="${UI.attDate}" data-bind="attDate" data-rerender="1" style="width:auto"></div>
   <div class="seg" style="flex-wrap:wrap">${ps.map((p) => `<button class="${p.id === pid ? 'on' : ''}" data-act="pick-period" data-id="${p.id}">${esc(p.label)}${hoursTag(p)}${S.att[p.id] ? ' ·저장됨' : ''}</button>`).join('')}</div>
   ${periodBar(pid)}
-  <div class="toolbar"><div class="itembox"><input id="newPeriod" placeholder="교시 추가 (예: 1교시 구강해부학)" value="${esc(UI.newPeriod)}" autocomplete="off" data-bind="newPeriod" data-suggest="period">
-  <button type="button" class="itemdrop" data-act="pr-open" data-fk="np" aria-expanded="${UI.prOpen === 'np'}">불러오기</button>
-  <div class="prpop" id="np-prpop" ${UI.prOpen === 'np' ? '' : 'hidden'}>${UI.prOpen === 'np' ? presetPop('np') : ''}</div></div>${hoursSel('newHours', UI.newHours, 'data-bind="newHours"')}<button class="btn ghost small" data-act="add-period">추가</button></div>
+  <div><h1>출석 체크</h1><p class="sub">${UI.attView === 'grid' ? '칸을 누를 때마다 출석 → 지각 → 결석 → 공결 순으로 바뀌어요.' : '번호순으로 이름을 부르면서 바로 출결을 고르세요.'} ${isAdmin() ? '저장하면 교시마다 지각 +1, 결석 +2가 기록돼요 (여러 시간 수업은 누른 횟수만큼).' : '다 고른 뒤 요청을 보내면 부총대가 확인하고 저장해요.'} 이름은 총대단에게만 보여요.</p></div>
+  <div class="seg"><button class="${UI.attView !== 'grid' ? 'on' : ''}" data-act="attview" data-v="list">호명 목록</button><button class="${UI.attView === 'grid' ? 'on' : ''}" data-act="attview" data-v="grid">한눈에 보기</button></div>
   ${body}`;
 }
 

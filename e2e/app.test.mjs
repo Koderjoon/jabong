@@ -518,6 +518,10 @@ test('출석(부총대): 아침 출석 체크·저장, 정정, 전원 출석 확
   assert.match(foot, /지각 1 · 결석 1 · 공결 1/);
   assert.match(foot, /아직 저장 안 됨/);
   await A.fits('출석 체크');
+  // 교시 추가가 맨 위(탭 바로 아래), 그 아래 날짜 → 그날의 교시들 → 출석 체크
+  const tops = await A.page.evaluate(() => ['#newPeriod', '#attDate', '[data-act="pick-period"]', '#view h1', '[data-act="attview"]'].map((q) => document.querySelector(q).getBoundingClientRect().top));
+  assert.deepEqual([...tops].sort((a, b) => a - b), tops, `순서: ${tops}`);
+  assert.equal(await A.page.evaluate(() => document.querySelector('#view').firstElementChild.contains(document.querySelector('#newPeriod'))), true, '교시 추가가 화면 맨 위');
   assert.equal(await A.toast('[data-act="att-save"]'), '저장했어요 · 새 자봉 2건');
   assert.deepEqual(await seg(), ['아침 출석 ·저장됨']);
   assert.match(await A.text('.att-foot'), /저장됨/);
