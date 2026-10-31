@@ -2635,7 +2635,8 @@ test('탭 순서: 길게 눌러 끌면 자리가 바뀌고(이 폰에만, 역할
     await P.page.waitForTimeout(hold);
     await P.page.mouse.move(x2, y2, { steps: 8 });
     await P.page.mouse.up();
-    await P.page.waitForTimeout(100);
+    // 빈자리로 들어가 앉는 데 0.15초
+    await P.page.waitForTimeout(350);
   };
   assert.deepEqual(await P.tabs(), ['자봉 현황', '공결 신청', '리액션']);
   // 짧게 누르면 그냥 탭 이동
@@ -2690,6 +2691,62 @@ test('탭 순서: 길게 눌러 끌면 자리가 바뀌고(이 폰에만, 역할
   await T.page.context().close();
   // 부총대 화면의 순서는 따로 (다른 폰이므로 그대로)
   assert.deepEqual(await A.tabs(), ['출석', '자봉', '요청함', '공지', '작업 내역', '관리', '자봉 현황']);
+});
+
+test('탭 순서 움직임: 누르는 동안 밑줄이 차오르고, 집히면 떠올라 손가락을 따라오고 나머지는 흐려지며, 끝으로 끌면 탭 줄이 저절로 스크롤, 움직임 줄이기 설정에서도 된다', async () => {
+  const tok = await A.token();
+  // 좁은 폰의 부총대 화면 (탭 7개라 오른쪽이 화면 밖)
+  const P = await open({ width: 360, height: 740, beforeGoto: (ctx) => ctx.addInitScript((t) => localStorage.setItem('jabong-session', JSON.stringify({ token: t, role: '부총대' })), tok) });
+  await P.page.waitForSelector('#tabs button');
+  const box = (k) => P.page.locator(`#tabs [data-tab="${k}"]`).boundingBox();
+  const cls = (k) => P.page.getAttribute(`#tabs [data-tab="${k}"]`, 'class');
+  const b0 = await box('attend');
+  const [x, y] = [b0.x + b0.width / 2, b0.y + b0.height / 2];
+  await P.page.mouse.move(x, y);
+  await P.page.mouse.down();
+  await P.page.waitForTimeout(200);
+  assert.match(await cls('attend'), /pressing/, '누르는 동안 밑줄이 차오른다');
+  assert.doesNotMatch(await cls('attend'), /dragging/);
+  await P.page.waitForTimeout(450);
+  assert.match(await cls('attend'), /dragging/, '0.5초 지나면 집힌다');
+  assert.doesNotMatch(await cls('attend'), /pressing/);
+  assert.match(await P.page.getAttribute('#tabs', 'class'), /reorder/);
+  assert.equal(await P.page.$eval('#tabs [data-tab="record"]', (b) => getComputedStyle(b).opacity < 1 || b.closest('.reorder') !== null), true, '나머지 탭은 흐려진다');
+  // 조금 옮기면(아직 다른 탭을 넘지 않게) 집은 탭이 손가락을 그대로 따라온다
+  await P.page.mouse.move(x + 12, y, { steps: 3 });
+  const b1 = await box('attend');
+  assert.ok(Math.abs(b1.x + b1.width / 2 - (x + 12)) < 4, `손가락을 따라온다 (${b1.x + b1.width / 2} vs ${x + 12})`);
+  // 오른쪽 끝까지 끌고 잠깐 있으면 탭 줄이 저절로 스크롤되고, 놓으면 그 자리로
+  const scroll0 = await P.page.$eval('#tabs', (t) => t.scrollLeft);
+  await P.page.mouse.move(352, y, { steps: 12 });
+  await P.page.waitForTimeout(900);
+  assert.ok((await P.page.$eval('#tabs', (t) => t.scrollLeft)) > scroll0, '가장자리에서 저절로 스크롤');
+  await P.page.mouse.up();
+  await P.page.waitForTimeout(350);
+  const tabs = await P.tabs();
+  assert.equal(tabs.at(-1), '출석', `맨 끝으로 옮겨졌다: ${tabs}`);
+  assert.equal(await P.has('#tabs .dragging'), false, '놓으면 내려앉는다');
+  assert.doesNotMatch(await P.page.getAttribute('#tabs', 'class') || '', /reorder/);
+  assert.equal(await P.page.$eval('#tabs [data-tab="attend"]', (b) => b.style.transform), '', '제자리에 앉는다');
+  await P.fits('탭 끌기 뒤');
+  await P.page.context().close();
+  // 움직임 줄이기 설정에서도 옮겨진다
+  const Q = await open();
+  await Q.page.emulateMedia({ reducedMotion: 'reduce' });
+  const qb = async (n) => {
+    const b = await Q.page.locator(`#tabs button:has-text("${n}")`).boundingBox();
+    return [b.x + b.width / 2, b.y + b.height / 2];
+  };
+  const [qx, qy] = await qb('리액션');
+  const [tx] = await qb('자봉 현황');
+  await Q.page.mouse.move(qx, qy);
+  await Q.page.mouse.down();
+  await Q.page.waitForTimeout(650);
+  await Q.page.mouse.move(tx, qy, { steps: 6 });
+  await Q.page.mouse.up();
+  await Q.page.waitForTimeout(100);
+  assert.deepEqual(await Q.tabs(), ['리액션', '자봉 현황', '공결 신청']);
+  await Q.page.context().close();
 });
 
 test('새로고침해도 로그인 유지, 서버에서 로그인이 지워지면 다음 동작에서 로그아웃', async () => {

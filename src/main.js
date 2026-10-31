@@ -2570,60 +2570,122 @@ document.addEventListener('keydown', (ev) => {
 });
 
 // ───────── 탭 길게 눌러 끌어서 순서 바꾸기 ─────────
-// 0.45초 동안 움직이지 않고 누르고 있으면 그 탭을 집는다. 그대로 다른 탭 위로 끌면 자리를 바꾸고, 손을 떼면 기억한다.
-// 그 전에 움직이면 보통 누름·가로 스크롤이다. 집은 동안에는 탭 줄이 스크롤되지 않게 막는다(touchmove preventDefault).
+// 0.5초 동안 움직이지 않고 누르고 있으면(그동안 밑줄이 차오른다) 그 탭을 집는다. 집은 탭은 떠올라(그림자) 손가락을 따라 움직이고,
+// 다른 탭은 비켜나며 미끄러진다. 탭 줄 끝으로 끌면 줄이 저절로 스크롤된다. 손을 떼면 빈자리로 들어가 앉고 역할마다 기억한다.
+// 그 전에 움직이면 보통 누름·스크롤이다. 집은 동안에는 탭 줄이 스크롤되지 않게 막는다(touchmove preventDefault).
+// 자리는 탭들의 원래 위치(offsetLeft, 움직임과 무관)의 가운데와 집은 탭의 가운데를 견주어 정한다.
 let tabDrag = null;
 let tabDragEnd = 0;
 {
   const bar = document.getElementById('tabs');
+  const HOLD = 500;
+  const calm = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  const btns = () => [...bar.querySelectorAll('button[data-tab]')];
+  const keysNow = () => btns().map((b) => b.dataset.tab);
+  // 집은 탭을 손가락 아래에 둔다 (원래 자리에서 얼마나 옮겨 그릴지)
+  const follow = (st) => {
+    const r = bar.getBoundingClientRect();
+    const want = st.px - r.left + bar.scrollLeft - st.grab;
+    st.me.style.transform = `translateX(${want - st.me.offsetLeft}px) scale(1.05)`;
+    return want + st.me.offsetWidth / 2;
+  };
+  // 집은 탭의 가운데가 다른 탭(원래 자리) 위에 오면 그 탭 자리를 차지한다. 비켜나는 탭은 옮기기 전 자리에서 미끄러져 온다 (FLIP)
+  const reorder = (st) => {
+    const mid = follow(st);
+    const all = btns();
+    const over = all.find((b) => b !== st.me && b.offsetLeft <= mid && mid < b.offsetLeft + b.offsetWidth);
+    if (!over) return;
+    const others = all.filter((b) => b !== st.me);
+    const before = new Map(others.map((b) => [b, b.getBoundingClientRect().left]));
+    if (all.indexOf(over) > all.indexOf(st.me)) over.after(st.me);
+    else over.before(st.me);
+    if (!calm())
+      others.forEach((b) => {
+        const dx = before.get(b) - b.getBoundingClientRect().left;
+        if (!dx) return;
+        b.style.transition = 'none';
+        b.style.transform = `translateX(${dx}px)`;
+        b.getBoundingClientRect();
+        b.style.transition = '';
+        b.style.transform = '';
+      });
+    follow(st);
+  };
+  // 탭 줄 가장자리 가까이 끌면 그쪽으로 스크롤한다
+  const edge = (st) => {
+    if (st.raf) return;
+    const tick = () => {
+      st.raf = 0;
+      if (tabDrag !== st || !st.active) return;
+      const r = bar.getBoundingClientRect();
+      const v = st.px < r.left + 40 ? -8 : st.px > r.right - 40 ? 8 : 0;
+      if (!v) return;
+      const was = bar.scrollLeft;
+      bar.scrollLeft += v;
+      if (bar.scrollLeft === was) return;
+      reorder(st);
+      st.raf = requestAnimationFrame(tick);
+    };
+    st.raf = requestAnimationFrame(tick);
+  };
   const endDrag = (cancel) => {
     const st = tabDrag;
     tabDrag = null;
     if (!st) return;
     clearTimeout(st.timer);
+    cancelAnimationFrame(st.raf);
+    st.me?.classList.remove('pressing');
     if (!st.active) return;
     tabDragEnd = Date.now();
+    const keys = keysNow();
+    // 빈자리로 들어가 앉는다
+    st.me.classList.add('settling');
+    st.me.style.transform = '';
     bar.classList.remove('reorder');
-    bar.querySelector('.dragging')?.classList.remove('dragging');
-    const keys = [...bar.querySelectorAll('button[data-tab]')].map((b) => b.dataset.tab);
-    if (cancel || keys.join() === st.before) return render();
-    setTabOrder(UI.role, keys);
-    render();
-    toast('탭 순서를 바꿨어요 · 이 폰에만 기억해요', null, { act: 'tab-reset', label: '원래 순서로' });
+    const done = () => {
+      st.me.classList.remove('dragging', 'settling');
+      if (cancel || keys.join() === st.before) return render();
+      setTabOrder(UI.role, keys);
+      render();
+      toast('탭 순서를 바꿨어요 · 이 폰에만 기억해요', null, { act: 'tab-reset', label: '원래 순서로' });
+    };
+    if (calm()) done();
+    else setTimeout(done, 160);
   };
   bar.addEventListener('pointerdown', (ev) => {
     // 새로 누르기 시작하면 그 누름은 막지 않는다 (끌기를 끝낸 손을 뗄 때 생기는 누름만 막는다)
     tabDragEnd = 0;
     const b = ev.target.closest('button[data-tab]');
-    if (!b || (ev.pointerType === 'mouse' && ev.button !== 0)) return;
-    const st = { key: b.dataset.tab, x: ev.clientX, y: ev.clientY, active: false };
+    if (!b || tabDrag || (ev.pointerType === 'mouse' && ev.button !== 0)) return;
+    const st = { key: b.dataset.tab, me: b, x: ev.clientX, y: ev.clientY, px: ev.clientX, active: false };
+    b.classList.add('pressing');
     st.timer = setTimeout(() => {
       st.active = true;
-      st.before = [...bar.querySelectorAll('button[data-tab]')].map((x) => x.dataset.tab).join();
+      st.before = keysNow().join();
+      st.grab = st.px - b.getBoundingClientRect().left;
+      b.classList.remove('pressing');
+      b.classList.add('dragging');
       bar.classList.add('reorder');
-      bar.querySelector(`button[data-tab="${st.key}"]`)?.classList.add('dragging');
+      follow(st);
       navigator.vibrate?.(30);
-    }, 450);
+    }, HOLD);
     tabDrag = st;
   });
-  bar.addEventListener('pointermove', (ev) => {
+  // 끄는 손가락이 탭 줄 밖으로 나가도 따라가도록 움직임·떼기는 창 전체에서 받는다
+  window.addEventListener('pointermove', (ev) => {
     const st = tabDrag;
     if (!st) return;
+    st.px = ev.clientX;
     if (!st.active) {
       if (Math.abs(ev.clientX - st.x) > 10 || Math.abs(ev.clientY - st.y) > 10) endDrag(true);
       return;
     }
     ev.preventDefault();
-    const over = document.elementFromPoint(ev.clientX, ev.clientY)?.closest?.('#tabs button[data-tab]');
-    const me = bar.querySelector(`button[data-tab="${st.key}"]`);
-    if (!over || !me || over === me) return;
-    // 끄는 쪽으로 자리를 바꾼다 (탭 단추는 그대로 옮겨서 누르고 있는 손가락이 끊기지 않게)
-    const btns = [...bar.querySelectorAll('button[data-tab]')];
-    if (btns.indexOf(over) > btns.indexOf(me)) over.after(me);
-    else over.before(me);
+    reorder(st);
+    edge(st);
   });
-  bar.addEventListener('pointerup', () => endDrag(false));
-  bar.addEventListener('pointercancel', () => endDrag(false));
+  window.addEventListener('pointerup', () => endDrag(false));
+  window.addEventListener('pointercancel', () => endDrag(false));
   bar.addEventListener('touchmove', (ev) => tabDrag?.active && ev.preventDefault(), { passive: false });
   // 길게 누를 때 뜨는 폰의 메뉴(복사 등)를 막는다
   bar.addEventListener('contextmenu', (ev) => ev.target.closest('button[data-tab]') && ev.preventDefault());

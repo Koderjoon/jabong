@@ -240,15 +240,25 @@ a.btn{text-decoration:none;display:inline-flex;align-items:center;justify-conten
 .mlist{max-height:320px;overflow:auto}
 .off{color:var(--muted)}
 
-.tabs{display:flex;overflow-x:auto;scrollbar-width:none;margin-inline:-4px}
+/* position:relative: 탭 끌기가 탭 위치(offsetLeft)를 이 줄 기준으로 잰다 */
+/* 위쪽 6px 여유(padding·margin으로 상쇄): 집어서 떠오른 탭이 줄 위쪽에 잘리지 않게 */
+.tabs{display:flex;overflow-x:auto;scrollbar-width:none;margin-inline:-4px;position:relative;padding-top:6px;margin-top:-6px}
 .tabs::-webkit-scrollbar{display:none}
 .tabs:empty{display:none}
 .top:has(.tabs:empty){padding-bottom:10px}
 .tabs button{flex:1 0 auto;border:0;background:none;padding:10px 10px 11px;font-size:14px;color:var(--muted);font-weight:500;position:relative;white-space:nowrap}
 .tabs button.on{color:var(--accent);font-weight:700}
 .tabs button{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
-.tabs.reorder button{cursor:grabbing}
-.tabs button.dragging{background:var(--accent-soft);color:var(--accent);border-radius:10px;font-weight:700;transform:scale(1.06)}
+.tabs button{transition:transform .2s ease,opacity .2s ease}
+/* 길게 누르는 동안 밑줄이 0.5초에 걸쳐 차오른다 (다 차면 집힌다) */
+.tabs button.pressing::before{content:"";position:absolute;left:18%;bottom:0;height:3px;width:64%;background:var(--accent);border-radius:3px;transform-origin:left;animation:tabhold .5s linear forwards;opacity:.6}
+@keyframes tabhold{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+/* 집힌 탭: 떠올라 손가락을 따라온다 (움직임은 JS가 transform으로, 따라오는 동안은 바로바로) */
+.tabs.reorder{cursor:grabbing}
+.tabs.reorder button:not(.dragging){opacity:.45}
+.tabs button.dragging{z-index:2;background:var(--surface);color:var(--accent);font-weight:700;border-radius:10px;box-shadow:0 4px 12px rgba(0,0,0,.16);transition:box-shadow .15s ease}
+.tabs button.dragging.settling{transition:transform .15s ease,box-shadow .15s ease;box-shadow:none}
+@media (prefers-reduced-motion:reduce){.tabs button,.tabs button.dragging.settling{transition:none}.tabs button.pressing::before{animation:none;transform:scaleX(1)}}
 .tabs button.on::after{content:"";position:absolute;left:18%;right:18%;bottom:0;height:3px;background:var(--accent);border-radius:3px 3px 0 0}
 .badge{display:inline-block;min-width:17px;padding:0 5px;margin-left:3px;border-radius:999px;background:var(--pen);color:#fff;font-size:11px;line-height:17px;font-family:var(--mono)}
 .toast{position:fixed;left:16px;right:16px;margin-inline:auto;width:fit-content;bottom:calc(24px + env(safe-area-inset-bottom,0px));background:var(--ink);color:var(--bg);padding:9px 16px;border-radius:999px;font-size:13px;z-index:9;display:flex;align-items:center;gap:12px}
