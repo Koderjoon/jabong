@@ -2621,6 +2621,77 @@ test('여러 시간 수업: 지각은 누를 때마다 1점씩, 결석은 2점�
   await A.page.fill('#attDate', TODAY);
 });
 
+test('탭 순서: 길게 눌러 끌면 자리가 바뀌고(이 폰에만, 역할마다), 맨 앞 탭이 처음 여는 탭, 바로 끌거나 짧게 누르면 보통 동작, 원래 순서로, 폰 손가락으로도', async () => {
+  const P = await open();
+  const center = async (name) => {
+    const b = await P.page.locator(`#tabs button:has-text("${name}")`).boundingBox();
+    return [b.x + b.width / 2, b.y + b.height / 2];
+  };
+  const drag = async (from, to, { hold = 650 } = {}) => {
+    const [x1, y1] = await center(from);
+    const [x2, y2] = await center(to);
+    await P.page.mouse.move(x1, y1);
+    await P.page.mouse.down();
+    await P.page.waitForTimeout(hold);
+    await P.page.mouse.move(x2, y2, { steps: 8 });
+    await P.page.mouse.up();
+    await P.page.waitForTimeout(100);
+  };
+  assert.deepEqual(await P.tabs(), ['자봉 현황', '공결 신청', '리액션']);
+  // 짧게 누르면 그냥 탭 이동
+  await P.click('#tabs [data-tab="excuse"]');
+  assert.match(await P.text('#view h1'), /공결 신청/);
+  // 길게 눌러 "리액션"을 맨 앞으로 끈다 → 자리만 바뀌고 보던 탭은 그대로
+  await drag('리액션', '자봉 현황');
+  assert.deepEqual(await P.tabs(), ['리액션', '자봉 현황', '공결 신청']);
+  assert.match(await P.text('#view h1'), /공결 신청/, '끌고 난 뒤 탭이 바뀌지 않는다');
+  assert.equal(await P.text('#toast > span'), '탭 순서를 바꿨어요 · 이 폰에만 기억해요');
+  assert.deepEqual(JSON.parse(await P.page.evaluate(() => localStorage.getItem('jabong-taborder'))), { student: ['react', 'board', 'excuse'] });
+  // 다시 열면 그 순서, 맨 앞 탭(리액션)부터
+  await P.reload();
+  assert.deepEqual(await P.tabs(), ['리액션', '자봉 현황', '공결 신청']);
+  assert.equal(await P.page.getAttribute('#tabs button.on', 'data-tab'), 'react');
+  // 누르자마자 끌면(길게 누르지 않으면) 바뀌지 않는다
+  await drag('공결 신청', '리액션', { hold: 50 });
+  assert.deepEqual(await P.tabs(), ['리액션', '자봉 현황', '공결 신청']);
+  // 길게 눌렀다가 제자리에서 떼면 아무것도 바뀌지 않고 탭도 옮기지 않는다
+  await P.click('#tabs [data-tab="board"]');
+  await drag('공결 신청', '공결 신청');
+  // (손을 뗄 때 그 탭에 누름(click)이 오는 브라우저도 있다: 그 누름은 막는다)
+  await P.page.evaluate(() => document.querySelector('#tabs [data-tab="excuse"]').click());
+  assert.deepEqual(await P.tabs(), ['리액션', '자봉 현황', '공결 신청']);
+  assert.equal(await P.page.getAttribute('#tabs button.on', 'data-tab'), 'board');
+  // 원래 순서로
+  await drag('공결 신청', '리액션');
+  assert.deepEqual(await P.tabs(), ['공결 신청', '리액션', '자봉 현황']);
+  await P.click('#toast [data-act="tab-reset"]');
+  assert.deepEqual(await P.tabs(), ['자봉 현황', '공결 신청', '리액션']);
+  assert.equal(await P.text('#toast > span'), '탭을 원래 순서로 돌렸어요');
+  await P.page.context().close();
+  // 폰(손가락): 길게 누른 뒤 끌면 탭 줄이 스크롤되지 않고 자리가 바뀐다
+  const T = await open({ width: 360, height: 740, touch: true });
+  const cdp = await T.page.context().newCDPSession(T.page);
+  const pt = async (name) => {
+    const b = await T.page.locator(`#tabs button:has-text("${name}")`).boundingBox();
+    return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+  };
+  const a = await pt('리액션');
+  const b = await pt('자봉 현황');
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [a] });
+  await T.page.waitForTimeout(700);
+  for (let i = 1; i <= 8; i++) await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: a.x + ((b.x - a.x) * i) / 8, y: a.y }] });
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await T.page.waitForTimeout(200);
+  assert.deepEqual(await T.tabs(), ['리액션', '자봉 현황', '공결 신청']);
+  assert.equal(await T.page.getAttribute('#tabs button.on', 'data-tab'), 'board', '손을 떼도 탭은 그대로');
+  // 짧은 손가락 탭은 그냥 이동
+  await T.page.tap('#tabs [data-tab="excuse"]');
+  await T.page.waitForFunction(() => document.querySelector('#tabs button.on')?.dataset.tab === 'excuse');
+  await T.page.context().close();
+  // 부총대 화면의 순서는 따로 (다른 폰이므로 그대로)
+  assert.deepEqual(await A.tabs(), ['출석', '자봉', '요청함', '공지', '작업 내역', '관리', '자봉 현황']);
+});
+
 test('새로고침해도 로그인 유지, 서버에서 로그인이 지워지면 다음 동작에서 로그아웃', async () => {
   await A.reload();
   assert.match(await A.text('#subbar'), /부총대로 로그인됨/);

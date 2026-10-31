@@ -69,10 +69,35 @@ const TABS = {
 const canAttend = () => Boolean(S.accounts.find((a) => a.role === UI.user)?.attend);
 // 학생 화면은 디데이 링크가 있으면 맨 앞(처음 여는 탭)이 디데이다
 // 총대단·부총대는 디데이 관리자 링크가 있으면 맨 앞(처음 여는 탭)이 디데이다 (여기서 바로 추가·수정·삭제)
-const tabsOf = (role) => {
+const baseTabs = (role) => {
   if (role === 'student') return ddayUrl() ? [['dday', '디데이'], ...TABS.student] : TABS.student;
   const base = role === 'officer' && UI.user && canAttend() ? [['attend', '출석'], ...TABS.officer] : TABS[role];
   return ddayAdminUrl() ? [['dday', '디데이'], ...base] : base;
+};
+// 탭 순서는 길게 눌러 끌어서 바꾼다. 역할마다 이 폰에만 기억한다(jabong-taborder). 맨 앞 탭이 처음 여는 탭이다.
+// 기억한 순서에 없는 탭(새로 생긴 탭)은 맨 뒤에 기본 순서대로 붙는다.
+const TAB_ORDER_KEY = 'jabong-taborder';
+function tabOrders() {
+  try {
+    return JSON.parse(localStorage.getItem(TAB_ORDER_KEY) || '{}') || {};
+  } catch {
+    return {};
+  }
+}
+function setTabOrder(role, keys) {
+  const all = tabOrders();
+  if (keys) all[role] = keys;
+  else delete all[role];
+  try {
+    localStorage.setItem(TAB_ORDER_KEY, JSON.stringify(all));
+  } catch {}
+}
+const tabsOf = (role) => {
+  const list = baseTabs(role);
+  const o = tabOrders()[role];
+  if (!Array.isArray(o)) return list;
+  const at = (k, i) => (o.includes(k) ? o.indexOf(k) : o.length + i);
+  return list.map((t, i) => [t, at(t[0], i)]).sort((a, b) => a[1] - b[1]).map(([t]) => t);
 };
 const STATUS = { pending: '대기', approved: '승인', rejected: '반려' };
 // 하루 전체 공결 신청은 여러 줄이어도 한 건으로 센다
@@ -80,7 +105,8 @@ const pendingCount = () =>
   [S.requests, S.attRequests || [], S.reactions || []].reduce((n, l) => n + l.filter((x) => x.status === 'pending').length, 0) + excGroups(S.excuses.filter((x) => x.status === 'pending')).length;
 
 // 안내 문구. undo(작업 id)를 주면 "되돌리기" 버튼을 붙이고 조금 더 오래 보여 준다.
-function toast(msg, undo) {
+// undo: 부총대 작업 되돌리기 id, extra: 그 밖의 버튼 {act, label}
+function toast(msg, undo, extra) {
   const t = document.getElementById('toast');
   const span = document.createElement('span');
   span.textContent = msg;
@@ -91,10 +117,15 @@ function toast(msg, undo) {
     b.dataset.id = undo;
     b.textContent = '되돌리기';
     t.append(b);
+  } else if (extra) {
+    const b = document.createElement('button');
+    b.dataset.act = extra.act;
+    b.textContent = extra.label;
+    t.append(b);
   }
   t.hidden = false;
   clearTimeout(toast.t);
-  toast.t = setTimeout(() => (t.hidden = true), undo ? 7000 : 2600);
+  toast.t = setTimeout(() => (t.hidden = true), undo || extra ? 7000 : 2600);
   return true;
 }
 // 부총대가 방금 한 작업이면 되돌리기 버튼을 붙인다 (되돌리기는 "이 작업만 되돌리기"와 같고 기록이 남지 않는다).
@@ -114,10 +145,10 @@ async function refresh() {
     S = sess ? await rpc('private_state', { p_token: sess.token }) : await rpc('public_state');
     loaded = true;
     loadError = null;
-    // 학생 화면은 처음 열 때 디데이 탭부터 (디데이 링크가 있으면)
+    // 학생 화면은 처음 열 때 맨 앞 탭부터 (디데이 링크가 있으면 디데이, 순서를 바꿨으면 그 맨 앞)
     if (!UI.firstTab) {
       UI.firstTab = true;
-      if (UI.role === 'student' && UI.tab === 'board' && ddayUrl()) UI.tab = 'dday';
+      if (UI.role === 'student' && UI.tab === 'board') UI.tab = tabsOf('student')[0][0];
     }
     if (!UI.roleSet && UI.user) {
       UI.role = roleOf(UI.user);
@@ -1696,6 +1727,8 @@ const A = {
     return toast(`${who} 비밀번호를 재설정했어요. 본인에게 알려주세요`);
   },
   tab: (d) => {
+    // 길게 눌러 순서를 바꾼 직후의 누름은 탭을 옮기지 않는다
+    if (Date.now() - tabDragEnd < 600) return true;
     if (d.tab === 'history') UI.hist = { ...UI.hist, list: null, preview: null, error: null, loading: false };
     if (d.tab === 'excuse' && !UI.excForm.no && myStudent()) UI.excForm.no = String(UI.myNo);
     if (d.tab === 'react' && !UI.reactForm.no && myStudent()) UI.reactForm.no = String(UI.myNo);
@@ -1874,6 +1907,11 @@ const A = {
         if (ddayAdminUrl()) ddayLoad(ddayAdminUrl(), true);
         if (UI.tab === 'dday') softRender();
       });
+  },
+  'tab-reset': () => {
+    document.getElementById('toast').hidden = true;
+    setTabOrder(UI.role, null);
+    toast('탭을 원래 순서로 돌렸어요');
   },
   'dd-new': () => {
     UI.ddDel = null;
@@ -2530,6 +2568,66 @@ document.addEventListener('keydown', (ev) => {
     document.querySelector(`[data-act="pr-save"][data-fk="${ev.target.id.split('-')[0]}"]`)?.click();
   }
 });
+
+// ───────── 탭 길게 눌러 끌어서 순서 바꾸기 ─────────
+// 0.45초 동안 움직이지 않고 누르고 있으면 그 탭을 집는다. 그대로 다른 탭 위로 끌면 자리를 바꾸고, 손을 떼면 기억한다.
+// 그 전에 움직이면 보통 누름·가로 스크롤이다. 집은 동안에는 탭 줄이 스크롤되지 않게 막는다(touchmove preventDefault).
+let tabDrag = null;
+let tabDragEnd = 0;
+{
+  const bar = document.getElementById('tabs');
+  const endDrag = (cancel) => {
+    const st = tabDrag;
+    tabDrag = null;
+    if (!st) return;
+    clearTimeout(st.timer);
+    if (!st.active) return;
+    tabDragEnd = Date.now();
+    bar.classList.remove('reorder');
+    bar.querySelector('.dragging')?.classList.remove('dragging');
+    const keys = [...bar.querySelectorAll('button[data-tab]')].map((b) => b.dataset.tab);
+    if (cancel || keys.join() === st.before) return render();
+    setTabOrder(UI.role, keys);
+    render();
+    toast('탭 순서를 바꿨어요 · 이 폰에만 기억해요', null, { act: 'tab-reset', label: '원래 순서로' });
+  };
+  bar.addEventListener('pointerdown', (ev) => {
+    // 새로 누르기 시작하면 그 누름은 막지 않는다 (끌기를 끝낸 손을 뗄 때 생기는 누름만 막는다)
+    tabDragEnd = 0;
+    const b = ev.target.closest('button[data-tab]');
+    if (!b || (ev.pointerType === 'mouse' && ev.button !== 0)) return;
+    const st = { key: b.dataset.tab, x: ev.clientX, y: ev.clientY, active: false };
+    st.timer = setTimeout(() => {
+      st.active = true;
+      st.before = [...bar.querySelectorAll('button[data-tab]')].map((x) => x.dataset.tab).join();
+      bar.classList.add('reorder');
+      bar.querySelector(`button[data-tab="${st.key}"]`)?.classList.add('dragging');
+      navigator.vibrate?.(30);
+    }, 450);
+    tabDrag = st;
+  });
+  bar.addEventListener('pointermove', (ev) => {
+    const st = tabDrag;
+    if (!st) return;
+    if (!st.active) {
+      if (Math.abs(ev.clientX - st.x) > 10 || Math.abs(ev.clientY - st.y) > 10) endDrag(true);
+      return;
+    }
+    ev.preventDefault();
+    const over = document.elementFromPoint(ev.clientX, ev.clientY)?.closest?.('#tabs button[data-tab]');
+    const me = bar.querySelector(`button[data-tab="${st.key}"]`);
+    if (!over || !me || over === me) return;
+    // 끄는 쪽으로 자리를 바꾼다 (탭 단추는 그대로 옮겨서 누르고 있는 손가락이 끊기지 않게)
+    const btns = [...bar.querySelectorAll('button[data-tab]')];
+    if (btns.indexOf(over) > btns.indexOf(me)) over.after(me);
+    else over.before(me);
+  });
+  bar.addEventListener('pointerup', () => endDrag(false));
+  bar.addEventListener('pointercancel', () => endDrag(false));
+  bar.addEventListener('touchmove', (ev) => tabDrag?.active && ev.preventDefault(), { passive: false });
+  // 길게 누를 때 뜨는 폰의 메뉴(복사 등)를 막는다
+  bar.addEventListener('contextmenu', (ev) => ev.target.closest('button[data-tab]') && ev.preventDefault());
+}
 
 async function boot() {
   const sess = getSession();

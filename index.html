@@ -246,6 +246,9 @@ a.btn{text-decoration:none;display:inline-flex;align-items:center;justify-conten
 .top:has(.tabs:empty){padding-bottom:10px}
 .tabs button{flex:1 0 auto;border:0;background:none;padding:10px 10px 11px;font-size:14px;color:var(--muted);font-weight:500;position:relative;white-space:nowrap}
 .tabs button.on{color:var(--accent);font-weight:700}
+.tabs button{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+.tabs.reorder button{cursor:grabbing}
+.tabs button.dragging{background:var(--accent-soft);color:var(--accent);border-radius:10px;font-weight:700;transform:scale(1.06)}
 .tabs button.on::after{content:"";position:absolute;left:18%;right:18%;bottom:0;height:3px;background:var(--accent);border-radius:3px 3px 0 0}
 .badge{display:inline-block;min-width:17px;padding:0 5px;margin-left:3px;border-radius:999px;background:var(--pen);color:#fff;font-size:11px;line-height:17px;font-family:var(--mono)}
 .toast{position:fixed;left:16px;right:16px;margin-inline:auto;width:fit-content;bottom:calc(24px + env(safe-area-inset-bottom,0px));background:var(--ink);color:var(--bg);padding:9px 16px;border-radius:999px;font-size:13px;z-index:9;display:flex;align-items:center;gap:12px}
