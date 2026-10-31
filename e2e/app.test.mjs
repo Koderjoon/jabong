@@ -2272,6 +2272,7 @@ test('디데이: 부총대가 링크(보기 키까지)를 넣으면 학생 첫 �
   const posts = [];
   let failNext = null;
   let slow = 0; // 목록 응답을 늦춘다 (요청한 때의 목록을 늦게 돌려준다)
+  let dropSync = false; // 정리 요청의 응답이 끊긴 것처럼
   const routes = async (ctx, { down = false } = {}) => {
     await ctx.route(`${SITE}**`, (r) => (calls.site++, down ? r.abort() : r.fulfill({ contentType: 'text/html', headers: { 'Access-Control-Allow-Origin': '*' }, body: `<script>\n  var API = '${API}';\n</script>` })));
     await ctx.route(`${API}**`, (r) => {
@@ -2282,7 +2283,15 @@ test('디데이: 부총대가 링크(보기 키까지)를 넣으면 학생 첫 �
         const b = JSON.parse(r.request().postData());
         posts.push(b);
         if (b.token !== 'admin-test-key') return json({ ok: false, error: '관리자 키가 아닙니다' });
+        if (b.type === 'sync' && dropSync) return r.abort();
         if (failNext) return json({ ok: false, error: failNext }, (failNext = null));
+        if (b.type === 'sync') {
+          // 정리는 오래 걸린다
+          return new Promise((ok) => setTimeout(ok, 1500)).then(() => {
+            tasks.push({ id: 'sync1', title: '정리로 생긴 일정', due: day(6), room: '공지방', detail: '' });
+            return json({ ok: true, log: ['새 메시지 12개', '일정 1개 추가'] });
+          });
+        }
         if (b.type === 'add') tasks.push({ id: `n${posts.length}`, title: b.title, due: b.due, room: b.room, detail: b.detail, manual: true });
         else if (b.type === 'edit') Object.assign(tasks.find((t) => t.id === b.id), { title: b.title, due: b.due, room: b.room, detail: b.detail, manual: true });
         else if (b.type === 'delete') tasks.splice(tasks.findIndex((t) => t.id === b.id), 1);
@@ -2410,6 +2419,25 @@ test('디데이: 부총대가 링크(보기 키까지)를 넣으면 학생 첫 �
   await A.page.waitForTimeout(2000);
   assert.doesNotMatch(await A.text(), /그 이후 시험/, '옛 목록으로 돌아가지 않는다');
   slow = 0;
+  // 지금 정리: 1~2분 걸리니 기다리는 동안에도 다른 버튼을 쓸 수 있고, 끝나면 결과와 새 목록
+  await A.page.click('[data-act="dd-sync"]');
+  await A.page.waitForSelector('[data-act="dd-sync"][disabled]:has-text("정리 중")');
+  await A.click('[data-act="dd-new"]');
+  assert.ok(await A.has('#dd-form'), '정리 중에도 다른 버튼이 된다');
+  await A.click('[data-act="dd-cancel"]');
+  await A.page.waitForSelector('.dd-sync-log:has-text("일정 1개 추가")');
+  assert.match(await A.text('.dd-sync-log'), /새 메시지 12개\n?\s*일정 1개 추가/);
+  assert.deepEqual(posts.at(-1), { type: 'sync', token: 'admin-test-key' });
+  await A.page.waitForSelector('.dd-item:has-text("정리로 생긴 일정")');
+  assert.equal(await A.page.textContent('[data-act="dd-sync"]'), '지금 정리');
+  // 실패하면 이유, 응답이 끊기면 계속 진행 중일 수 있다고 안내
+  failNext = '내보내기 폴더가 비어 있습니다';
+  await A.page.click('[data-act="dd-sync"]');
+  await A.page.waitForSelector('.dd-sync-log.warn:has-text("정리 실패: 디데이: 내보내기 폴더가 비어 있습니다")');
+  dropSync = true;
+  await A.page.click('[data-act="dd-sync"]');
+  await A.page.waitForSelector('.dd-sync-log.warn:has-text("응답을 받지 못했어요. 정리는 계속 진행 중일 수 있으니")');
+  dropSync = false;
   await A.fits('디데이 관리');
   assert.equal(await A.page.evaluate(() => JSON.stringify(localStorage).includes('admin-test-key')), false, '관리자 키는 폰에 남기지 않는다');
   // 총대단도 첫 탭에서 바로

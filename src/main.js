@@ -24,7 +24,7 @@ const token = () => getSession()?.token;
 const blankForm = () => ({ date: TODAY, preset: '', item: '', points: 1, detail: '', nums: '', find: '', reason: '', photo: '' });
 const UI = {
   role: 'student', tab: 'board', sid: null, user: null, sort: 'no', q: '',
-  attDate: TODAY, attPid: null, attView: 'list', draft: {}, touched: {}, newPeriod: '', recallPrev: {}, ddForm: null, ddDel: null, attConfirm: false, perDel: null, perEdit: null, perName: '', recalled: {},
+  attDate: TODAY, attPid: null, attView: 'list', draft: {}, touched: {}, newPeriod: '', recallPrev: {}, ddForm: null, ddDel: null, ddSync: null, attConfirm: false, perDel: null, perEdit: null, perName: '', recalled: {},
   recForm: blankForm(), reqForm: blankForm(), exForm: blankForm(), excForm: { no: '', eid: '', reason: '', photo: '' }, reactForm: { no: '', period: '', q: '', a: '' },
   recFilter: '', editId: null, voidId: null, openRev: {}, photos: {},
   noticeFrom: null, noticeTo: null, noticeText: null,
@@ -258,6 +258,7 @@ async function ddayPost(src, api, body) {
     throw new Error('디데이 서버에 닿지 못했어요. 잠시 뒤 다시 해 보세요');
   }
   if (!d || !d.ok) throw new Error(d?.error ? `디데이: ${d.error}` : '디데이에 저장하지 못했어요');
+  return d;
 }
 function ddayLoad(src, force) {
   const admin = src === ddayAdminUrl();
@@ -322,8 +323,9 @@ function vDday() {
     .map(([k, l]) => `<h2>${l} · ${groups[k].length}</h2>${groups[k].sort((a, b) => a.d.end - b.d.end).map(item).join('')}`)
     .join('');
   const adminBar = adm
-    ? `<div class="card dd-admin"><div class="req-top"><b>관리자 모드</b>${UI.ddForm?.id === '' ? '' : '<button class="btn small" data-act="dd-new">＋ 일정 추가</button>'}</div>
-    <p class="hint" style="margin:0">여기서 고치거나 지운 일정은 다음 정리 때도 그대로예요. 학생 화면에도 반영돼요.</p></div>${UI.ddForm?.id === '' ? ddayFormCard(D) : ''}`
+    ? `<div class="card dd-admin"><div class="req-top"><b>관리자 모드</b><div class="btns">${UI.ddForm?.id === '' ? '' : '<button class="btn small" data-act="dd-new">＋ 일정 추가</button>'}<button class="btn ghost small" data-act="dd-sync" ${UI.ddSync?.running ? 'disabled' : ''}>${UI.ddSync?.running ? '정리 중… (1~2분)' : '지금 정리'}</button></div></div>
+    <p class="hint" style="margin:0">여기서 고치거나 지운 일정은 다음 정리 때도 그대로예요. 학생 화면에도 반영돼요. "지금 정리"는 드라이브에 올린 카톡 내보내기 파일을 바로 정리해요 (1~2분 걸려요).</p>
+    ${UI.ddSync?.msg ? `<div class="${UI.ddSync.ok ? 'note' : 'warn'} dd-sync-log">${esc(UI.ddSync.msg)}</div>` : ''}</div>${UI.ddForm?.id === '' ? ddayFormCard(D) : ''}`
     : D.data && UI.role !== 'student' ? '<div class="warn">이 링크의 키로는 일정을 고칠 수 없어요. 관리 탭의 "디데이 관리자 링크"에 관리자 키가 든 주소를 넣어 주세요.</div>' : '';
   return `${head}${D.err ? `<div class="warn">${esc(D.err)}${D.data ? ' (전에 받아 둔 목록을 보여 줘요)' : ''}</div>` : ''}
   ${adminBar}
@@ -1850,6 +1852,28 @@ const A = {
   },
   'att-clear-no': () => {
     UI.attConfirm = false;
+  },
+  // 지금 정리: 1~2분 걸리므로 기다리지 않고(다른 버튼을 막지 않게) 끝나면 결과를 보여 주고 목록을 다시 받는다
+  'dd-sync': () => {
+    const src = ddayAdminUrl();
+    if (UI.ddSync?.running) return;
+    if (!src || !dday?.data?.api) return toast('디데이를 다시 불러온 뒤 해 보세요');
+    const job = { running: true };
+    UI.ddSync = job;
+    ddayPost(src, dday.data.api, { type: 'sync' })
+      .then((d) => Object.assign(job, { ok: true, msg: (Array.isArray(d.log) ? d.log.join('\n') : '') || '정리했어요' }))
+      .catch((e) =>
+        Object.assign(job, {
+          ok: false,
+          msg: /닿지 못했어요/.test(e.message) ? '응답을 받지 못했어요. 정리는 계속 진행 중일 수 있으니 1~2분 뒤 다시 불러와 보세요.' : `정리 실패: ${e.message}`,
+        }),
+      )
+      .finally(() => {
+        job.running = false;
+        if (UI.ddSync !== job) return;
+        if (ddayAdminUrl()) ddayLoad(ddayAdminUrl(), true);
+        if (UI.tab === 'dday') softRender();
+      });
   },
   'dd-new': () => {
     UI.ddDel = null;
