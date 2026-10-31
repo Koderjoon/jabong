@@ -24,7 +24,7 @@ const token = () => getSession()?.token;
 const blankForm = () => ({ date: TODAY, preset: '', item: '', points: 1, detail: '', nums: '', find: '', reason: '', photo: '' });
 const UI = {
   role: 'student', tab: 'board', sid: null, user: null, sort: 'no', q: '',
-  attDate: TODAY, attPid: null, attView: 'list', draft: {}, touched: {}, newPeriod: '', recallPrev: {}, attConfirm: false, perDel: null, perEdit: null, perName: '', recalled: {},
+  attDate: TODAY, attPid: null, attView: 'list', draft: {}, touched: {}, newPeriod: '', recallPrev: {}, ddForm: null, ddDel: null, attConfirm: false, perDel: null, perEdit: null, perName: '', recalled: {},
   recForm: blankForm(), reqForm: blankForm(), exForm: blankForm(), excForm: { no: '', eid: '', reason: '', photo: '' }, reactForm: { no: '', period: '', q: '', a: '' },
   recFilter: '', editId: null, voidId: null, openRev: {}, photos: {},
   noticeFrom: null, noticeTo: null, noticeText: null,
@@ -68,8 +68,12 @@ const TABS = {
 // 출석 권한을 받은 총대단(기본: 실습부장)은 맨 앞에 출석 탭이 생긴다
 const canAttend = () => Boolean(S.accounts.find((a) => a.role === UI.user)?.attend);
 // 학생 화면은 디데이 링크가 있으면 맨 앞(처음 여는 탭)이 디데이다
-const tabsOf = (role) =>
-  role === 'officer' && UI.user && canAttend() ? [['attend', '출석'], ...TABS.officer] : role === 'student' && ddayUrl() ? [['dday', '디데이'], ...TABS.student] : TABS[role];
+// 총대단·부총대는 디데이 관리자 링크가 있으면 맨 앞(처음 여는 탭)이 디데이다 (여기서 바로 추가·수정·삭제)
+const tabsOf = (role) => {
+  if (role === 'student') return ddayUrl() ? [['dday', '디데이'], ...TABS.student] : TABS.student;
+  const base = role === 'officer' && UI.user && canAttend() ? [['attend', '출석'], ...TABS.officer] : TABS[role];
+  return ddayAdminUrl() ? [['dday', '디데이'], ...base] : base;
+};
 const STATUS = { pending: '대기', approved: '승인', rejected: '반려' };
 // 하루 전체 공결 신청은 여러 줄이어도 한 건으로 센다
 const pendingCount = () =>
@@ -220,7 +224,7 @@ function vStoreLink() {
 // 마지막으로 받은 목록은 이 폰에 기억해 두어(jabong-dday) 다음에 열 때 바로 보이고, 뒤에서 새로 받는다.
 // 목록의 칸은 title·due("YYYY-MM-DD" 또는 "YYYY-MM-DD HH:MM")·detail·room만 쓴다. 모르는 칸은 무시한다.
 const ddayUrl = () => (/^https:\/\/[^\s"<>]+[#&]k=[^&\s]+/.test(S?.links?.dday || '') ? S.links.dday : null);
-// 디데이 관리자 링크(관리자 키): 서버가 로그인한 총대단·부총대의 상태에만 싣는다. 새 창에서 디데이 사이트를 관리자 모드로 연다
+// 디데이 관리자 링크(관리자 키): 서버가 로그인한 총대단·부총대의 상태에만 싣는다. 총대단·부총대의 디데이 탭은 이 키로 받아 바로 추가·수정·삭제한다
 const ddayAdminUrl = () => (UI.user && /^https:\/\/[^\s"<>]+[#&]k=[^&\s]+/.test(S?.links?.dday_admin || '') ? S.links.dday_admin : null);
 const DDAY_KEY = 'jabong-dday';
 let dday = null; // { src, data, at, err, loading }
@@ -241,21 +245,37 @@ async function ddayFetch(src) {
   // 디데이 사이트와 같은 방식으로 부른다 (t는 캐시를 피하려는 값)
   const d = await (await fetch(`${api}?k=${encodeURIComponent(key)}&t=${Date.now()}`, { credentials: 'omit' })).json();
   if (!d || !d.ok) throw Object.assign(new Error('디데이 보기 키가 맞지 않아요. 부총대에게 알려 주세요'), { kind: 'key' });
-  // lastSync: 마지막으로 정리한 때 (예전 사이트는 now·lastMessage)
-  return { tasks: Array.isArray(d.tasks) ? d.tasks : [], lastSync: String(d.lastSync || d.now || '') };
+  // lastSync: 마지막으로 정리한 때 (예전 사이트는 now·lastMessage). admin: 관리자 키면 true (추가·수정·삭제 가능), rooms: 분류(단톡방) 목록
+  return { tasks: Array.isArray(d.tasks) ? d.tasks : [], lastSync: String(d.lastSync || d.now || ''), admin: !!d.admin, rooms: Array.isArray(d.rooms) ? d.rooms.map(String) : [], api };
 }
-function ddayLoad(src) {
-  if (dday?.src !== src) dday = { src, ...(ddayCache(src) || {}), err: null, loading: false };
+// 디데이 사이트와 같은 방식으로 고친다: 관리자 키를 token에 넣어 text/plain으로 POST ({type: add|edit|delete, id, title, due, room, detail})
+async function ddayPost(src, api, body) {
+  const token = decodeURIComponent(/[#&]k=([^&]+)/.exec(src)[1]);
+  let d;
+  try {
+    d = await (await fetch(api, { method: 'POST', credentials: 'omit', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ ...body, token }) })).json();
+  } catch {
+    throw new Error('디데이 서버에 닿지 못했어요. 잠시 뒤 다시 해 보세요');
+  }
+  if (!d || !d.ok) throw new Error(d?.error ? `디데이: ${d.error}` : '디데이에 저장하지 못했어요');
+}
+function ddayLoad(src, force) {
+  const admin = src === ddayAdminUrl();
+  if (dday?.src !== src) dday = { src, ...((!admin && ddayCache(src)) || {}), err: null, loading: false };
+  // 고친 뒤에는 바로 다시 받는다 (그 전에 보낸 요청의 결과는 버린다)
+  else if (force) dday = { src, data: dday.data, err: null, loading: false };
   // 1분 안에 받았으면 다시 받지 않는다 (탭을 오갈 때마다 구글을 부르지 않게)
-  if (dday.loading || (dday.at && Date.now() - dday.at < 60000)) return dday;
+  if (dday.loading || (!force && dday.at && Date.now() - dday.at < 60000)) return dday;
   const cur = dday;
   cur.loading = true;
   ddayFetch(src)
     .then((data) => {
       Object.assign(cur, { data, at: Date.now(), err: null });
-      try {
-        localStorage.setItem(DDAY_KEY, JSON.stringify({ src, data, at: cur.at }));
-      } catch {}
+      // 관리자 목록은 폰에 기억하지 않는다 (주소에 관리자 키가 들어 있다)
+      if (!admin)
+        try {
+          localStorage.setItem(DDAY_KEY, JSON.stringify({ src, data, at: cur.at }));
+        } catch {}
     })
     .catch((e) => {
       cur.err = e.kind ? e.message : '디데이를 불러오지 못했어요';
@@ -274,9 +294,11 @@ function ddayDue(s) {
   return { day: new Date(+m[1], m[2] - 1, +m[3]), end: new Date(+m[1], m[2] - 1, +m[3], m[4] ? +m[4] : 23, m[5] ? +m[5] : 59), hm: m[4] ? `${m[4]}:${m[5]}` : '' };
 }
 function vDday() {
-  const src = ddayUrl();
+  // 총대단·부총대는 관리자 키로 (추가·수정·삭제), 학생은 보기 키로
+  const src = UI.role !== 'student' ? ddayAdminUrl() : ddayUrl();
   if (!src) return vBoard();
   const D = ddayLoad(src);
+  const adm = !!D.data?.admin && UI.role !== 'student';
   const open = `<a class="btn ghost small" href="${esc(src)}" target="_blank" rel="noopener noreferrer">원본 사이트 열기 ↗</a>`;
   const head = `<div><h1>디데이</h1><p class="sub">카톡 공지를 AI가 자동으로 정리한 목록입니다. 빠지거나 틀릴 수 있으니 중요한 건 꼭 원문 공지를 확인하세요.</p>${D.data ? `<p class="note">마지막 정리 ${esc(String(D.data.lastSync || '').slice(5) || '-')}</p>` : ''}</div>`;
   if (!D.data) return `${head}${D.err ? `<div class="warn">${esc(D.err)}</div><div class="btns">${open}</div>` : '<p class="boot">불러오는 중…</p>'}`;
@@ -293,15 +315,42 @@ function vDday() {
   const item = ({ t, d, diff }) => `<div class="card dd-item"><div class="dd-when"><div class="dd-md">${d.day.getMonth() + 1}/${d.day.getDate()}</div><div class="note">${WD[d.day.getDay()]}요일</div>
     <div class="dd-d ${diff === 0 ? 'hot' : diff <= 2 ? 'warm' : ''}">${diff === 0 ? 'D-day' : `D-${diff}`}</div></div>
     <div class="dd-body"><b>${esc(t.title)}</b><div class="note">${d.hm ? `<b>${d.hm}</b>${diff === 0 ? ' 까지' : ''}` : '시각 미정 (당일 중)'}</div>
-    ${t.detail ? `<div class="dd-detail">${esc(t.detail)}</div>` : ''}${t.room ? `<span class="pill">${esc(t.room)}</span>` : ''}</div></div>`;
+    ${t.detail ? `<div class="dd-detail">${esc(t.detail)}</div>` : ''}${t.room || (adm && t.manual) ? `<div class="btns">${t.room ? `<span class="pill">${esc(t.room)}</span>` : ''}${adm && t.manual ? '<span class="pill pending">직접 입력</span>' : ''}</div>` : ''}
+    ${adm && t.id != null ? ddayActs(t) : ''}</div></div>${adm && UI.ddForm?.id === String(t.id) ? ddayFormCard(D) : ''}`;
   const list = [['today', '오늘'], ['tomorrow', '내일'], ['week', '7일 이내'], ['later', '그 이후']]
     .filter(([k]) => groups[k].length)
     .map(([k, l]) => `<h2>${l} · ${groups[k].length}</h2>${groups[k].sort((a, b) => a.d.end - b.d.end).map(item).join('')}`)
     .join('');
-  return `${head}${D.err ? `<div class="warn">${esc(D.err)} (전에 받아 둔 목록을 보여 줘요)</div>` : ''}
-  ${vStoreLink()}
+  const adminBar = adm
+    ? `<div class="card dd-admin"><div class="req-top"><b>관리자 모드</b>${UI.ddForm?.id === '' ? '' : '<button class="btn small" data-act="dd-new">＋ 일정 추가</button>'}</div>
+    <p class="hint" style="margin:0">여기서 고치거나 지운 일정은 다음 정리 때도 그대로예요. 학생 화면에도 반영돼요.</p></div>${UI.ddForm?.id === '' ? ddayFormCard(D) : ''}`
+    : D.data && UI.role !== 'student' ? '<div class="warn">이 링크의 키로는 일정을 고칠 수 없어요. 관리 탭의 "디데이 관리자 링크"에 관리자 키가 든 주소를 넣어 주세요.</div>' : '';
+  return `${head}${D.err ? `<div class="warn">${esc(D.err)}${D.data ? ' (전에 받아 둔 목록을 보여 줘요)' : ''}</div>` : ''}
+  ${adminBar}
+  ${UI.role === 'student' ? vStoreLink() : ''}
   ${list || '<p class="empty">다가오는 마감이 없어요.</p>'}
   <div class="btns">${open}</div>`;
+}
+// 일정의 수정·삭제 버튼 (삭제는 한 번 더 묻는다)
+function ddayActs(t) {
+  const id = String(t.id);
+  if (UI.ddDel === id)
+    return `<div class="att-confirm"><span>"${esc(t.title)}" 일정을 지울까요? 다음 정리 때도 다시 나타나지 않아요.</span>
+    <div class="btns"><button class="btn danger small" data-act="dd-del-yes" data-id="${esc(id)}">네, 지우기</button><button class="btn ghost small" data-act="dd-del-no">그만두기</button></div></div>`;
+  return `<div class="btns"><button class="btn ghost small" data-act="dd-edit" data-id="${esc(id)}">수정</button><button class="btn ghost small" data-act="dd-del" data-id="${esc(id)}">삭제</button></div>`;
+}
+// 일정 추가·수정 칸 (UI.ddForm: id가 ''면 새 일정)
+function ddayFormCard(D) {
+  const f = UI.ddForm;
+  const rooms = [...(D.data.rooms || [])];
+  if (f.room && !rooms.includes(f.room)) rooms.push(f.room);
+  return `<div class="card dd-form" id="dd-form"><h2>${f.id ? '일정 수정' : '일정 추가'}</h2>
+  <label class="fld"><span>제목</span><input id="dd-title" maxlength="100" value="${esc(f.title)}" data-bind="ddForm.title" autocomplete="off" placeholder="예: 구강해부학 과제 제출"></label>
+  <div class="row2"><label class="fld grow"><span>날짜</span><input type="date" id="dd-date" value="${esc(f.date)}" data-bind="ddForm.date"></label>
+  <label class="fld grow"><span>시각 (모르면 비워 두기)</span><input type="time" id="dd-time" value="${esc(f.time)}" data-bind="ddForm.time"></label></div>
+  <label class="fld"><span>분류</span><select id="dd-room" data-bind="ddForm.room">${[...rooms, ''].map((r) => `<option value="${esc(r)}" ${f.room === r ? 'selected' : ''}>${r ? esc(r) : '기타'}</option>`).join('')}</select></label>
+  <label class="fld"><span>세부 내용 (선택)</span><textarea id="dd-detail" maxlength="500" data-bind="ddForm.detail">${esc(f.detail)}</textarea></label>
+  <div class="btns"><button class="btn" data-act="dd-save">저장</button><button class="btn ghost" data-act="dd-cancel">취소</button></div></div>`;
 }
 
 // 홈 화면에 앱으로 추가 (manifest.webmanifest). 안드로이드 크롬은 버튼, 아이폰은 Safari 공유 메뉴 안내.
@@ -1029,7 +1078,7 @@ function vManage() {
   <input id="dday-url" type="url" inputmode="url" aria-label="디데이 링크" placeholder="https://koderjoon.github.io/notice-todo/#k=..." value="${esc(S.links?.dday || '')}" autocomplete="off">
   <div class="btns"><button class="btn ghost" data-act="link-save" data-id="dday">링크 저장</button>${ddayUrl() ? `<a class="btn ghost small" href="${esc(ddayUrl())}" target="_blank" rel="noopener noreferrer">열어 보기 ↗</a>` : ''}</div>
   <h2 style="font-size:14px">디데이 관리자 링크</h2>
-  <p class="hint" style="margin:0">관리자 키(#k=…)가 든 주소를 넣으면 <b>로그인한 총대단·부총대</b> 화면 맨 위에 "디데이 관리" 버튼이 생겨요. 누르면 디데이 사이트가 관리자 모드로 열려 추가·수정·삭제할 수 있어요. 학생 화면과 백업 파일에는 들어가지 않아요.</p>
+  <p class="hint" style="margin:0">관리자 키(#k=…)가 든 주소를 넣으면 <b>로그인한 총대단·부총대</b> 화면 첫 탭이 "디데이"가 되고, 거기서 바로 일정을 추가·수정·삭제할 수 있어요. 학생 화면과 백업 파일에는 들어가지 않아요.</p>
   <input id="dday_admin-url" type="url" inputmode="url" aria-label="디데이 관리자 링크" placeholder="https://koderjoon.github.io/notice-todo/#k=..." value="${esc(S.links?.dday_admin || '')}" autocomplete="off">
   <div class="btns"><button class="btn ghost" data-act="link-save" data-id="dday_admin">링크 저장</button></div></div>
 
@@ -1264,8 +1313,7 @@ function render() {
       ? UI.user ? `<div class="who"><b style="color:var(--ink)">${esc(UI.user)}</b>로 로그인됨 · 학생 화면 보는 중</div>` : ''
       : locked
         ? '<div class="mocknote">총대단과 부총대는 자기 직책의 비밀번호로 로그인해요.</div>'
-        : `<div class="who"><b style="color:var(--ink)">${esc(UI.user)}</b>로 로그인됨 ${UI.role === 'officer' ? '<button class="btn ghost small" data-act="pw-open">비밀번호 바꾸기</button> ' : ''}<button class="btn ghost small" data-act="logout">로그아웃</button></div>${
-            ddayAdminUrl() ? `<a class="btn store-btn dday-admin" href="${esc(ddayAdminUrl())}" target="_blank" rel="noopener noreferrer">📅 디데이 관리 (추가·수정·삭제) <span aria-hidden="true">↗</span></a>` : ''}`;
+        : `<div class="who"><b style="color:var(--ink)">${esc(UI.user)}</b>로 로그인됨 ${UI.role === 'officer' ? '<button class="btn ghost small" data-act="pw-open">비밀번호 바꾸기</button> ' : ''}<button class="btn ghost small" data-act="logout">로그아웃</button></div>`;
   const V = { dday: vDday, board: vBoard, excuse: vExcuse, react: vReact, request: vRequest, reqs: vReqs, attend: vAttend, record: vRecord, inbox: vInbox, notice: vNotice, history: vHistory, manage: vManage };
   const codeCard =
     !locked && UI.role === 'admin' && UI.newCode
@@ -1633,7 +1681,7 @@ const A = {
     if (id !== 'store' && url && !/[#&]k=[^&]+/.test(url)) return toast('디데이 링크는 보기 키(#k=…)까지 통째로 붙여넣어 주세요');
     const msg = {
       dday: url ? '디데이 링크를 저장했어요 · 학생 화면 첫 탭이 디데이가 돼요' : '디데이 링크를 지웠어요',
-      dday_admin: url ? '디데이 관리자 링크를 저장했어요 · 총대단·부총대 화면 맨 위에 버튼이 생겼어요' : '디데이 관리자 링크를 지웠어요',
+      dday_admin: url ? '디데이 관리자 링크를 저장했어요 · 총대단·부총대 화면 첫 탭이 디데이가 돼요' : '디데이 관리자 링크를 지웠어요',
       store: url ? '매점 링크를 저장했어요 · 자봉 현황에 버튼이 생겼어요' : '매점 링크를 지웠어요',
     }[id];
     await run('set_link', { p_id: id, p_url: url }, msg);
@@ -1802,6 +1850,49 @@ const A = {
   },
   'att-clear-no': () => {
     UI.attConfirm = false;
+  },
+  'dd-new': () => {
+    UI.ddDel = null;
+    UI.ddForm = { id: '', title: '', date: '', time: '', room: dday?.data?.rooms?.[0] || '', detail: '' };
+  },
+  'dd-edit': (d) => {
+    const t = dday?.data?.tasks.find((x) => String(x.id) === d.id);
+    if (!t) return;
+    const due = ddayDue(t.due);
+    UI.ddDel = null;
+    UI.ddForm = { id: String(t.id), title: t.title || '', date: due ? String(t.due).slice(0, 10) : '', time: due?.hm || '', room: t.room || '', detail: t.detail || '' };
+  },
+  'dd-cancel': () => {
+    UI.ddForm = null;
+  },
+  'dd-save': async () => {
+    const f = UI.ddForm;
+    if (!f) return;
+    if (!f.title.trim() || !f.date) return toast('제목과 날짜는 꼭 입력하세요');
+    const src = ddayAdminUrl();
+    if (!src || !dday?.data?.api) return toast('디데이를 다시 불러온 뒤 해 보세요');
+    await ddayPost(src, dday.data.api, { type: f.id ? 'edit' : 'add', id: f.id, title: f.title.trim(), due: f.date + (f.time ? ` ${f.time}` : ''), room: f.room, detail: f.detail.trim() });
+    const msg = f.id ? '일정을 고쳤어요' : '일정을 추가했어요';
+    UI.ddForm = null;
+    ddayLoad(src, true);
+    render();
+    return toast(msg);
+  },
+  'dd-del': (d) => {
+    UI.ddForm = null;
+    UI.ddDel = d.id;
+  },
+  'dd-del-no': () => {
+    UI.ddDel = null;
+  },
+  'dd-del-yes': async (d) => {
+    const src = ddayAdminUrl();
+    if (!src || !dday?.data?.api) return toast('디데이를 다시 불러온 뒤 해 보세요');
+    await ddayPost(src, dday.data.api, { type: 'delete', id: d.id });
+    UI.ddDel = null;
+    ddayLoad(src, true);
+    render();
+    return toast('일정을 지웠어요');
   },
   'per-hours': async (d) => {
     const per = S.periods.find((p) => p.id === d.id);

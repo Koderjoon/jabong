@@ -2255,26 +2255,45 @@ test('학급 매점 링크: 부총대가 관리 탭에서 넣고(https만)·바�
   await A.toast('[data-act="link-save"]');
 });
 
-test('디데이: 부총대가 링크(보기 키까지)를 넣으면 학생 첫 탭이 디데이, 원본 사이트와 같은 목록, 받아 둔 목록은 끊겨도 보임, 키가 틀리면 안내, 지우면 탭이 사라짐', async () => {
+test('디데이: 부총대가 링크(보기 키까지)를 넣으면 학생 첫 탭이 디데이, 원본 사이트와 같은 목록, 받아 둔 목록은 끊겨도 보임, 키가 틀리면 안내, 총대단·부총대는 첫 탭에서 바로 추가·수정·삭제, 지우면 탭이 사라짐', async () => {
   const SITE = 'https://koderjoon.github.io/notice-todo/';
   const API = 'https://script.google.com/macros/s/TEST/exec';
   const day = (n) => new Date(Date.parse(TODAY + 'T00:00:00Z') + n * 864e5).toISOString().slice(0, 10);
   const tasks = [
-    { title: '지난 과제', due: `${day(-1)} 10:00`, detail: '', room: '' },
-    { title: '그 이후 시험', due: day(20), detail: '범위: 1~3장', room: '해부학', extra: '모르는 칸' },
-    { title: '<b>오늘</b> 마감', due: day(0), detail: '', room: '공지방' },
-    { title: '내일 실습', due: `${day(1)} 09:00`, detail: '', room: '' },
-    { title: '이번 주 퀴즈', due: day(5), detail: '', room: '' },
-    { title: '날짜 없음', due: '', detail: '', room: '' },
+    { id: 't1', title: '지난 과제', due: `${day(-1)} 10:00`, detail: '', room: '' },
+    { id: 't2', title: '그 이후 시험', due: day(20), detail: '범위: 1~3장', room: '해부학', extra: '모르는 칸' },
+    { id: 't3', title: '<b>오늘</b> 마감', due: day(0), detail: '', room: '공지방' },
+    { id: 't4', title: '내일 실습', due: `${day(1)} 09:00`, detail: '', room: '' },
+    { id: 't5', title: '이번 주 퀴즈', due: day(5), detail: '', room: '' },
+    { id: 't6', title: '날짜 없음', due: '', detail: '', room: '' },
   ];
   const calls = { site: 0, api: 0 };
+  // 디데이 사이트(Apps Script)를 흉내: 보기 키는 목록만, 관리자 키는 admin과 분류 목록, POST로 추가·수정·삭제
+  const posts = [];
+  let failNext = null;
+  let slow = 0; // 목록 응답을 늦춘다 (요청한 때의 목록을 늦게 돌려준다)
   const routes = async (ctx, { down = false } = {}) => {
     await ctx.route(`${SITE}**`, (r) => (calls.site++, down ? r.abort() : r.fulfill({ contentType: 'text/html', headers: { 'Access-Control-Allow-Origin': '*' }, body: `<script>\n  var API = '${API}';\n</script>` })));
     await ctx.route(`${API}**`, (r) => {
       calls.api++;
       if (down) return r.abort();
-      const ok = new URL(r.request().url()).searchParams.get('k') === 'jnudent25';
-      return r.fulfill({ contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify(ok ? { ok: true, tasks, rooms: [], lastSync: `${TODAY} 08:00` } : { ok: false }) });
+      const json = (o) => r.fulfill({ contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify(o) });
+      if (r.request().method() === 'POST') {
+        const b = JSON.parse(r.request().postData());
+        posts.push(b);
+        if (b.token !== 'admin-test-key') return json({ ok: false, error: '관리자 키가 아닙니다' });
+        if (failNext) return json({ ok: false, error: failNext }, (failNext = null));
+        if (b.type === 'add') tasks.push({ id: `n${posts.length}`, title: b.title, due: b.due, room: b.room, detail: b.detail, manual: true });
+        else if (b.type === 'edit') Object.assign(tasks.find((t) => t.id === b.id), { title: b.title, due: b.due, room: b.room, detail: b.detail, manual: true });
+        else if (b.type === 'delete') tasks.splice(tasks.findIndex((t) => t.id === b.id), 1);
+        return json({ ok: true });
+      }
+      const k = new URL(r.request().url()).searchParams.get('k');
+      if (k === 'admin-test-key') {
+        const snap = { ok: true, admin: true, tasks: tasks.map((t) => ({ ...t })), rooms: ['해부학', '공지방'], lastSync: `${TODAY} 08:00` };
+        return slow ? new Promise((ok) => setTimeout(ok, slow)).then(() => json(snap)) : json(snap);
+      }
+      return json(k === 'jnudent25' ? { ok: true, tasks, rooms: [], lastSync: `${TODAY} 08:00` } : { ok: false });
     });
   };
   // 부총대: 보기 키 없는 주소는 막는다
@@ -2330,26 +2349,98 @@ test('디데이: 부총대가 링크(보기 키까지)를 넣으면 학생 첫 �
   await W.page.waitForSelector('#view .warn');
   assert.match(await W.text(), /디데이 보기 키가 맞지 않아요/);
   assert.ok(await W.has('a:has-text("원본 사이트 열기")'));
-  // 디데이 관리자 링크: 로그인한 총대단·부총대 화면 맨 위에만 버튼, 학생 화면·공개 상태에는 없다
+  // 디데이 관리자 링크: 로그인한 총대단·부총대는 첫 탭 디데이에서 바로 추가·수정·삭제, 학생 화면·공개 상태에는 없다
+  await routes(A.page.context());
+  await routes(O.page.context());
   await A.page.fill('#dday_admin-url', `${SITE}#k=admin-test-key`);
-  assert.equal(await A.toast('[data-act="link-save"][data-id="dday_admin"]'), '디데이 관리자 링크를 저장했어요 · 총대단·부총대 화면 맨 위에 버튼이 생겼어요');
-  assert.equal(await A.page.getAttribute('#subbar .dday-admin', 'href'), `${SITE}#k=admin-test-key`);
+  assert.equal(await A.toast('[data-act="link-save"][data-id="dday_admin"]'), '디데이 관리자 링크를 저장했어요 · 총대단·부총대 화면 첫 탭이 디데이가 돼요');
+  assert.equal((await A.tabs())[0], '디데이');
+  assert.equal(await A.has('#subbar a'), false, '새 창 버튼은 없다');
+  await A.tab('dday');
+  await A.page.waitForSelector('.dd-admin');
+  assert.match(await A.text(), /관리자 모드[\s\S]*내일 실습[\s\S]*수정[\s\S]*삭제/);
+  assert.equal(await A.has('.store-btn'), false, '총대단 디데이 탭에는 매점 버튼 없음');
+  // 추가: 제목·날짜 검사 → 저장하면 관리자 키로 POST, 목록에 바로
+  await A.click('[data-act="dd-new"]');
+  assert.equal(await A.toast('[data-act="dd-save"]'), '제목과 날짜는 꼭 입력하세요');
+  await A.page.fill('#dd-title', '구강해부학 과제');
+  await A.page.fill('#dd-date', day(3));
+  await A.page.fill('#dd-time', '14:30');
+  await A.page.selectOption('#dd-room', '해부학');
+  await A.page.fill('#dd-detail', '2장까지');
+  assert.equal(await A.toast('[data-act="dd-save"]'), '일정을 추가했어요');
+  assert.deepEqual(posts.at(-1), { type: 'add', id: '', title: '구강해부학 과제', due: `${day(3)} 14:30`, room: '해부학', detail: '2장까지', token: 'admin-test-key' });
+  await A.page.waitForSelector('.dd-item:has-text("구강해부학 과제")');
+  assert.match(await A.text('.dd-item:has-text("구강해부학 과제")'), /14:30[\s\S]*2장까지[\s\S]*해부학[\s\S]*직접 입력/);
+  assert.equal(await A.has('#dd-form'), false, '저장하면 칸이 닫힌다');
+  // 수정: 칸에 지금 값이 들어 있고, 고쳐 저장
+  await A.click('.dd-item:has-text("내일 실습") [data-act="dd-edit"]');
+  assert.equal(await A.page.inputValue('#dd-title'), '내일 실습');
+  assert.equal(await A.page.inputValue('#dd-date'), day(1));
+  assert.equal(await A.page.inputValue('#dd-time'), '09:00');
+  await A.page.fill('#dd-title', '내일 실습 (장소 변경)');
+  await A.page.fill('#dd-time', '');
+  assert.equal(await A.toast('[data-act="dd-save"]'), '일정을 고쳤어요');
+  assert.deepEqual(posts.at(-1), { type: 'edit', id: 't4', title: '내일 실습 (장소 변경)', due: day(1), room: '', detail: '', token: 'admin-test-key' });
+  await A.page.waitForSelector('.dd-item:has-text("내일 실습 (장소 변경)")');
+  // 디데이 쪽에서 거절하면 그 이유를 보여 주고 칸은 남긴다
+  await A.click('.dd-item:has-text("그 이후 시험") [data-act="dd-edit"]');
+  failNext = '잠시 뒤 다시 시도하세요';
+  assert.equal(await A.toast('[data-act="dd-save"]'), '디데이: 잠시 뒤 다시 시도하세요');
+  assert.ok(await A.has('#dd-form'));
+  await A.click('[data-act="dd-cancel"]');
+  // 삭제: 한 번 더 묻고, 그만두기·지우기
+  await A.click('.dd-item:has-text("이번 주 퀴즈") [data-act="dd-del"]');
+  assert.match(await A.text('.dd-item:has-text("이번 주 퀴즈")'), /일정을 지울까요\? 다음 정리 때도 다시 나타나지 않아요/);
+  await A.click('[data-act="dd-del-no"]');
+  assert.equal(await A.has('[data-act="dd-del-yes"]'), false);
+  await A.click('.dd-item:has-text("이번 주 퀴즈") [data-act="dd-del"]');
+  assert.equal(await A.toast('[data-act="dd-del-yes"]'), '일정을 지웠어요');
+  assert.deepEqual(posts.at(-1), { type: 'delete', id: 't5', token: 'admin-test-key' });
+  await A.page.waitForFunction(() => !/이번 주 퀴즈/.test(document.getElementById('view').textContent));
+  // 목록 응답이 느릴 때 연달아 고쳐도, 먼저 보낸 불러오기의 옛 목록이 나중 것을 덮지 않는다
+  slow = 1500;
+  await A.click('[data-act="dd-new"]');
+  await A.page.fill('#dd-title', '빠른 일정');
+  await A.page.fill('#dd-date', day(4));
+  assert.equal(await A.toast('[data-act="dd-save"]'), '일정을 추가했어요');
+  await A.click('.dd-item:has-text("그 이후 시험") [data-act="dd-del"]');
+  assert.equal(await A.toast('[data-act="dd-del-yes"]'), '일정을 지웠어요');
+  await A.page.waitForFunction(() => /빠른 일정/.test(document.getElementById('view').textContent) && !/그 이후 시험/.test(document.getElementById('view').textContent));
+  await A.page.waitForTimeout(2000);
+  assert.doesNotMatch(await A.text(), /그 이후 시험/, '옛 목록으로 돌아가지 않는다');
+  slow = 0;
+  await A.fits('디데이 관리');
+  assert.equal(await A.page.evaluate(() => JSON.stringify(localStorage).includes('admin-test-key')), false, '관리자 키는 폰에 남기지 않는다');
+  // 총대단도 첫 탭에서 바로
   await O.reload();
-  assert.equal(await O.page.getAttribute('#subbar .dday-admin', 'href'), `${SITE}#k=admin-test-key`);
-  await O.tab('reqs');
-  assert.ok(await O.has('#subbar .dday-admin'), '어느 탭에서나');
-  await O.fits('디데이 관리 버튼');
+  assert.equal((await O.tabs())[0], '디데이');
+  await O.page.waitForSelector('.dd-admin');
+  assert.match(await O.text(), /구강해부학 과제/);
+  await O.fits('총대단 디데이');
+  // 학생 화면에는 관리 기능이 없다
   await W.reload();
-  assert.equal(await W.has('.dday-admin'), false);
+  assert.equal(await W.has('.dd-admin'), false);
+  assert.equal(await W.has('[data-act="dd-edit"]'), false);
   const pub = await W.page.evaluate(() => fetch('/rest/v1/rpc/public_state', { method: 'POST' }).then((r) => r.text()));
   assert.ok(pub.includes('"links"') && pub.includes('jnudent25') === false && !pub.includes('admin-test-key'), '학생이 받는 상태에 관리자 키 없음');
   // 지우면 디데이 탭이 사라지고 현황판부터
+  await A.tab('manage');
   await A.page.fill('#dday-url', '');
   assert.equal(await A.toast('[data-act="link-save"][data-id="dday"]'), '디데이 링크를 지웠어요');
   await W.reload();
   assert.deepEqual(await W.tabs(), ['자봉 현황', '공결 신청', '리액션']);
   assert.ok(await W.has('#board-grid'));
   await W.page.context().close();
+  // 관리자 링크도 지우면 총대단·부총대의 디데이 탭이 사라진다
+  await A.tab('manage');
+  await A.page.fill('#dday_admin-url', '');
+  assert.equal(await A.toast('[data-act="link-save"][data-id="dday_admin"]'), '디데이 관리자 링크를 지웠어요');
+  assert.ok(!(await A.tabs()).includes('디데이'));
+  await O.reload();
+  assert.ok(!(await O.tabs()).includes('디데이'));
+  await A.page.context().unrouteAll();
+  await O.page.context().unrouteAll();
 });
 
 test('여러 시간 수업: 지각은 누를 때마다 1점씩, 결석은 2점씩(시간을 넘으면 출석), 시간 바꾸면 넘는 점수만 줄이고, 공지에는 시간과 점수별로, 자주 쓰는 교시에 시간도', async () => {
