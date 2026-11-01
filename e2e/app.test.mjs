@@ -1473,7 +1473,7 @@ test('다른 기기의 변경: 화면으로 돌아오면 새로 불러오고, �
 test('홈 화면 앱: manifest·아이콘, 안드로이드 설치 버튼, 아이폰 안내', async () => {
   const P = await open();
   assert.equal(await P.page.getAttribute('link[rel="manifest"]', 'href'), '/manifest.webmanifest');
-  assert.equal(await P.page.getAttribute('link[rel="apple-touch-icon"]', 'href'), '/icon-180.png?v=2');
+  assert.equal(await P.page.getAttribute('link[rel="apple-touch-icon"]', 'href'), '/icon-180.png?v=3');
   const get = (u) => P.page.request.get(`http://localhost:${PORT}${u}`);
   const m = await (await get('/manifest.webmanifest')).json();
   assert.equal(m.display, 'standalone');
@@ -1483,7 +1483,7 @@ test('홈 화면 앱: manifest·아이콘, 안드로이드 설치 버튼, 아이
   assert.equal(await P.text('.brand'), '전치25');
   assert.equal(m.start_url, '/');
   assert.ok(m.icons.some((i) => i.purpose === 'maskable'));
-  for (const ic of [...m.icons.filter((i) => i.type === 'image/png'), { src: '/icon-180.png?v=2', sizes: '180x180' }]) {
+  for (const ic of [...m.icons.filter((i) => i.type === 'image/png'), { src: '/icon-180.png?v=3', sizes: '180x180' }]) {
     const b = await (await get(ic.src)).body();
     assert.equal(b.toString('latin1', 1, 4), 'PNG', ic.src);
     assert.deepEqual([b.readUInt32BE(16), b.readUInt32BE(20)], ic.sizes.split('x').map(Number), `${ic.src} 크기`);
