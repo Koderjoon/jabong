@@ -744,7 +744,7 @@ test('내보내기: 엑셀 파일(이름·요청자 없음, 시트 3개), 기간
   await A.click('[data-act="exp-range"][data-v="all"]');
   assert.equal(await A.has('#exp-from'), false);
   const file = await A.download('[data-act="exp-make"]');
-  assert.equal((await A.downloads()).at(-1), '25학번_자봉_전체.xlsx');
+  assert.equal((await A.downloads()).at(-1), '전치25_자봉_전체.xlsx');
   const buf = fs.readFileSync(file);
   assert.equal(buf.toString('latin1', 0, 2), 'PK');
   const x = unzip(buf);
@@ -1477,7 +1477,10 @@ test('홈 화면 앱: manifest·아이콘, 안드로이드 설치 버튼, 아이
   const get = (u) => P.page.request.get(`http://localhost:${PORT}${u}`);
   const m = await (await get('/manifest.webmanifest')).json();
   assert.equal(m.display, 'standalone');
-  assert.equal(m.short_name, '자봉');
+  assert.equal(m.short_name, '전치25');
+  assert.equal(m.name, '전치25');
+  assert.equal(await P.page.title(), '전치25');
+  assert.equal(await P.text('.brand'), '전치25');
   assert.equal(m.start_url, '/');
   assert.ok(m.icons.some((i) => i.purpose === 'maskable'));
   for (const ic of [...m.icons.filter((i) => i.type === 'image/png'), { src: '/icon-180.png', sizes: '180x180' }]) {

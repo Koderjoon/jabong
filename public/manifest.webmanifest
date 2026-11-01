@@ -1,7 +1,7 @@
 {
-  "name": "25학번 자봉 장부",
-  "short_name": "자봉",
-  "description": "25학번 자봉·상점 현황과 공결 신청",
+  "name": "전치25",
+  "short_name": "전치25",
+  "description": "전치25 자봉·상점 현황, 공결 신청, 디데이",
   "lang": "ko",
   "start_url": "/",
   "scope": "/",

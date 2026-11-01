@@ -1042,7 +1042,7 @@ function vExport() {
   const e = UI.exp;
   const [from, to, label] = L.expRange(S, e, TODAY);
   const { summary, rows } = L.exportSheets(S, from, to);
-  const fname = `25학번_자봉_${label}.xlsx`;
+  const fname = `전치25_자봉_${label}.xlsx`;
   const R = [['month', '이번 달'], ['last', '지난달'], ['sem', '이번 학기'], ['all', '전체'], ['custom', '직접']];
   return `<div style="height:8px"></div><div><h1>내보내기 파일</h1><p class="sub">월·학기 단위로 엑셀 파일을 만들어 카톡방에 올리면, 앱에 들어오지 않아도 누구나 볼 수 있어요.</p></div>
   <div class="card">
@@ -2205,7 +2205,7 @@ const A = {
       if (e.code === '28000') throw e;
       rxOk = false;
     }
-    await downloadExport(S0, from, to, `25학번_자봉_${label}.xlsx`, rx);
+    await downloadExport(S0, from, to, `전치25_자봉_${label}.xlsx`, rx);
     if (UI.exp.range === 'all' && rxOk) {
       UI.fullBackup = true;
       UI.fullBackupVer = S0.ver;

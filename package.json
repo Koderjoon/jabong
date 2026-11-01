@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "25학번 자봉·상점 장부",
+  "description": "전치25 — 자봉·상점 장부",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
