@@ -297,7 +297,8 @@ export function planCarry(S, text, cut) {
     const pre = mine.filter((e) => cut && e.date <= cut);
     const after = sum(mine.filter((e) => !cut || e.date > cut));
     const n = Number(v);
-    items.push({ sid: st.id, no, name: st.name || '', before: sum(pre), n, del: pre.length, now: sum(mine), next: n + after });
+    // after: 기준 날짜 다음 날부터의 기록 합계. 결과(next) = 엑셀 값 + after (지금 자봉·그전 장부 값은 계산에 쓰지 않는다)
+    items.push({ sid: st.id, no, name: st.name || '', before: sum(pre), n, after, del: pre.length, now: sum(mine), next: n + after });
   });
   items.sort((a, b) => a.no - b.no);
   const missing = S.students.filter((x) => x.active && !seen.has(x.no)).map((x) => x.no).sort((a, b) => a - b);

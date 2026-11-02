@@ -1060,6 +1060,8 @@ function vExport() {
   <button class="btn" data-act="exp-make">엑셀 파일 만들기</button></div>`;
 }
 
+// 기준 날짜의 다음 날 (YYYY-MM-DD, 한국 날짜 그대로)
+const nextDay = (d) => new Date(Date.parse(d + 'T00:00:00Z') + 864e5).toISOString().slice(0, 10);
 // 엑셀 이월로 바꾸기: 기준 날짜까지 붙여넣은 학생의 기록을 지우고 엑셀의 그날 기준 자봉을 이월 한 줄로 (서버 carry_rebase)
 function vRebase() {
   const cut = UI.rbCut || '';
@@ -1069,7 +1071,7 @@ function vRebase() {
   const ready = ok && fresh && UI.rbTyped.trim() === '이월';
   const del = plan ? plan.items.reduce((a, x) => a + x.del, 0) : 0;
   return `<div class="card"><h2>엑셀 이월로 바꾸기</h2>
-  <p class="hint" style="margin:0">엑셀로 관리하던 자봉을 <b>특정 날짜 기준</b>으로 옮길 때 써요. 붙여넣은 학생마다 기준 날짜까지의 기록을 <b>모두 지우고</b>, 엑셀의 그날 자봉을 그 날짜의 <b>"이월" 한 줄</b>로 넣어요. 그 다음 날부터의 기록은 그대로예요. 작업 내역에서 되돌릴 수 있어요.</p>
+  <p class="hint" style="margin:0">엑셀로 관리하던 자봉을 <b>특정 날짜 기준</b>으로 옮길 때 써요. 결과는 <b>엑셀의 그날 자봉 + 다음 날부터 받은 기록</b>이에요 (지금 자봉이나 그전 장부 점수는 상관없어요). 붙여넣은 학생마다 기준 날짜(당일 포함)까지의 기록을 지우고 엑셀 값을 그 날짜의 <b>"이월" 한 줄</b>로 넣고, 다음 날부터의 기록은 그대로 둬요. 작업 내역에서 되돌릴 수 있어요.</p>
   <label class="fld"><span>기준 날짜 (이 날까지가 엑셀 값)</span><input type="date" id="rb-cut" value="${esc(cut)}" data-bind="rbCut" data-region="rb-preview" style="width:auto"></label>
   <textarea id="rb-text" aria-label="번호와 그날 자봉 붙여넣기" data-bind="rbText" data-region="rb-preview" placeholder="번호&#9;자봉&#10;5&#9;15&#10;6&#9;-2" style="min-height:100px;font-family:var(--mono)">${esc(UI.rbText)}</textarea>
   <div id="rb-preview" style="display:flex;flex-direction:column;gap:10px">${
@@ -1078,7 +1080,7 @@ function vRebase() {
       : `${plan.errors.length ? `<div class="warn">${plan.errors.map(esc).join('<br>')}</div>` : ''}
     ${!cut ? '<div class="warn">기준 날짜를 고르세요.</div>' : ''}
     ${plan.items.length && cut ? `<div class="note">${plan.items.length}명 · 지울 기록 ${del}건 → 이월 ${plan.items.filter((x) => x.n !== 0).length}줄${plan.missing.length ? ` · 붙여넣지 않은 ${plan.missing.length}명은 그대로` : ''}</div>
-    <div class="mlist" style="max-height:240px">${plan.items.map((x) => `<div class="mrow"><span class="mono">${x.no}</span><span class="grow">${esc(x.name)}</span><span class="note mono">${md(cut)}까지 ${x.before} → ${x.n} · 지금 ${x.now} → <b>${x.next}</b></span></div>`).join('')}</div>` : ''}
+    <div class="mlist" style="max-height:240px">${plan.items.map((x) => `<div class="mrow"><span class="mono">${x.no}</span><span class="grow">${esc(x.name)}</span><span class="note mono">이월 ${x.n} + ${md(nextDay(cut))}부터 ${x.after < 0 ? `(${x.after})` : x.after} = <b>${x.next}</b></span></div>`).join('')}</div>` : ''}
     ${fresh ? '' : '<div class="warn">지우기 전에 공지 탭 → 내보내기에서 <b>전체</b> 기간 파일을 먼저 받아 두세요 (받은 뒤 장부가 바뀌면 다시).</div>'}
     <input id="rb-typed" aria-label="이월 확인 입력" placeholder="확인하려면 '이월'이라고 입력" value="${esc(UI.rbTyped)}" data-bind="rbTyped" data-region="rb-btn" ${ok && fresh ? '' : 'disabled'}>
     <div id="rb-btn"><button class="btn danger" data-act="rb-apply" ${ready ? '' : 'disabled'}>${ok ? `${plan.items.length}명 ${md(cut)} 기준 이월로 바꾸기` : '이월로 바꾸기'}</button></div>`

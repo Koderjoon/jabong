@@ -2644,7 +2644,9 @@ test('엑셀 이월로 바꾸기(부총대): 기준 날짜까지 붙여넣은 �
   await A.page.fill('#rb-text', `번호\t자봉\n${x.no}\t15\n${y.no}\t0`);
   const pv = await A.text('#rb-preview');
   assert.match(pv, new RegExp(`2명 · 지울 기록 ${nDel}건 → 이월 1줄 · 붙여넣지 않은 \\d+명은 그대로`));
-  assert.match(pv, new RegExp(`2/11까지 ${xBefore} → 15 · 지금 ${xNow} → ${15 + xAfter}`));
+  // 결과 = 엑셀 값 + 다음 날부터의 기록
+  assert.match(pv, new RegExp(`이월 15 \\+ 2/12부터 ${xAfter < 0 ? `\\(${xAfter}\\)` : xAfter} = ${15 + xAfter}`));
+  assert.doesNotMatch(pv, /지금/);
   // 전체 기간 파일을 먼저 받아야 확인 입력이 켜진다
   assert.match(pv, /전체<\/b> 기간 파일을 먼저|전체 기간 파일을 먼저/);
   assert.ok(await A.page.isDisabled('#rb-typed'));

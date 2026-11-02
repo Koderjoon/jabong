@@ -451,11 +451,15 @@ test('엑셀 이월 계획: 그날까지 장부 합계 → 엑셀 값, 지울 �
   S.add('2026-10-28', '매점', '', -1, [6]);
   const p = planCarry(S, '번호\t자봉\n5\t15.0\n6\t-2.50\n\n7 +3', '2026-10-26');
   assert.deepEqual(p.errors, []);
-  assert.deepEqual(p.items.map(({ no, before, n, del, now, next }) => ({ no, before, n, del, now, next })), [
-    { no: 5, before: 3, n: 15, del: 3, now: -1, next: 11 },
-    { no: 6, before: 0, n: -2.5, del: 0, now: -1, next: -3.5 },
-    { no: 7, before: 0, n: 3, del: 0, now: 0, next: 3 },
+  // 결과 = 엑셀 값 + 다음 날부터의 기록 (그전 장부 점수 3과 지금 자봉 -1은 결과와 상관없다)
+  assert.deepEqual(p.items.map(({ no, n, after, del, next }) => ({ no, n, after, del, next })), [
+    { no: 5, n: 15, after: -4, del: 3, next: 11 },
+    { no: 6, n: -2.5, after: -1, del: 0, next: -3.5 },
+    { no: 7, n: 3, after: 0, del: 0, next: 3 },
   ]);
+  // 그전 장부 점수가 달라도 결과는 같다
+  S.add('2026-10-10', '실습', '', 100, [5]);
+  assert.equal(planCarry(S, '5 15', '2026-10-26').items[0].next, 11);
   assert.equal(p.missing.length, 67);
   assert.ok(!p.missing.includes(5));
   const bad = planCarry(S, '5 열다섯\n99 1\n5 1\n6 2\n6 3\n아무말\n8 1.255', '2026-10-26');
