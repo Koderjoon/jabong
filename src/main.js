@@ -332,7 +332,7 @@ function vDday() {
   const D = ddayLoad(src);
   const adm = !!D.data?.admin && UI.role !== 'student';
   const open = `<a class="btn ghost small" href="${esc(src)}" target="_blank" rel="noopener noreferrer">원본 사이트 열기 ↗</a>`;
-  const head = `<div><h1>디데이</h1><p class="sub">카톡 공지를 AI가 자동으로 정리한 목록입니다. 빠지거나 틀릴 수 있으니 중요한 건 꼭 원문 공지를 확인하세요.</p>${D.data ? `<p class="note">마지막 정리 ${esc(String(D.data.lastSync || '').slice(5) || '-')}</p>` : ''}</div>`;
+  const head = `${vInstall()}<div><h1>디데이</h1><p class="sub">카톡 공지를 AI가 자동으로 정리한 목록입니다. 빠지거나 틀릴 수 있으니 중요한 건 꼭 원문 공지를 확인하세요.</p>${D.data ? `<p class="note">마지막 정리 ${esc(String(D.data.lastSync || '').slice(5) || '-')}</p>` : ''}</div>`;
   if (!D.data) return `${head}${D.err ? `<div class="warn">${esc(D.err)}</div><div class="btns">${open}</div>` : '<p class="boot">불러오는 중…</p>'}`;
   // 지난 마감과 날짜가 없는 것은 숨기고 오늘·내일·7일 이내·그 이후로 나눈다 (원본 사이트와 같다)
   const now = new Date();
@@ -386,18 +386,47 @@ function ddayFormCard(D) {
   <div class="btns"><button class="btn" data-act="dd-save">저장</button><button class="btn ghost" data-act="dd-cancel">취소</button></div></div>`;
 }
 
-// 홈 화면에 앱으로 추가 (manifest.webmanifest). 안드로이드 크롬은 버튼, 아이폰은 Safari 공유 메뉴 안내.
+// 홈 화면에 앱으로 추가 (manifest.webmanifest). 안드로이드는 버튼, 아이폰은 Safari 공유 메뉴 안내.
+// 설치한 적이 있으면 이 기기에 기억해 브라우저로 열어도 안내를 숨긴다.
+// 안드로이드는 설치 앱과 브라우저가 저장소를 같이 쓰고, 설치 가능 알림이 다시 오면(지웠으면) 기억을 지운다.
+// 아이폰은 홈 화면 앱과 Safari 저장소가 따로라 알 수 없어서 "이미 추가했어요"로 직접 숨긴다.
+const INSTALLED_KEY = 'jabong-installed';
+const standalone = () => window.matchMedia?.('(display-mode: standalone)').matches || navigator.standalone === true;
+function setInstalled(on) {
+  try {
+    if (on) localStorage.setItem(INSTALLED_KEY, '1');
+    else localStorage.removeItem(INSTALLED_KEY);
+  } catch {
+    // 저장소를 못 쓰면 기억하지 않는다
+  }
+}
+function installedMark() {
+  try {
+    return localStorage.getItem(INSTALLED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+if (standalone()) setInstalled(true);
 let installEvt = null;
 window.addEventListener('beforeinstallprompt', (e) => {
   e.preventDefault();
   installEvt = e;
+  setInstalled(false);
   if (loaded) softRender();
 });
-const standalone = () => window.matchMedia?.('(display-mode: standalone)').matches || navigator.standalone === true;
+window.addEventListener('appinstalled', () => {
+  installEvt = null;
+  setInstalled(true);
+  if (loaded) softRender();
+});
+// 설치를 돕는 최소 서비스 워커 (public/sw.js). 아무것도 저장하지 않아 화면은 늘 최신이다.
+if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
 function vInstall() {
   if (standalone()) return '';
   if (installEvt) return '<button class="btn ghost small" data-act="install" style="align-self:flex-start">홈 화면에 앱으로 추가</button>';
-  if (/iPhone|iPad|iPod/.test(navigator.userAgent)) return '<p class="hint" style="margin:0">Safari 아래쪽 공유 버튼 → "홈 화면에 추가"를 누르면 앱처럼 쓸 수 있어요.</p>';
+  if (/iPhone|iPad|iPod/.test(navigator.userAgent) && !installedMark())
+    return '<div class="install-hint"><p class="hint" style="margin:0">Safari 아래쪽 공유 버튼 → "홈 화면에 추가"를 누르면 앱처럼 쓸 수 있어요.</p><button class="btn ghost small" data-act="install-hide">이미 추가했어요</button></div>';
   return '';
 }
 
@@ -2398,6 +2427,10 @@ const A = {
       e.prompt();
       await e.userChoice;
     }
+  },
+  'install-hide': () => {
+    setInstalled(true);
+    toast('안내를 숨겼어요 · 이 폰에만 기억해요');
   },
   'myno-clear': () => {
     setMyNo(null);

@@ -1502,11 +1502,49 @@ test('홈 화면 앱: manifest·아이콘, 안드로이드 설치 버튼, 아이
   await P.click('[data-act="install"]');
   assert.equal(await P.page.evaluate(() => window.__prompted), true);
   assert.equal(await P.has('[data-act="install"]'), false);
+  // 설치를 마치면 이 기기에 기억하고, 다시 설치할 수 있다고 알려 오면(앱을 지웠으면) 잊는다
+  const mark = () => P.page.evaluate(() => localStorage.getItem('jabong-installed'));
+  assert.equal(await mark(), null);
+  await P.page.evaluate(() => window.dispatchEvent(new Event('appinstalled')));
+  assert.equal(await mark(), '1');
+  await P.page.evaluate(() => window.dispatchEvent(Object.assign(new Event('beforeinstallprompt', { cancelable: true }), { prompt() {}, userChoice: Promise.resolve({}) })));
+  assert.equal(await mark(), null);
+  await P.page.waitForSelector('[data-act="install"]');
+  await P.page.evaluate(() => window.dispatchEvent(new Event('appinstalled')));
+  await P.page.waitForSelector('[data-act="install"]', { state: 'detached' });
+  // 설치를 돕는 서비스 워커가 등록되고, 페이지 이동만 거쳐 가며 아무것도 캐시하지 않는다
+  const sw = await (await get('/sw.js')).text();
+  assert.match(sw, /addEventListener\('fetch'/);
+  assert.doesNotMatch(sw, /caches\./);
+  assert.equal(await P.page.evaluate(() => navigator.serviceWorker.ready.then((r) => !!r.active)), true);
+  await P.page.reload();
+  await P.page.waitForFunction(() => !document.querySelector('#view .boot'));
+  assert.equal(await P.page.evaluate(() => !!navigator.serviceWorker.controller), true, '새로 열면 서비스 워커를 거쳐 온다');
   await P.page.context().close();
-  // 아이폰 Safari: 공유 메뉴 안내
-  const I = await open({ userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1' });
+  // 인터넷이 끊기면 서비스 워커가 안내 화면을 보여 준다
+  const O = await open();
+  await O.page.evaluate(() => navigator.serviceWorker.ready);
+  await O.page.reload();
+  await O.page.context().setOffline(true);
+  await O.page.reload().catch(() => {});
+  assert.match(await O.page.textContent('body'), /인터넷에 연결되지 않았어요/);
+  await O.page.context().close();
+  // 아이폰 Safari: 공유 메뉴 안내. 이미 추가했으면 눌러서 숨기고, 다시 열어도 숨겨져 있다
+  const IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
+  const I = await open({ userAgent: IPHONE });
   assert.match(await I.text(), /공유 버튼 → "홈 화면에 추가"/);
+  await I.fits('아이폰 안내');
+  assert.equal(await I.toast('[data-act="install-hide"]'), '안내를 숨겼어요 · 이 폰에만 기억해요');
+  assert.doesNotMatch(await I.text(), /홈 화면에 추가/);
+  await I.page.reload();
+  await I.page.waitForFunction(() => !document.querySelector('#view .boot'));
+  assert.doesNotMatch(await I.text(), /홈 화면에 추가/);
   await I.page.context().close();
+  // 홈 화면 앱으로 열면 안내를 보이지 않는다
+  const H = await open({ userAgent: IPHONE, beforeGoto: (ctx) => ctx.addInitScript(() => Object.defineProperty(navigator, 'standalone', { get: () => true })) });
+  assert.doesNotMatch(await H.text(), /홈 화면에 추가/);
+  assert.equal(await H.page.evaluate(() => localStorage.getItem('jabong-installed')), '1');
+  await H.page.context().close();
 });
 
 test('자봉 면제: 관리에서 지정·해제, 면제 학생은 자봉이 빠지고 상점만, 총대단 현황판·기록·출석에만 "면제" 표시', async () => {
@@ -2330,6 +2368,15 @@ test('디데이: 부총대가 링크(보기 키까지)를 넣으면 학생 첫 �
   assert.match(v, /시각 미정 \(당일 중\)/);
   assert.equal(await P.page.getAttribute('a:has-text("원본 사이트 열기")', 'href'), `${SITE}#k=jnudent25`);
   await P.fits('디데이');
+  // 첫 화면이 디데이여도 설치 버튼이 맨 위에 보인다
+  await P.page.evaluate(() => {
+    const e = new Event('beforeinstallprompt', { cancelable: true });
+    e.prompt = () => {};
+    e.userChoice = Promise.resolve({ outcome: 'dismissed' });
+    window.dispatchEvent(e);
+  });
+  await P.page.waitForSelector('[data-act="install"]');
+  assert.ok(await P.page.$eval('[data-act="install"]', (b) => b.getBoundingClientRect().top < document.querySelector('.dd-item').getBoundingClientRect().top), '디데이 목록 위쪽에');
   // 탭을 오가도 1분 안에는 다시 받지 않는다
   const n = calls.api;
   await P.tab('board');
