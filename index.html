@@ -74,7 +74,7 @@ h2{font-size:15px;margin:0}
 
 .toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .toolbar input[type=search]{flex:1;min-width:120px}
-input[type=text],input[type=search],input[type=number],input[type=date],input:not([type]),select,textarea{width:100%;padding:9px 11px;border-radius:10px;border:1px solid var(--line);background:var(--surface)}
+input[type=text],input[type=search],input[type=number],input[type=date],input[type=password],input:not([type]),select,textarea{width:100%;padding:9px 11px;border-radius:10px;border:1px solid var(--line);background:var(--surface)}
 textarea{resize:vertical;min-height:70px}
 
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(62px,1fr));gap:6px}
@@ -91,6 +91,12 @@ textarea{resize:vertical;min-height:70px}
 .row2{display:flex;gap:8px}.row2 .grow{flex:1}.pts-fld{width:92px}
 .hint{font-size:12px;color:var(--muted);margin:-4px 0 0}
 .rx-who{display:flex;align-items:baseline;gap:8px}.rx-name{font-size:18px}
+.pwbox{position:relative;display:block;min-width:0}
+.pwbox>input{color:transparent;-webkit-text-fill-color:transparent;caret-color:transparent}
+.pwbox>input::placeholder{color:var(--muted);-webkit-text-fill-color:var(--muted)}
+.pwdots{position:absolute;top:0;bottom:0;left:12px;right:12px;display:flex;align-items:center;pointer-events:none;overflow:hidden;white-space:nowrap;font-size:10px;letter-spacing:2px;color:var(--ink)}
+.pwbox:focus-within .pwdots::after{content:'';flex:none;width:1.5px;height:18px;margin-left:1px;background:var(--accent);animation:pwblink 1s steps(1) infinite}
+@keyframes pwblink{50%{opacity:0}}
 .install-hint{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .g-nums{display:flex;gap:28px;align-items:flex-end}.g-nums>div{display:flex;flex-direction:column;gap:2px}.g-nums b{font-size:20px;font-variant-numeric:tabular-nums}.g-nums .g-score{font-size:30px;color:var(--accent,#1d5d8a)}
 .g-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--line,#e3e8e7)}.g-row:first-of-type{border-top:0}

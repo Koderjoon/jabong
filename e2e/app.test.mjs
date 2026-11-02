@@ -2958,6 +2958,16 @@ test('성적: 총대가 붙여넣어 올리기(검사·미리보기), 학생은 
   assert.match(await P.text(), /처음 비밀번호는 내 이름이에요/);
   await P.fits('성적 로그인');
   await P.page.fill('#g-no', String(a.no));
+  // 비밀번호 ●는 자판 누른 횟수(자모)만큼: 고준희 → 8개, 글자는 투명해 안 보인다
+  await P.page.fill('#g-pw', '고준희');
+  assert.equal(await P.text('#g-pw + .pwdots'), '●'.repeat(8));
+  assert.equal(await P.page.$eval('#g-pw', (e) => getComputedStyle(e).webkitTextFillColor), 'rgba(0, 0, 0, 0)');
+  await P.page.fill('#g-pw', '');
+  assert.equal(await P.text('#g-pw + .pwdots'), '');
+  // 자동 채우기처럼 이벤트 없이 값만 바뀌어도 곧 맞춰진다
+  await P.page.$eval('#g-pw', (e) => (e.value = 'ab1'));
+  await P.page.waitForFunction(() => document.querySelector('#g-pw + .pwdots').textContent === '●●●');
+  await P.page.screenshot({ path: process.env.SHOT_DIR ? `${process.env.SHOT_DIR}/pw.png` : '/dev/null' }).catch(() => {});
   await P.page.fill('#g-pw', '아무개');
   assert.equal(await P.toast('[data-act="g-login"]'), '비밀번호가 맞지 않아요');
   await P.page.fill('#g-pw', a.name);

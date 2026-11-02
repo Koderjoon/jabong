@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { genNotice, planRoster, planReactAdj, exportReactions, rosterOps, parseNums, expRange, exportSheets, bal, dupNums, excusable, suggestItems, suggestDetails, suggestPeriods, suggestTexts, reasonEvents, nameMatch, planCarry, planGrades } from '../src/logic.js';
+import { genNotice, planRoster, planReactAdj, exportReactions, rosterOps, parseNums, expRange, exportSheets, bal, dupNums, excusable, suggestItems, suggestDetails, suggestPeriods, suggestTexts, reasonEvents, nameMatch, planCarry, planGrades, pwLen } from '../src/logic.js';
 
 // 학생 70명과 기록을 만드는 도우미
 function state() {
@@ -491,4 +491,19 @@ test('시험 성적 붙여넣기: 번호 점수 또는 번호 이름 점수, 이
   ]);
   assert.deepEqual(bad.items.map((x) => x.no), [6]);
   assert.equal(planGrades(S, '').avg, null);
+});
+
+test('비밀번호 ● 개수: 한글은 자판 누른 횟수(자모)로', () => {
+  assert.equal(pwLen('고준희'), 8);
+  assert.equal(pwLen('홍길동'), 9);
+  assert.equal(pwLen('곽'), 4); // ㄱ ㅗ ㅏ ㄱ
+  assert.equal(pwLen('닭'), 4); // ㄷ ㅏ ㄹ ㄱ
+  assert.equal(pwLen('까'), 2); // Shift+ㄱ ㅏ
+  assert.equal(pwLen('ㄱ'), 1);
+  assert.equal(pwLen('ㅢ'), 2);
+  assert.equal(pwLen('abc12!'), 6);
+  assert.equal(pwLen('김a1'), 5);
+  assert.equal(pwLen(''), 0);
+  assert.equal(pwLen(null), 0);
+  assert.equal(pwLen('😀'), 1);
 });

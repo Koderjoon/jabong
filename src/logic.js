@@ -563,3 +563,21 @@ export function planGrades(S, text) {
   const missing = S.students.filter((x) => x.active && !seen.has(x.no)).map((x) => x.no).sort((a, b) => a - b);
   return { items, errors: [...new Set(errors)], blank: blank.sort((a, b) => a - b), missing, avg };
 }
+
+// 비밀번호 칸의 ● 개수: 한글은 자판을 누른 횟수(자모)로 센다. "고준희" → ㄱㅗㅈㅜㄴㅎㅡㅣ = 8.
+// 겹모음(ㅘㅙㅚㅝㅞㅟㅢ)·겹받침(ㄳㄵㄶㄺㄻㄼㄽㄾㄿㅀㅄ)은 두 번, 된소리(ㄲ 등)는 Shift로 한 번 누르므로 한 번이다.
+const CV = new Set([9, 10, 11, 14, 15, 16, 19]); // 중성 번호
+const CT = new Set([3, 5, 6, 9, 10, 11, 12, 13, 14, 15, 18]); // 종성 번호
+const CJ = new Set([...'ㄳㄵㄶㄺㄻㄼㄽㄾㄿㅀㅄㅘㅙㅚㅝㅞㅟㅢ']);
+export function pwLen(s) {
+  let n = 0;
+  for (const ch of String(s || '')) {
+    const c = ch.codePointAt(0) - 0xac00;
+    if (c >= 0 && c < 11172) {
+      const v = Math.floor((c % 588) / 28);
+      const t = c % 28;
+      n += 1 + (CV.has(v) ? 2 : 1) + (t ? (CT.has(t) ? 2 : 1) : 0);
+    } else n += CJ.has(ch) ? 2 : 1;
+  }
+  return n;
+}

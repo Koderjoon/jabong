@@ -1651,6 +1651,37 @@ document.addEventListener('compositionend', (ev) => {
   else if (el.dataset.rerender) rerenderKeep(el);
 });
 
+// 비밀번호 칸: 브라우저의 ●는 한글 한 글자("고")를 하나로 보여 줘서, 자판을 누른 횟수(자모)만큼 ●를 따로 그린다 (L.pwLen).
+// 칸은 그대로 type=password라 키보드가 입력을 기억하지 않는다. 글자·커서만 투명하게 하고 위에 ●와 깜빡이는 커서를 겹친다.
+function pwSync(el) {
+  const d = el.nextElementSibling;
+  if (!d?.classList.contains('pwdots')) return;
+  const n = String(L.pwLen(el.value));
+  if (d.dataset.n !== n) {
+    d.dataset.n = n;
+    d.textContent = '●'.repeat(Number(n));
+  }
+}
+function pwEnhance(root) {
+  root?.querySelectorAll?.('input[type=password]:not([data-pwm])').forEach((el) => {
+    el.dataset.pwm = '1';
+    const box = document.createElement('span');
+    box.className = el.classList.contains('grow') ? 'pwbox grow' : 'pwbox';
+    el.before(box);
+    box.append(el);
+    const dots = document.createElement('span');
+    dots.className = 'pwdots';
+    dots.setAttribute('aria-hidden', 'true');
+    box.append(dots);
+    pwSync(el);
+  });
+}
+new MutationObserver((ms) => ms.forEach((m) => m.addedNodes.forEach((x) => x.nodeType === 1 && pwEnhance(x.parentNode)))).observe(document.body, { childList: true, subtree: true });
+for (const t of ['input', 'change', 'focusin', 'compositionupdate', 'compositionend']) document.addEventListener(t, (ev) => ev.target?.dataset?.pwm && pwSync(ev.target));
+// 저장된 비밀번호 자동 채우기는 이벤트 없이 값만 바뀔 수 있다
+setInterval(() => document.querySelectorAll('input[data-pwm]').forEach(pwSync), 700);
+pwEnhance(document);
+
 // 사진은 긴 변 720px JPEG로 줄여서 보낸다 (약 50~100KB)
 document.addEventListener('change', (ev) => {
   const el = ev.target;
