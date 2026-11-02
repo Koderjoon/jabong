@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { genNotice, planRoster, planReactAdj, exportReactions, rosterOps, parseNums, expRange, exportSheets, bal, dupNums, excusable, suggestItems, suggestDetails, suggestPeriods, suggestTexts, reasonEvents, nameMatch, planCarry, planGrades, pwLen } from '../src/logic.js';
+import { genNotice, planRoster, planReactAdj, exportReactions, rosterOps, parseNums, expRange, exportSheets, bal, dupNums, excusable, suggestItems, suggestDetails, suggestPeriods, suggestTexts, reasonEvents, nameMatch, planCarry, planGrades, pwLen, sumPts, addPts, sgn, fmtVal } from '../src/logic.js';
 
 // 학생 70명과 기록을 만드는 도우미
 function state() {
@@ -463,7 +463,7 @@ test('엑셀 이월 계획: 그날까지 장부 합계 → 엑셀 값, 지울 �
   assert.equal(p.missing.length, 67);
   assert.ok(!p.missing.includes(5));
   const bad = planCarry(S, '5 열다섯\n99 1\n5 1\n6 2\n6 3\n아무말\n8 1.255', '2026-10-26');
-  assert.deepEqual(bad.errors, ['1번째 줄 "5 열다섯": 자봉은 숫자여야 해요 (예: 15, -2, 0.5)', '99번은 명단에 없어요', '6번이 두 번 있어요', '6번째 줄 "아무말": 번호와 자봉을 적어 주세요', '7번째 줄 "8 1.255": 자봉은 숫자여야 해요 (예: 15, -2, 0.5)']);
+  assert.deepEqual(bad.errors, ['1번째 줄 "5 열다섯": 자봉은 0.5점 단위 숫자여야 해요 (예: 15, -2, 0.5)', '99번은 명단에 없어요', '6번이 두 번 있어요', '6번째 줄 "아무말": 번호와 자봉을 적어 주세요', '7번째 줄 "8 1.255": 자봉은 0.5점 단위 숫자여야 해요 (예: 15, -2, 0.5)']);
 });
 
 test('시험 성적 붙여넣기: 번호 점수 또는 번호 이름 점수, 이름이 다르면 막고, 빈 점수는 빼고, 평균', () => {
@@ -506,4 +506,126 @@ test('비밀번호 ● 개수: 한글은 자판 누른 횟수(자모)로', () =>
   assert.equal(pwLen(''), 0);
   assert.equal(pwLen(null), 0);
   assert.equal(pwLen('😀'), 1);
+});
+
+test('소수 둘째 자리 점수: 1.15·4.35처럼 부동소수점으로 어긋나는 값도 받고, 합은 오차 없이', () => {
+  const S = state();
+  // 0.00 ~ 99.99 전부 받는다 (예전에는 1.15 * 100 = 114.99999999999999라서 13%를 거절했다)
+  for (let c = 0; c <= 9999; c++) {
+    const t = (c / 100).toFixed(2);
+    const g = planGrades(S, `1 ${t}`);
+    assert.deepEqual(g.errors, [], t);
+    assert.equal(g.items[0].score, Number(t));
+    // 이월은 장부처럼 0.5점 단위만 (1.15·2.55는 서버 장부가 담지 못한다)
+    assert.equal(planCarry(S, `1 -${t}`, '2026-10-26').errors.length, c % 50 === 0 ? 0 : 1, `-${t}`);
+  }
+  // 앞의 0, 뒤의 0은 괜찮고 셋째 자리부터는 거절
+  assert.equal(planGrades(S, '1 0090').items[0].score, 90);
+  assert.equal(planGrades(S, '1 008639.120').items[0].score, 8639.12);
+  assert.equal(planGrades(S, '1 10000').errors.length, 1);
+  assert.equal(planGrades(S, '1 1.155').errors.length, 1);
+  assert.equal(planCarry(S, '1 0015', '2026-10-26').items[0].n, 15);
+  assert.equal(planCarry(S, '1 2.50', '2026-10-26').items[0].n, 2.5);
+  assert.equal(planCarry(S, '1 1.155', '2026-10-26').errors.length, 1);
+  assert.deepEqual(planCarry(S, '1 1.15', '2026-10-26').errors, ['1번째 줄 "1 1.15": 자봉은 0.5점 단위 숫자여야 해요 (예: 15, -2, 0.5)']);
+  // 합: 1.15 + (-4) = -2.85 (그냥 더하면 -2.8499999999999996), 0.1 + 0.2 = 0.3
+  S.add('2026-10-28', '매점', '', -4, [1]);
+  S.add('2026-10-29', '이월', '', 0.1, [1]);
+  S.add('2026-10-29', '이월', '', 0.2, [1]);
+  const c = planCarry(S, '1 1.5', '2026-10-26').items[0];
+  assert.deepEqual([c.n, c.after, c.next], [1.5, -3.7, -2.2]);
+  assert.equal(bal(S, 's1'), -3.7);
+  assert.equal(sumPts([{ points: 0.1 }, { points: 0.2 }]), 0.3);
+  assert.equal(addPts(1.15, -4), -2.85);
+  const sm = exportSheets(S, '2026-10-29', '2026-10-31').summary[0];
+  assert.deepEqual([sm.start, sm.change, sm.end, sm.now], [-4, 0.3, -3.7, -3.7]);
+  // 평균은 서버의 round(avg, 2)와 같게: (0.1 + 0.2) / 2 = 0.15, 82.745 → 82.75
+  assert.equal(planGrades(S, '1 0.1\n2 0.2').avg, 0.15);
+  assert.equal(planGrades(S, '1 82.74\n2 82.75').avg, 82.75);
+});
+
+test('경계값 모음 (돌연변이 검사에서 비어 있던 곳)', () => {
+  const S = state();
+  // 내보내기: 기간 마지막 날의 기록도 요약 변동·날짜별 내역에 들어간다
+  S.add('2026-09-30', '실습', '', 2, [1]);
+  S.add('2026-10-01', '실습', '', 5, [1]);
+  const ex = exportSheets(S, '2026-09-01', '2026-09-30');
+  assert.deepEqual([ex.summary[0].change, ex.rows.length], [2, 1]);
+  // 학기: 8월은 1학기, 2월은 2학기
+  assert.deepEqual(expRange(S, { range: 'sem' }, '2026-08-31'), ['2026-03-01', '2026-08-31', '2026-1학기']);
+  assert.deepEqual(expRange(S, { range: 'sem' }, '2027-02-10'), ['2026-09-01', '2027-02-28', '2026-2학기']);
+  assert.deepEqual(expRange(S, { range: 'sem' }, '2026-03-01'), ['2026-03-01', '2026-08-31', '2026-1학기']);
+  // 엑셀 이월: 공백만 있는 줄은 빈 줄처럼 넘어간다
+  assert.deepEqual(planCarry(S, '1 5\n   \n\t\n2 3', '2026-10-26').errors, []);
+  // 성적: 번호만 있는 줄은 점수 없음 (번호를 점수로 읽지 않는다)
+  const g = planGrades(S, '9\n10 80');
+  assert.deepEqual([g.blank, g.items.map((x) => [x.no, x.score])], [[9], [[10, 80]]]);
+  // '가'(한글 음절의 맨 처음 글자)도 자모로 나눈다
+  assert.equal(pwLen('가'), 2);
+  assert.equal(pwLen('힣'), 3); // ㅎ ㅣ ㅎ (U+D7A3, 한글 음절의 맨 끝 글자)
+  assert.ok(nameMatch('가윤', 'ㄱ') && nameMatch('가윤', '갸') === false && nameMatch('가윤', '가ㅇ'));
+  // 점수 표시: 0은 부호 없이
+  assert.deepEqual([sgn(0), sgn(2), sgn(-1.5)], ['0', '+2', '-1.5']);
+  // 같은 날 같은 항목 확인: 항목명이 비어 있으면 빈 목록
+  assert.deepEqual(dupNums(S, { nums: '1 2', item: '  ', date: '2026-09-30' }), []);
+});
+
+test('명단 붙여넣기: 전체 명단 모드에서 이름 없는 학생·번호 맞바꾸기·겹침', () => {
+  const S = state();
+  // 이름 없는 학생도 붙여넣지 않으면 제외 대상
+  S.students[69].name = '';
+  const text = S.students.slice(0, 69).map((s) => `${s.no}\t${s.name}`).join('\n');
+  const p = planRoster(S, text, true);
+  assert.deepEqual(p.changes.map((c) => [c.kind, c.from, c.name]), [['remove', 70, '(이름 없음)']]);
+  // 두 학생의 번호를 맞바꾸면 겹침 오류가 없다 (전체 명단·일부 둘 다)
+  const swap = S.students.slice(0, 70).map((s) => `${s.no === 1 ? 2 : s.no === 2 ? 1 : s.no}\t${s.name}`).join('\n');
+  const q = planRoster(S, swap, true);
+  assert.deepEqual(q.errors, []);
+  assert.deepEqual(q.changes.map((c) => [c.kind, c.name, c.from, c.no]), [['renum', '학생1', 1, 2], ['renum', '학생2', 2, 1]]);
+  assert.deepEqual(planRoster(S, '2\t학생1\n1\t학생2', false).errors, []);
+  // 일부만 붙여넣어 남의 번호로 옮기면 겹침 (그 번호의 학생은 그대로라서)
+  assert.match(planRoster(S, '2\t학생1', false).errors[0], /2번이 두 명\(학생2, 학생1\)에게 겹쳐요/);
+  // 전체 명단에서 빠진 학생의 번호는 새 학생이 써도 된다
+  const r = planRoster(S, S.students.slice(1, 69).map((s) => `${s.no}\t${s.name}`).join('\n') + '\n1\t새학생', true);
+  assert.deepEqual(r.errors, []);
+  assert.deepEqual(r.changes.map((c) => c.kind).sort(), ['add', 'remove', 'remove']);
+  // 같은 이름·같은 번호로 다시 붙여넣은 학생은 변경 없음 (겹침 검사에서 자기 자신과 겹치지 않는다)
+  assert.deepEqual(planRoster(S, '3\t학생3\n4\t학생4', false), { changes: [], adjs: [], errors: [], same: 2 });
+});
+
+test('경계값 모음 2: 수정 이력 표시, 직접 고른 기간, 기간 마지막 날의 이월·수정 이력, 이월 미리보기 이름', () => {
+  const S = state();
+  // 수정 이력: 비어 있으면 "없음", 있으면 그 글자, 점수는 부호
+  assert.deepEqual([fmtVal('detail', ''), fmtVal('detail', '전원 안 끔'), fmtVal('points', 2), fmtVal('date', '2026-09-30')], ['없음', '전원 안 끔', '+2', '9/30']);
+  // 직접 고른 기간
+  assert.deepEqual(expRange(S, { range: 'custom', from: '2026-09-01', to: '2026-09-15' }, '2026-10-01'), ['2026-09-01', '2026-09-15', '2026-09-01~2026-09-15']);
+  assert.deepEqual(expRange(S, { range: 'custom', from: '', to: '' }, '2026-10-01'), ['2026-10-01', '2026-10-01', '2026-10-01~2026-10-01']);
+  // 기간 마지막 날의 보관 이월은 기간 시작 점수로, 그날의 수정 이력도 시트에 들어간다
+  S.add('2026-09-30', '이월', '9/30까지 합계', 7, [1], { src: 'carry' });
+  S.add('2026-09-30', '실습', '', 1, [2], { revs: [{ at: '2026-10-01 09:00', before: { points: 2 }, after: { points: 1 }, reason: '착오' }] });
+  const ex = exportSheets(S, '2026-09-01', '2026-09-30');
+  assert.deepEqual([ex.summary[0].start, ex.summary[0].change], [7, 0]);
+  assert.deepEqual(ex.revisions.map((r) => [r.date, r.no, r.change, r.reason]), [['2026-09-30', 2, '점수: +2 → +1', '착오']]);
+  // 이월 미리보기에 그 학생 이름
+  assert.equal(planCarry(S, '3 5', '2026-10-26').items[0].name, '학생3');
+});
+
+test('경계값 모음 3: 기간 첫날, 명단 제외 작업, 빈 공지, 번호 없는 줄, 앞에 쉼표', () => {
+  const S = state();
+  // 내보내기: 기간 첫날의 기록도 날짜별 내역에 들어간다
+  S.add('2026-09-01', '실습', '', 1, [1]);
+  S.add('2026-08-31', '실습', '', 1, [1]);
+  assert.deepEqual(exportSheets(S, '2026-09-01', '2026-09-30').rows.map((r) => r.date), ['2026-09-01']);
+  // 명단 적용 작업: 제외는 remove로, 번호 바꾸기는 그 번호로, 추가는 이름과 번호로
+  const plan = planRoster(S, S.students.slice(1, 70).map((x) => `${x.no === 2 ? 71 : x.no}\t${x.name}`).join('\n') + '\n72\t새학생', true);
+  const ops = rosterOps(plan).ops;
+  assert.deepEqual(ops.filter((o) => o.op === 'remove'), [{ op: 'remove', id: 's1' }]);
+  assert.deepEqual(ops.filter((o) => o.op !== 'remove').map((o) => [o.op, o.no]).sort(), [['add', 72], ['renum', 71]]);
+  // 공지: 기간에 기록이 없으면 안내 문구
+  assert.equal(genNotice(state(), '2026-09-01', '2026-09-02'), '해당 기간에 기록이 없어요.');
+  // 명단: 이름만 있고 번호가 없는 줄은 조용히 넘기지 않고 알린다 (머리줄만 넘긴다)
+  assert.match(planRoster(S, '새학생', false).errors[0], /번호와 이름이 모두 있어야 해요/);
+  assert.deepEqual(planRoster(S, '번호\t이름', false).errors, []);
+  // 학생 찾기: 앞뒤 쉼표·공백이 있어도
+  assert.deepEqual(parseNums(S, ' ,1, 2 ,'), { sids: ['s1', 's2'], bad: [] });
 });

@@ -482,6 +482,11 @@ select history_move(:'t', 0, true) is not null;
 set role postgres;
 select pg_temp.ok(pg_temp.nops() = :n0 and (select version from app_version) = :v0, '읽기·미리보기는 작업도 변경 알림도 없음');
 set role anon;
+select history_move(:'t', 0, true) as pv0 \gset
+set role postgres;
+select pg_temp.ok(json_array_length(:'pv0'::json -> 'students') > 0 and not exists (select 1 from json_array_elements(:'pv0'::json -> 'students') x
+  join students st on st.no = (x ->> 'no')::int and st.active where (x ->> 'before')::numeric is distinct from pg_temp.bal(st.id)), '미리보기의 지금 자봉 = 실제 자봉');
+set role anon;
 select pg_temp.expect(format('select add_entries(%L, %L, array[%L]::uuid[], %L, %L, 0)', :'t', '2026-03-05', :'s1', 'x', ''), 'P0001', '실패한 기록');
 select pg_temp.expect(format('select roster_apply(%L, %L, %L, %L)', :'t', '[{"op":"add","name":"겹침","no":1}]', '[]', '2026-03-05'), 'P0001', '실패한 명단');
 set role postgres;
@@ -574,6 +579,7 @@ select add_entries(:'t', '2026-03-01', array[:'s6']::uuid[], '매점', '', -1);
 set role postgres;
 select string_agg(id || ':' || pg_temp.bal(id), ',' order by id) as bals, (select count(*) from ledger where date > '2026-03-04') as later from students \gset
 select (select count(*) from requests where status = 'pending') as pend \gset
+select coalesce(string_agg(photo_id::text, ',' order by photo_id), '') as keep_ph from requests where status = 'pending' and photo_id is not null \gset
 set role anon;
 select purge(:'t', '2026-03-04')::json as pr \gset
 set role postgres;
@@ -586,6 +592,7 @@ select pg_temp.ok((:'pr'::json ->> 'carry')::int = (select count(*) from ledger 
 select pg_temp.ok(not exists (select 1 from periods where date <= '2026-03-04') and not exists (select 1 from attendance_requests) and not exists (select 1 from excuses where ledger_id is null), '옛 교시·출석 요청·연결 끊긴 공결 삭제');
 select pg_temp.ok((select count(*) from requests where status = 'pending') = :pend and not exists (select 1 from requests where status <> 'pending' and date <= '2026-03-04'), '처리된 옛 요청만 삭제');
 select pg_temp.ok(not exists (select 1 from photos p where not exists (select 1 from requests where photo_id = p.id) and not exists (select 1 from excuses where photo_id = p.id)), '쓰이지 않는 사진 삭제');
+select pg_temp.ok(:'keep_ph' <> '' and (select coalesce(string_agg(photo_id::text, ',' order by photo_id), '') from requests where status = 'pending' and photo_id is not null) = :'keep_ph', '대기 중 요청의 사진은 남음');
 select pg_temp.ok((select count(*) from ops) = 1 and (select kind = 'purge' and not undoable and actor = '부총대' from ops), '정리 뒤 작업 내역은 정리 한 줄');
 set role anon;
 select purge(:'t', '2026-03-04');
@@ -1414,13 +1421,26 @@ set role anon;
 select void_entry(:'t', :'rv', '착오');
 select edit_entry(:'t', :'re', '2026-01-10', '이월 시험 전', '', 3.5, '고침');
 select create_excuse(:'ra', :'rx', '병원', null) as rxx \gset
+-- 바꾸지 않는 학생(rc)의 공결 신청은 그대로 남아야 한다
+select add_entries(:'t', '2026-01-12', array[:'rc']::uuid[], '결석', '다른 학생 결석', 2);
+set role postgres;
+select id as rcl from ledger where detail = '다른 학생 결석' \gset
+set role anon;
+select create_excuse(:'rc', :'rcl', '병원', null) as rcx \gset
+-- 기준 날짜까지에 대기 중인 요청이 있으면 막는다
+select create_request(:'ot', '2026-01-14', array[:'rb']::uuid[], '실습', '', 1, '', null) as rbreq \gset
+select pg_temp.expect_msg(format('select carry_rebase(%L, %L, %L)', :'t', '2026-01-15', format('[{"sid":"%s","n":1}]', :'rb')), '기준 날짜까지에 아직 처리하지 않은%', '대기 중 요청');
+select review_request(:'t', :'rbreq', false, null);
 -- 검사: 권한·날짜·숫자·중복·명단·대기 중 공결
 select pg_temp.expect(format('select carry_rebase(%L, %L, %L)', :'ot', '2026-01-15', format('[{"sid":"%s","n":1}]', :'ra')), '42501', '총대단은 못 함');
 select pg_temp.expect_msg(format('select carry_rebase(%L, %L, %L)', :'t', '2999-01-01', format('[{"sid":"%s","n":1}]', :'ra')), '기준 날짜는 오늘이나 그 전이어야 해요', '앞날');
 select pg_temp.expect_msg(format('select carry_rebase(%L, %L, %L)', :'t', '2026-01-15', '[]'), '바꿀 학생이 없어요', '빈 목록');
-select pg_temp.expect_msg(format('select carry_rebase(%L, %L, %L)', :'t', '2026-01-15', format('[{"sid":"%s","n":"열"}]', :'ra')), '이월 자봉은 숫자여야 해요%', '숫자 아님');
+select pg_temp.expect_msg(format('select carry_rebase(%L, %L, %L)', :'t', '2026-01-15', format('[{"sid":"%s","n":"열"}]', :'ra')), '이월 자봉은 0.5점 단위 숫자여야 해요%', '숫자 아님');
 select pg_temp.expect_msg(format('select carry_rebase(%L, %L, %L)', :'t', '2026-01-15', format('[{"sid":"%s","n":1},{"sid":"%s","n":2}]', :'ra', :'ra')), '%번이 두 번 있어요', '두 번');
-select pg_temp.expect_msg(format('select carry_rebase(%L, %L, %L)', :'t', '2026-01-15', format('[{"sid":"%s","n":1.255}]', :'ra')), '이월 자봉은 숫자여야 해요%', '소수 셋째 자리');
+select pg_temp.expect_msg(format('select carry_rebase(%L, %L, %L)', :'t', '2026-01-15', format('[{"sid":"%s","n":1.255}]', :'ra')), '이월 자봉은 0.5점 단위 숫자여야 해요%', '소수 셋째 자리');
+-- 장부는 0.5점 단위만 담는다: 1.15·7.25는 한국어로 거절 (예전에는 받아서 영어 제약 오류로 실패했다)
+select pg_temp.expect_msg(format('select carry_rebase(%L, %L, %L)', :'t', '2026-01-15', format('[{"sid":"%s","n":1.15}]', :'ra')), '이월 자봉은 0.5점 단위 숫자여야 해요%', '0.5점 단위 아님 1.15');
+select pg_temp.expect_msg(format('select carry_rebase(%L, %L, %L)', :'t', '2026-01-15', format('[{"sid":"%s","n":7.25}]', :'ra')), '이월 자봉은 0.5점 단위 숫자여야 해요%', '0.5점 단위 아님 7.25');
 select pg_temp.expect_msg(format('select carry_rebase(%L, %L, %L)', :'t', '2026-01-15', format('[{"sid":"%s","n":1}]', gen_random_uuid())), '명단에 없는 학생이 있어요', '없는 학생');
 select pg_temp.expect_msg(format('select carry_rebase(%L, %L, %L)', :'t', '2026-01-15', format('[{"sid":"%s","n":15}]', :'ra')), '기준 날짜까지에 아직 처리하지 않은%', '대기 중 공결');
 select review_excuse(:'t', :'rxx', true, null);
@@ -1444,6 +1464,7 @@ select pg_temp.ok((select points from ledger where student_id = :'ra' and item =
 select pg_temp.ok(not exists (select 1 from ledger where student_id = :'rb' and date between '2026-01-01' and '2026-01-15'), '0이면 이월 줄 없이 지우기만');
 select pg_temp.ok((select count(*) from ledger where student_id = :'rc' and item like '이월 시험%') = 2, '붙여넣지 않은 학생은 그대로');
 select pg_temp.ok(not exists (select 1 from excuses where id = :'rxx') and not exists (select 1 from ledger_revisions where ledger_id = :'re'), '지운 기록의 공결 신청·수정 이력도');
+select pg_temp.ok(exists (select 1 from excuses where id = :'rcx' and status = 'pending'), '다른 학생의 공결 신청은 그대로');
 select pg_temp.ok((select ledger_private.created_by from ledger join ledger_private on ledger_private.ledger_id = ledger.id where student_id = :'ra' and src = 'carry' and date = '2026-01-15') = '부총대', '이월 기록자');
 -- 되돌리기·다시 살리기
 select max(id) as rbop from ops \gset
@@ -1459,7 +1480,10 @@ set role anon;
 select history_restore(:'t', :rbop, false);
 set role postgres;
 select pg_temp.ok((select sum(points) from ledger where student_id = :'ra' and voided_at is null and date between '2026-01-01' and '2026-01-31') = 12, '다시 살리면 다시 이월');
--- 면제 학생도 +이월은 들어간다
+-- 면제 학생도 +이월은 들어간다 (rc의 대기 중 공결은 먼저 처리)
+set role anon;
+select review_excuse(:'t', :'rcx', false, '확인');
+set role postgres;
 update students set exempt = true where id = :'rc';
 set role anon;
 select carry_rebase(:'t', '2026-01-15', format('[{"sid":"%s","n":7.5}]', :'rc')::jsonb);
@@ -1535,10 +1559,10 @@ select student_login(:gano, '홍 길동') as la2 \gset
 select (:'la2'::json ->> 'token') as sa2 \gset
 select student_change_pw(:'sa', null, 'pass1234');
 select pg_temp.expect(format('select my_grades(%L)', :'sa2'), 'P0401', '바꾸면 다른 기기(이름으로 들어온 사람)는 끊김');
-select pg_temp.ok(student_login(:gano, '홍길동')::json ->> 'error' = '비밀번호가 맞지 않아요', '바꾼 뒤에는 이름으로 못 들어감');
+select pg_temp.ok(student_login(:gano, '홍길동')::json ->> 'error' like '이미 새 비밀번호를 정한 번호예요%', '바꾼 뒤에는 이름으로 못 들어감 (따로 안내)');
 select pg_temp.ok(not (student_login(:gano, 'pass1234')::json ->> 'initial')::boolean, '새 비밀번호로 들어감');
 select my_grades(:'sa') as mg \gset
-select pg_temp.ok(json_array_length(:'mg'::json -> 'exams') = 1 and (:'mg'::json -> 'exams' -> 0 ->> 'title') = '성적시험XQ 중간'
+select pg_temp.ok((:'mg'::json ->> 'initial') = 'false' and json_array_length(:'mg'::json -> 'exams') = 1 and (:'mg'::json -> 'exams' -> 0 ->> 'title') = '성적시험XQ 중간'
   and (:'mg'::json -> 'exams' -> 0 ->> 'score')::numeric = 90 and (:'mg'::json -> 'exams' -> 0 ->> 'avg')::numeric = 55.17
   and :'mg'::json -> 'exams' -> 0 ->> 'until' is not null, '내 성적: 내 점수와 평균만, 내 점수가 없는 시험은 안 보임');
 select pg_temp.ok(:'mg'::text not like '%75.5%' and :'mg'::text not like '%' || :'gb' || '%', '다른 학생 점수·id는 없음');
@@ -1590,6 +1614,59 @@ select restore_backup(:'gat', backup_dump());
 select pg_temp.ok(student_login(:gcno, 'young1234')::json ->> 'token' is not null, '백업에서 되살려도 학생 비밀번호는 그대로');
 select student_logout(:'sc');
 select pg_temp.expect(format('select my_grades(%L)', :'sc'), 'P0401', '로그아웃하면 끊김');
+-- 이름 비교: 줄바꿈 없는 공백(U+00A0)·폭 없는 공백·전각 공백·자모가 풀린(NFD) 이름도 같은 이름으로
+set role postgres;
+update students set name = '홍' || chr(160) || '길' || chr(8203) || '동' where id = :'ga';
+update students set name = normalize('김철수', NFD) where id = :'gb';
+update students set name = '이' || chr(12288) || '영희' where id = :'gc';
+delete from student_pw where student_id in (:'ga', :'gb', :'gc');
+set role anon;
+select pg_temp.ok(student_login(:gano, '홍 길동') ->> 'token' is not null and student_login(:gbno, '김철수') ->> 'token' is not null and student_login(:gcno, '이영희') ->> 'token' is not null, '보이지 않는 공백·풀린 자모가 섞인 이름도 처음 비밀번호로');
+select pg_temp.expect_msg(format('select student_change_pw(%L, null, %L)', (student_login(:gano, '홍길동') ->> 'token'), '홍' || chr(160) || '길동'), '이름이 아닌 다른 비밀번호로 정해 주세요', '이름 검사도 같은 규칙');
+-- 처음 비밀번호 로그인은 하루, 비밀번호를 정하면 그 로그인은 30일
+select (student_login(:gano, '홍길동') ->> 'token') as gi \gset
+set role postgres;
+select pg_temp.ok((select expires_at between now() + interval '23 hours' and now() + interval '25 hours' from student_sessions where token = :'gi'), '처음 비밀번호 로그인은 하루');
+set role anon;
+select student_change_pw(:'gi', null, 'hong5678');
+set role postgres;
+select pg_temp.ok((select expires_at > now() + interval '29 days' from student_sessions where token = :'gi'), '새 비밀번호를 정하면 그 로그인은 30일');
+set role anon;
+-- 이미 정한 번호에 이름을 넣으면 따로 안내 (누가 먼저 정했으면 학생이 알 수 있게)
+select pg_temp.ok(student_login(:gano, '홍길동') ->> 'error' like '이미 새 비밀번호를 정한 번호예요%', '이미 정한 번호에 이름');
+select pg_temp.ok(student_login(:gano, '아무개') ->> 'error' = '비밀번호가 맞지 않아요', '다른 글자는 그냥 틀림');
+-- 비밀번호 저장(bcrypt)은 앞 72바이트만 보므로 더 긴 비밀번호는 거절 (한글 24자 = 72바이트는 됨)
+select pg_temp.expect_msg(format('select student_change_pw(%L, %L, %L)', :'gi', 'hong5678', repeat('y', 73)), '새 비밀번호가 너무 길어요%', '73바이트');
+select pg_temp.expect_msg(format('select student_change_pw(%L, %L, %L)', :'gi', 'hong5678', repeat('가', 25)), '새 비밀번호가 너무 길어요%', '한글 25자');
+select student_change_pw(:'gi', 'hong5678', repeat('나', 24));
+select pg_temp.ok(student_login(:gano, repeat('나', 24)) ->> 'token' is not null and student_login(:gano, repeat('나', 24) || 'x') ->> 'error' = '비밀번호가 맞지 않아요', '한글 24자 비밀번호');
+select student_change_pw(:'gi', repeat('나', 24), 'hong5678');
+select (login('정리부장', '1234') ->> 'token') as lt2 \gset
+select pg_temp.expect_msg(format('select change_pw(%L, %L, %L)', :'lt2', '1234', repeat('z', 73)), '새 비밀번호가 너무 길어요%', '직책 비밀번호도 72바이트까지');
+select pg_temp.expect_msg(format('select reset_pw(%L, %L, %L)', :'gat', '총무', repeat('z', 73)), '새 비밀번호가 너무 길어요%', '재설정도 72바이트까지');
+-- 학생마다 로그인은 최근 5개까지
+select count(student_login(:gbno, '김철수')) from generate_series(1, 12);
+set role postgres;
+select pg_temp.ok((select count(*) from student_sessions where student_id = :'gb') = 5, '로그인을 많이 만들어도 학생마다 5개까지');
+set role anon;
+-- 점수가 있는 학생이 3명 미만이면 학생에게 평균을 숨긴다 (2명이면 평균으로 상대 점수를 알 수 있다)
+select grade_upload(:'gt', '두 명', format('[{"sid":"%s","score":81.37},{"sid":"%s","score":62.5}]', :'ga', :'gb')::jsonb);
+select grade_upload(:'gt', '세 명', format('[{"sid":"%s","score":80},{"sid":"%s","score":70},{"sid":"%s","score":60}]', :'ga', :'gb', :'gc')::jsonb);
+select my_grades((student_login(:gano, 'hong5678') ->> 'token')::uuid) as mg2 \gset
+select pg_temp.ok((select e ->> 'avg' from json_array_elements(:'mg2'::json -> 'exams') e where e ->> 'title' = '두 명') is null
+  and (select (e ->> 'avg')::numeric from json_array_elements(:'mg2'::json -> 'exams') e where e ->> 'title' = '세 명') = 70, '2명이면 평균 숨김, 3명이면 보임');
+select pg_temp.ok((select (e ->> 'avg')::numeric from json_array_elements(grade_admin(:'gt') -> 'exams') e where e ->> 'title' = '두 명') = 71.94, '총대에게는 평균이 보임');
+-- 화면이 본 번호와 지금 번호가 다르면(그사이 명단이 바뀜) 올리지 않는다, 번호가 없으면 예전처럼
+select pg_temp.expect_msg(format('select grade_upload(%L, %L, %L)', :'gt', '번호 다름', format('[{"sid":"%s","no":%s,"score":1}]', :'ga', :gano + 1000)), '명단이 바뀌었어요. 새로 불러온 뒤 다시 올려 주세요', '번호가 바뀐 학생');
+select pg_temp.ok((grade_upload(:'gt', '번호 같음', format('[{"sid":"%s","no":%s,"score":1}]', :'ga', :gano)::jsonb) ->> 'n')::int = 1, '번호가 같으면 올림');
+-- 총대 화면에 비밀번호를 바꾼 시각
+select pg_temp.ok((select x ->> 'changedAt' from json_array_elements(grade_admin(:'gt') -> 'pw') x where x ->> 'sid' = :'ga') ~ '^\d{4}-\d\d-\d\d \d\d:\d\d$'
+  and (select x ->> 'changedAt' from json_array_elements(grade_admin(:'gt') -> 'pw') x where x ->> 'sid' = :'gb') is null, '바꾼 시각 (안 바꾼 학생은 없음)');
+set role postgres;
+update students set name = '홍길동' where id = :'ga';
+update students set name = '김철수' where id = :'gb';
+update students set name = '이영희' where id = :'gc';
+set role anon;
 -- 이름이 비어 있는 학생은 빈 비밀번호로 못 들어감, 만료된 로그인은 끊김
 set role postgres;
 update students set name = '' where id = :'gb';
@@ -1605,5 +1682,19 @@ select pg_temp.expect(format('select my_grades(%L)', :'gx'), 'P0401', '만료된
 set role postgres;
 select pg_temp.ok((select expires_at > now() + interval '29 days' from student_sessions where token = (select token from student_sessions where student_id = :'gc' order by expires_at desc limit 1)) is not false, '학생 로그인은 30일');
 \echo 28. 시험 성적 통과
+
+-- ───────── 29. 그사이 지워진 학생 ─────────
+-- 다른 기기에서 명단 추가를 되돌려 학생이 지워졌거나 빠졌는데 화면이 예전 명단으로 보내면, 영어 제약 오류 대신 새로 불러오라는 안내
+set role anon;
+select pg_temp.expect_msg(format('select add_entries(%L, current_date, array[%L]::uuid[], %L, %L, 1)', :'t', gen_random_uuid(), '실습', ''), '명단에 없는 학생이 있어요. 새로 불러온 뒤 다시 해 보세요', '없는 학생에게 기록');
+select pg_temp.expect_msg(format('select create_request(%L, current_date, array[%L]::uuid[], %L, %L, 1, %L, null)', :'ot', gen_random_uuid(), '실습', '', ''), '명단에 없는 학생이 있어요. 새로 불러온 뒤 다시 해 보세요', '없는 학생 요청');
+set role postgres;
+select id as gone from students where active order by no desc limit 1 \gset
+update students set active = false where id = :'gone';
+set role anon;
+select pg_temp.expect_msg(format('select create_request(%L, current_date, array[%L]::uuid[], %L, %L, 1, %L, null)', :'ot', :'gone', '실습', '', ''), '명단에 없는 학생이 있어요%', '제외된 학생 요청');
+set role postgres;
+update students set active = true where id = :'gone';
+\echo 29. 그사이 지워진 학생 통과
 
 \echo 모든 서버 함수 테스트 통과

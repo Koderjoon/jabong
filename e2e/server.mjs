@@ -20,6 +20,9 @@ export function startServer({ port, dist, database }) {
     if (m) {
       let body = '';
       for await (const c of req) body += c;
+      // E2E_LATENCY=300 이면 요청마다 0~300ms를 무작위로 늦춘다 (느리고 들쭉날쭉한 폰 네트워크: 응답 순서가 뒤바뀌어도 화면이 맞는지)
+      const lat = Number(process.env.E2E_LATENCY || 0);
+      if (lat) await new Promise((r) => setTimeout(r, Math.random() * lat));
       const args = body ? JSON.parse(body) : {};
       const keys = Object.keys(args);
       // uuid[] 인자(p_sids, p_ids)는 Postgres 배열로, 나머지 객체·배열은 jsonb로 넘긴다

@@ -683,7 +683,7 @@ function excText(g, pts) {
       : mixed && g.find((x) => x.eid === e.id)?.status === 'rejected' ? ' <b class="warnc">(반려)</b>' : '';
   if (!es.length) return '';
   if (g[0].grp) {
-    const sum = es.reduce((a, e) => a + Number(e.points), 0);
+    const sum = L.sumPts(es);
     return `${mdw(es[0].date)} <b>하루 전체</b> · ${es.map((e) => `${esc(periodLabel(e))} ${e.item}${gone(e)}`).join(', ')}${pts ? ` (${sgn(sum)})` : ''}`;
   }
   return `${mdw(es[0].date)} ${esc(periodLabel(es[0]))} ${es[0].item}${pts ? ` ${sgn(es[0].points)}` : ''}${gone(es[0])}`;
@@ -849,10 +849,17 @@ function myGrades(force) {
 }
 // 학생 화면에서 성적 함수를 부른다. 로그인이 끊겼으면 이 폰의 성적 로그인을 지운다.
 async function gradeRpc(fn, args) {
+  if (!UI.gs) {
+    render();
+    throw new Error('성적 로그인이 끊겼어요. 다시 로그인해 주세요');
+  }
   try {
-    return await rpc(fn, { p_token: UI.gs?.token, ...args });
+    return await rpc(fn, { p_token: UI.gs.token, ...args });
   } catch (e) {
-    if (e.code === 'P0401') setGs(null);
+    if (e.code === 'P0401') {
+      setGs(null);
+      render();
+    }
     throw e;
   }
 }
@@ -865,7 +872,7 @@ function vGrade() {
     <label class="fld"><span>내 번호</span><input id="g-no" inputmode="numeric" value="${esc(f.no || (UI.myNo ? String(UI.myNo) : ''))}" data-bind="gLogin.no" placeholder="예: 56" autocomplete="off"></label>
     <label class="fld"><span>비밀번호</span><input type="password" id="g-pw" value="${esc(f.pw)}" data-bind="gLogin.pw" autocomplete="current-password"></label>
     <button class="btn" data-act="g-login">성적 보기</button>
-    <p class="hint" style="margin:0">처음 비밀번호는 <b>내 이름</b>이에요 (예: 홍길동). 처음 들어오면 새 비밀번호로 바꿔야 성적이 보여요. 비밀번호를 잊었으면 총대에게 초기화를 부탁하세요.</p></div>`;
+    <p class="hint" style="margin:0">처음 비밀번호는 <b>내 이름</b>이에요 (예: 홍길동). 한글이 안 쳐지면 칸 오른쪽 <b>보기</b>를 누르고 쳐 보세요. 처음 들어오면 새 비밀번호로 바꿔야 성적이 보여요. 비밀번호를 잊었으면 총대에게 초기화를 부탁하세요.</p></div>`;
   }
   const G = myGrades();
   const D = G?.data;
@@ -879,7 +886,7 @@ function vGrade() {
     <input type="password" id="g-n2" placeholder="새 비밀번호 확인" value="${esc(p.n2)}" data-bind="gPw.n2" autocomplete="new-password">
     <div class="btns"><button class="btn" data-act="g-setpw">비밀번호 정하고 성적 보기</button>${out}</div></div>`;
   const list = D.exams || [];
-  return `${head}<div class="req-top"><b>${D.no}번 성적</b><div class="btns"><button class="btn ghost small" data-act="g-reload">새로고침</button><button class="btn ghost small" data-act="g-pw-open">비밀번호 바꾸기</button>${out}</div></div>
+  return `${head}<div class="g-head"><b>${D.no}번 성적</b><div class="btns"><button class="btn ghost small" data-act="g-reload">새로고침</button><button class="btn ghost small" data-act="g-pw-open">비밀번호 바꾸기</button>${out}</div></div>
   ${G.err ? `<div class="warn">새로 불러오지 못했어요 (아래는 지난 것). ${esc(G.err)}</div>` : ''}
   ${p.open ? `<div class="card" id="g-chpw"><h2>비밀번호 바꾸기</h2>
     <input type="password" id="g-cur" placeholder="현재 비밀번호" value="${esc(p.cur)}" data-bind="gPw.cur" autocomplete="current-password">
@@ -887,22 +894,27 @@ function vGrade() {
     <input type="password" id="g-n2" placeholder="새 비밀번호 확인" value="${esc(p.n2)}" data-bind="gPw.n2" autocomplete="new-password">
     <div class="btns"><button class="btn" data-act="g-chpw">바꾸기</button><button class="btn ghost" data-act="g-pw-close">그만두기</button></div></div>` : ''}
   <div id="g-list">${list.map((e) => `<div class="card g-exam"><div class="req-top"><b>${esc(e.title)}</b><span class="note">${esc(md(e.at.slice(0, 10)))} 올림</span></div>
-    <div class="g-nums"><div><span class="note">내 점수</span><b class="g-score">${num(e.score)}</b></div><div><span class="note">평균</span><b>${num(e.avg)}</b></div></div>
+    <div class="g-nums"><div><span class="note">내 점수</span><b class="g-score">${num(e.score)}</b></div><div><span class="note">평균</span>${e.avg == null ? '<span class="note g-noavg">3명 미만이라 숨겨요</span>' : `<b>${num(e.avg)}</b>`}</div></div>
     <p class="note" style="margin:0">${esc(md(e.until.slice(0, 10)))}에 사라져요</p></div>`).join('') || '<p class="empty">지금 볼 수 있는 성적이 없어요.</p>'}</div>`;
 }
 
 // 총대: 성적 올리기·지우기, 학생 비밀번호 상태와 초기화. 올린 점수는 다시 받아 오지 않는다(인원·평균만).
-let gAdm = null; // { key, data, err, loading }
+let gAdm = null; // { key, at, data, err, loading }
 function gradeAdmin(force) {
   const key = token();
-  if (!force && gAdm && gAdm.key === key) return gAdm;
-  const want = { key, data: gAdm?.key === key ? gAdm.data : null, err: null, loading: true };
+  // 학생이 비밀번호를 바꾸거나 잠기는 것은 변경 알림이 없으니, 30초 지나면 다시 받는다 (새로고침 버튼도 있다)
+  if (!force && gAdm && gAdm.key === key && (gAdm.loading || Date.now() - gAdm.at < 30000)) return gAdm;
+  const want = { key, at: Date.now(), data: gAdm?.key === key ? gAdm.data : null, err: null, loading: true };
   gAdm = want;
   rpc('grade_admin', { p_token: key })
     .then((d) => (want.data = d))
-    .catch((e) => (want.err = e.message || '불러오지 못했어요'))
+    .catch((e) => {
+      if (e.code === '28000') signOut(e.message);
+      else want.err = e.message || '불러오지 못했어요';
+    })
     .finally(() => {
       want.loading = false;
+      want.at = Date.now();
       if (gAdm === want && UI.tab === 'grades') softRender();
     });
   return want;
@@ -918,20 +930,20 @@ function vGrades() {
   const shown = q ? pw.filter((x) => String(x.s.no).startsWith(q) || L.nameMatch(x.s.name, q)) : pw;
   return `<div><h1>성적</h1><p class="sub">학생은 번호와 비밀번호로 들어와 <b>자기 점수와 평균만</b> 봐요. 올린 성적은 <b>10일 뒤 자동으로 지워지고</b>, 백업·작업 내역에도 남지 않아요.</p></div>
   <div class="card"><h2>성적 올리기</h2>
-  <label class="fld"><span>시험 이름</span><input id="g-title" maxlength="60" value="${esc(u.title)}" data-bind="gUp.title" data-region="g-btn" placeholder="예: 구강해부학 중간고사" autocomplete="off"></label>
-  <textarea id="g-text" aria-label="번호와 점수 붙여넣기" data-bind="gUp.text" data-region="g-preview" placeholder="번호&#9;점수&#10;1&#9;90&#10;2&#9;75.5" style="min-height:110px;font-family:var(--mono)">${esc(u.text)}</textarea>
+  <label class="fld"><span>시험 이름</span><input id="g-title" maxlength="60" value="${esc(u.title)}" data-bind="gUp.title" data-region="g-pv" placeholder="예: 구강해부학 중간고사" autocomplete="off"></label>
+  <textarea id="g-text" aria-label="번호와 점수 붙여넣기" data-bind="gUp.text" data-region="g-pv" placeholder="번호&#9;점수&#10;1&#9;90&#10;2&#9;75.5" style="min-height:110px;font-family:var(--mono)">${esc(u.text)}</textarea>
   <p class="hint" style="margin:0">엑셀에서 <b>번호·점수</b> 열(또는 번호·이름·점수)을 복사해 붙여넣으세요. 이름이 있으면 명단과 맞는지 확인해요. 점수 칸이 빈 학생은 빼요.</p>
-  <div id="g-preview" style="display:flex;flex-direction:column;gap:8px">${plan ? `${plan.errors.length ? `<div class="warn">${plan.errors.map(esc).join('<br>')}</div>` : ''}
+  <div id="g-pv" style="display:flex;flex-direction:column;gap:10px"><div id="g-preview" style="display:flex;flex-direction:column;gap:8px">${plan ? `${plan.errors.length ? `<div class="warn">${plan.errors.map(esc).join('<br>')}</div>` : ''}
     ${plan.items.length ? `<div class="note" id="g-sum">${plan.items.length}명 · 평균 ${plan.avg}${plan.blank.length ? ` · 점수 없음 ${plan.blank.join(', ')}번` : ''}${plan.missing.length ? ` · 붙여넣지 않은 ${plan.missing.length}명` : ''}</div>
     <div class="mlist" style="max-height:200px">${plan.items.map((x) => `<div class="mrow"><span class="mono">${x.no}</span><span class="grow">${esc(x.name)}</span><span class="mono">${x.score}</span></div>`).join('')}</div>` : ''}` : ''}</div>
-  <div id="g-btn"><button class="btn" data-act="g-upload" ${ok && u.title.trim() ? '' : 'disabled'}>${ok ? `${plan.items.length}명 성적 올리기` : '성적 올리기'}</button></div></div>
+  <div id="g-btn"><button class="btn" data-act="g-upload" ${ok && u.title.trim() ? '' : 'disabled'}>${ok ? `${plan.items.length}명 성적 올리기` : '성적 올리기'}</button></div></div></div>
   <div class="card" id="g-exams"><h2>올린 성적</h2>${!D ? (A0.err ? `<div class="warn">${esc(A0.err)}</div><button class="btn ghost small" data-act="g-adm-reload">다시 시도</button>` : '<p class="note">불러오는 중…</p>')
     : D.exams.map((e) => `<div class="g-row"><div class="grow"><b>${esc(e.title)}</b><div class="note">${e.n}명 · 평균 ${num(e.avg)} · ${esc(md(e.at.slice(0, 10)))} 올림 · ${esc(md(e.until.slice(0, 10)))}에 지워짐</div></div>
       ${UI.gDel === e.id ? `<div class="btns"><button class="btn danger small" data-act="g-del-yes" data-id="${e.id}">네, 지우기</button><button class="btn ghost small" data-act="g-del-no">그만두기</button></div>` : `<button class="btn ghost small" data-act="g-del" data-id="${e.id}">지우기</button>`}</div>`).join('') || '<p class="note" style="margin:0">지금 올라가 있는 성적이 없어요.</p>'}</div>
-  ${D ? `<div class="card" id="g-pws"><h2>학생 비밀번호</h2>
-  <p class="note" style="margin:0">바꾼 학생 ${pw.filter((x) => x.changed).length} / ${pw.length}명. 아직 바꾸지 않은 학생은 이름으로 들어갈 수 있어요. 비밀번호를 잊었거나 남이 먼저 바꿨다는 학생은 초기화하면 다시 이름으로 들어가요.</p>
+  ${D ? `<div class="card" id="g-pws"><div class="req-top"><h2 style="margin:0">학생 비밀번호</h2><button class="btn ghost small" data-act="g-adm-reload">새로고침</button></div>
+  <p class="note" style="margin:0">바꾼 학생 ${pw.filter((x) => x.changed).length} / ${pw.length}명. 아직 바꾸지 않은 학생은 이름으로 들어갈 수 있어요. 비밀번호를 잊었거나 남이 먼저 바꿨다는 학생은 초기화하면 다시 이름으로 들어가요. 바꾼 시각이 학생이 기억하는 때와 다르면 남이 먼저 바꾼 거예요.</p>
   <input type="search" id="g-q" aria-label="학생 찾기" placeholder="번호·이름 검색" value="${esc(UI.gQ)}" data-bind="gQ" data-region="g-pwlist">
-  <div class="mlist" id="g-pwlist" style="max-height:320px">${shown.map((x) => `<div class="mrow"><span class="mono">${x.s.no}</span><span class="grow">${esc(x.s.name)}</span><span class="pill ${x.locked ? 'rejected' : x.changed ? 'approved' : 'pending'}">${x.locked ? '잠김' : x.changed ? '바꿈' : '처음 비밀번호'}</span>${UI.gReset === x.sid ? `<button class="btn danger small" data-act="g-reset-yes" data-sid="${x.sid}">초기화</button><button class="btn ghost small" data-act="g-reset-no">취소</button>` : x.changed || x.locked ? `<button class="btn ghost small" data-act="g-reset" data-sid="${x.sid}">초기화</button>` : ''}</div>`).join('') || '<p class="note">찾는 학생이 없어요.</p>'}</div></div>` : ''}`;
+  <div class="mlist" id="g-pwlist" style="max-height:320px">${shown.map((x) => `<div class="mrow"><span class="mono">${x.s.no}</span><span class="grow">${esc(x.s.name)}</span><span class="pill ${x.locked ? 'rejected' : x.changed ? 'approved' : 'pending'}">${x.locked ? '잠김' : x.changed ? '바꿈' : '처음 비밀번호'}</span>${x.changed && x.changedAt ? `<span class="note mono">${esc(md(x.changedAt.slice(0, 10)))} ${esc(x.changedAt.slice(11))}</span>` : ''}${UI.gReset === x.sid ? `<button class="btn danger small" data-act="g-reset-yes" data-sid="${x.sid}">초기화</button><button class="btn ghost small" data-act="g-reset-no">취소</button>` : x.changed || x.locked ? `<button class="btn ghost small" data-act="g-reset" data-sid="${x.sid}">초기화</button>` : ''}</div>`).join('') || '<p class="note">찾는 학생이 없어요.</p>'}</div></div>` : ''}`;
 }
 
 // 출석: 날짜마다 "아침 출석"은 항상 맨 앞에 있다. 아직 서버에 없는 교시는 v: 로 시작하는 임시 id를 쓴다.
@@ -1449,7 +1461,7 @@ function vBackup() {
   if (b.dump) {
     const t = b.dump.tables;
     const bal = new Map();
-    t.ledger.filter((e) => !e.voided_at).forEach((e) => bal.set(e.student_id, (bal.get(e.student_id) || 0) + Number(e.points)));
+    t.ledger.filter((e) => !e.voided_at).forEach((e) => bal.set(e.student_id, L.addPts(bal.get(e.student_id) || 0, e.points)));
     const bs = t.students.filter((x) => x.active).sort((x, y) => x.no - y.no);
     const now = new Map(active().map((x) => [x.id, x]));
     const diffs = bs
@@ -1552,6 +1564,7 @@ function render() {
     <div class="btns"><button class="btn" data-act="pw-change">바꾸기</button><button class="btn ghost" data-act="pw-open">닫기</button></div></div>`
       : '';
   view.innerHTML = locked ? vLogin() : codeCard + pwCard + (UI.sid ? vDetail() : (V[UI.tab] || vBoard)());
+  pwEnhance(view);
   const pc = pendingCount();
   tabs.innerHTML = locked
     ? ''
@@ -1602,7 +1615,10 @@ function updateRegion(id) {
   t.innerHTML = V[UI.tab]();
   const src = t.querySelector('#' + id);
   const dst = document.getElementById(id);
-  if (src && dst) dst.innerHTML = src.innerHTML;
+  if (src && dst) {
+    dst.innerHTML = src.innerHTML;
+    pwEnhance(dst);
+  }
 }
 function rerenderKeep(el) {
   const id = el.id;
@@ -1661,10 +1677,15 @@ function pwSync(el) {
     d.dataset.n = n;
     d.textContent = '●'.repeat(Number(n));
   }
+  // 칸보다 길면 진짜 비밀번호 칸처럼 끝(방금 친 ●와 커서)이 보이게 민다
+  if (d.scrollWidth > d.clientWidth) d.scrollLeft = d.scrollWidth;
 }
 function pwEnhance(root) {
   root?.querySelectorAll?.('input[type=password]:not([data-pwm])').forEach((el) => {
     el.dataset.pwm = '1';
+    // 감싸면서 칸을 옮기면 포커스가 빠지므로, 포커스가 있던 칸이면 커서 위치까지 되돌린다
+    const had = document.activeElement === el;
+    const sel = had ? [el.selectionStart, el.selectionEnd] : null;
     const box = document.createElement('span');
     box.className = el.classList.contains('grow') ? 'pwbox grow' : 'pwbox';
     el.before(box);
@@ -1672,8 +1693,32 @@ function pwEnhance(root) {
     const dots = document.createElement('span');
     dots.className = 'pwdots';
     dots.setAttribute('aria-hidden', 'true');
-    box.append(dots);
+    // 보기: 글자 칸으로 바꿔 친 것을 보여 준다. 아이폰 등은 비밀번호 칸에서 한글이 안 쳐질 수 있어서, 이름(처음 비밀번호)을 칠 때 쓴다
+    const eye = document.createElement('button');
+    eye.type = 'button';
+    eye.className = 'pweye';
+    eye.textContent = '보기';
+    eye.setAttribute('aria-label', '비밀번호 보기');
+    eye.setAttribute('aria-pressed', 'false');
+    // 누를 때 칸에서 포커스가 빠지지 않게 (빠지면 미뤄 둔 다시 그리기로 칸이 새로 그려진다)
+    for (const t of ['pointerdown', 'mousedown']) eye.addEventListener(t, (ev) => ev.preventDefault());
+    eye.addEventListener('click', () => {
+      const show = el.type === 'password';
+      el.type = show ? 'text' : 'password';
+      box.classList.toggle('shown', show);
+      eye.textContent = show ? '숨기기' : '보기';
+      eye.setAttribute('aria-label', show ? '비밀번호 숨기기' : '비밀번호 보기');
+      eye.setAttribute('aria-pressed', String(show));
+      el.focus();
+    });
+    box.append(dots, eye);
     pwSync(el);
+    if (had) {
+      el.focus();
+      try {
+        el.setSelectionRange(sel[0], sel[1]);
+      } catch {}
+    }
   });
 }
 new MutationObserver((ms) => ms.forEach((m) => m.addedNodes.forEach((x) => x.nodeType === 1 && pwEnhance(x.parentNode)))).observe(document.body, { childList: true, subtree: true });
@@ -2353,6 +2398,7 @@ const A = {
     if (p.n1 !== p.n2) return toast('새 비밀번호 두 칸이 달라요');
     await gradeRpc('student_change_pw', { p_cur: null, p_new: p.n1 });
     UI.gPw = { cur: '', n1: '', n2: '', open: false };
+    if (gMine) gMine.data = null;
     myGrades(true);
     toast('새 비밀번호를 정했어요 · 다음부터 이 비밀번호로 들어와요');
   },
@@ -2370,7 +2416,7 @@ const A = {
     const plan = L.planGrades(S, u.text);
     if (!u.title.trim()) return toast('시험 이름을 입력하세요');
     if (!plan.items.length || plan.errors.length) return toast('붙여넣은 내용을 확인하세요');
-    const r = await rpc('grade_upload', { p_token: token(), p_title: u.title.trim(), p_list: plan.items.map((x) => ({ sid: x.sid, score: x.score })) });
+    const r = await rpc('grade_upload', { p_token: token(), p_title: u.title.trim(), p_list: plan.items.map((x) => ({ sid: x.sid, no: x.no, score: x.score })) });
     UI.gUp = { title: '', text: '' };
     gradeAdmin(true);
     toast(`"${u.title.trim()}" ${r.n}명 성적을 올렸어요 · 평균 ${num(r.avg)}`);

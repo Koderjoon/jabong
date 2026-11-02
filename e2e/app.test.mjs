@@ -116,6 +116,11 @@ async function open({ width = 390, height = 844, touch = false, beforeGoto, user
   });
   const page = await ctx.newPage();
   page.setDefaultTimeout(8000);
+  // E2E_CPU=4 이면 느린 폰처럼 CPU를 4배 느리게 (기다리는 시간도 그만큼 늘린다)
+  if (process.env.E2E_CPU) {
+    await (await ctx.newCDPSession(page)).send('Emulation.setCPUThrottlingRate', { rate: Number(process.env.E2E_CPU) });
+    page.setDefaultTimeout(8000 * Number(process.env.E2E_CPU));
+  }
   if (beforeGoto) await beforeGoto(ctx);
   page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
   page.on('console', (m) => {
@@ -2949,6 +2954,21 @@ test('성적: 총대가 붙여넣어 올리기(검사·미리보기), 학생은 
   await G.page.waitForSelector('#g-exams .g-row');
   assert.match(await G.text('#g-exams'), /해부학 쪽지시험2명 · 평균 82.75/);
   assert.equal(await G.page.inputValue('#g-text'), '');
+  // 시험 이름을 먼저 쓰고 붙여넣어도 버튼이 켜지고, 붙여넣은 내용이 틀어지면 다시 꺼진다
+  await G.page.fill('#g-title', '먼저 쓴 이름');
+  await G.page.fill('#g-text', `${c.no}\t70`);
+  assert.equal(await G.page.isDisabled('[data-act="g-upload"]'), false, '이름을 먼저 써도 버튼이 켜짐');
+  await G.page.fill('#g-text', `99999\t70`);
+  assert.equal(await G.page.isDisabled('[data-act="g-upload"]'), true, '틀린 붙여넣기면 다시 꺼짐');
+  // 그사이 다른 기기에서 그 학생의 번호가 바뀌었으면(화면은 예전 명단) 올리지 않고 새로 불러온다
+  await G.page.fill('#g-text', `${c.no}\t70`);
+  await q('update students set no = no + 500 where id = $1', [c.id]);
+  assert.equal(await G.toast('[data-act="g-upload"]'), '명단이 바뀌었어요. 새로 불러온 뒤 다시 올려 주세요');
+  await q('update students set no = no - 500 where id = $1', [c.id]);
+  assert.equal((await q('select count(*)::int n from exams'))[0].n, 1, '올라가지 않음');
+  await G.reload();
+  await G.tab('grades');
+  await G.page.waitForSelector('#g-pws');
   // 성적은 공개 상태·백업에 없다
   assert.doesNotMatch(JSON.stringify((await q('select public_state() s'))[0].s) + JSON.stringify((await q('select backup_dump() s'))[0].s), /해부학 쪽지시험/);
 
@@ -2964,10 +2984,40 @@ test('성적: 총대가 붙여넣어 올리기(검사·미리보기), 학생은 
   assert.equal(await P.page.$eval('#g-pw', (e) => getComputedStyle(e).webkitTextFillColor), 'rgba(0, 0, 0, 0)');
   await P.page.fill('#g-pw', '');
   assert.equal(await P.text('#g-pw + .pwdots'), '');
+  // 키보드로 한 자모씩 조합하는 중에도 ●가 하나씩 는다 (ㄱ 고 곶 고주 고준 고준ㅎ 고준흐 고준희)
+  await P.click('#g-pw');
+  const ime = await P.page.context().newCDPSession(P.page);
+  let done = '';
+  for (const [text, n] of [['ㄱ', 1], ['고', 2], ['곶', 3], ['고주', 4], ['고준', 5], ['고준ㅎ', 6], ['고준흐', 7], ['고준희', 8]]) {
+    if (text.length - done.length > 1) {
+      await ime.send('Input.insertText', { text: text[done.length] });
+      done += text[done.length];
+    }
+    const c = text.slice(done.length);
+    await ime.send('Input.imeSetComposition', { text: c, selectionStart: c.length, selectionEnd: c.length });
+    await P.page.waitForFunction(([t, k]) => document.querySelector('#g-pw').value === t && document.querySelector('#g-pw + .pwdots').textContent.length === k, [text, n]);
+  }
+  await ime.send('Input.insertText', { text: '희' });
+  assert.equal(await P.text('#g-pw + .pwdots'), '●'.repeat(8));
+  // 칸보다 길면 끝(방금 친 ●와 커서)이 보이게 밀린다
+  await P.page.fill('#g-pw', '아주아주긴비밀번호입니다아주아주긴비밀번호입니다');
+  assert.ok(await P.page.$eval('#g-pw + .pwdots', (d) => d.scrollLeft > 0 && Math.abs(d.scrollLeft + d.clientWidth - d.scrollWidth) <= 1), '끝이 보인다');
+  await P.fits('긴 비밀번호');
   // 자동 채우기처럼 이벤트 없이 값만 바뀌어도 곧 맞춰진다
   await P.page.$eval('#g-pw', (e) => (e.value = 'ab1'));
   await P.page.waitForFunction(() => document.querySelector('#g-pw + .pwdots').textContent === '●●●');
   await P.page.screenshot({ path: process.env.SHOT_DIR ? `${process.env.SHOT_DIR}/pw.png` : '/dev/null' }).catch(() => {});
+  // 보기: 글자 칸으로 바꿔 친 것을 보여 준다 (아이폰 등 비밀번호 칸에서 한글이 안 쳐질 때 이름을 칠 수 있게)
+  await P.page.fill('#g-pw', '고준희');
+  await P.click('#g-pw ~ .pweye');
+  assert.equal(await P.page.getAttribute('#g-pw', 'type'), 'text');
+  assert.notEqual(await P.page.$eval('#g-pw', (e) => getComputedStyle(e).webkitTextFillColor), 'rgba(0, 0, 0, 0)', '글자가 보인다');
+  assert.equal(await P.page.$eval('#g-pw', (e) => document.activeElement === e), true, '누른 뒤에도 칸에 포커스');
+  assert.equal(await P.text('#g-pw ~ .pweye'), '숨기기');
+  await P.fits('비밀번호 보기');
+  await P.click('#g-pw ~ .pweye');
+  assert.equal(await P.page.getAttribute('#g-pw', 'type'), 'password');
+  assert.equal(await P.text('#g-pw + .pwdots'), '●'.repeat(8));
   await P.page.fill('#g-pw', '아무개');
   assert.equal(await P.toast('[data-act="g-login"]'), '비밀번호가 맞지 않아요');
   await P.page.fill('#g-pw', a.name);
@@ -2985,9 +3035,17 @@ test('성적: 총대가 붙여넣어 올리기(검사·미리보기), 학생은 
   await P.page.waitForSelector('.g-exam');
   const v = await P.text();
   assert.match(v, new RegExp(`${a.no}번 성적`));
-  assert.match(v, /해부학 쪽지시험[\s\S]*내 점수90[\s\S]*평균82.75/);
+  // 점수가 있는 학생이 2명뿐이면 평균으로 상대 점수를 알 수 있어 숨긴다
+  assert.match(v, /해부학 쪽지시험[\s\S]*내 점수90[\s\S]*평균3명 미만이라 숨겨요/);
+  assert.doesNotMatch(v, /82\.75/);
   assert.doesNotMatch(v, /75\.5/, '다른 학생 점수는 없음');
   await P.fits('내 성적');
+  // 3명 이상이면 평균이 보인다 (새로고침으로 새 시험)
+  const d = (await q(`select id, name from students where active order by no offset 3 limit 1`))[0];
+  await q(`select grade_upload((login('총대', $1) ->> 'token')::uuid, '세 명 시험', $2::jsonb)`, [pw.총대, JSON.stringify([{ sid: a.id, score: 80 }, { sid: b.id, score: 70 }, { sid: d.id, score: 60 }])]);
+  await P.click('[data-act="g-reload"]');
+  await P.page.waitForFunction(() => /세 명 시험/.test(document.querySelector('#g-list')?.textContent || ''));
+  assert.match(await P.text('#g-list'), /세 명 시험[\s\S]*내 점수80[\s\S]*평균70/);
   // 다시 열어도 이 폰에서는 로그인 유지, 비밀번호는 localStorage에 없다
   await P.reload();
   await P.tab('grade');
@@ -3002,11 +3060,14 @@ test('성적: 총대가 붙여넣어 올리기(검사·미리보기), 학생은 
   await P.page.fill('#g-cur', 'mypass1');
   assert.equal(await P.toast('[data-act="g-chpw"]'), '비밀번호를 바꿨어요 · 다른 기기의 로그인은 끊겼어요');
   assert.equal(await P.has('#g-chpw'), false);
-  // 로그아웃 → 바꾼 비밀번호로 다시
+  // 로그아웃 → 서버에서도 그 로그인을 지우고, 입력했던 비밀번호는 칸에 남지 않는다 → 바꾼 비밀번호로 다시
+  const tokBefore = JSON.parse(await P.page.evaluate(() => localStorage.getItem('jabong-grade'))).token;
   assert.equal(await P.toast('[data-act="g-logout"]'), '성적에서 로그아웃했어요');
+  assert.equal((await q('select count(*)::int n from student_sessions where token = $1', [tokBefore]))[0].n, 0, '서버의 로그인도 지움');
+  assert.equal(await P.page.inputValue('#g-pw'), '', '비밀번호 칸은 비어 있음');
   await P.page.fill('#g-no', String(a.no));
   await P.page.fill('#g-pw', a.name);
-  assert.equal(await P.toast('[data-act="g-login"]'), '비밀번호가 맞지 않아요', '바꾼 뒤에는 이름으로 못 들어감');
+  assert.match(await P.toast('[data-act="g-login"]'), /^이미 새 비밀번호를 정한 번호예요/, '바꾼 뒤에는 이름으로 못 들어감 (정한 적이 없으면 총대에게)');
   await P.page.fill('#g-pw', 'mypass2');
   assert.equal(await P.toast('[data-act="g-login"]'), `${a.no}번으로 들어왔어요`);
   await P.page.waitForSelector('.g-exam');
@@ -3016,6 +3077,17 @@ test('성적: 총대가 붙여넣어 올리기(검사·미리보기), 학생은 
   await R.page.fill('#g-no', String(c.no));
   await R.page.fill('#g-pw', c.name);
   await R.click('[data-act="g-login"]');
+  await R.page.waitForSelector('#g-first');
+  // 그사이 로그인이 끊기면(총대가 초기화 등) 같은 카드에 머무르지 않고 로그인 화면으로 돌아간다
+  await q('delete from student_sessions where student_id = $1', [c.id]);
+  await R.page.fill('#g-n1', 'cpass12');
+  await R.page.fill('#g-n2', 'cpass12');
+  assert.match(await R.toast('[data-act="g-setpw"]'), /성적 로그인이 끊겼어요/);
+  await R.page.waitForSelector('#g-login-card');
+  await R.page.fill('#g-no', String(c.no));
+  await R.page.fill('#g-pw', c.name);
+  await R.click('[data-act="g-login"]');
+  await R.page.waitForSelector('#g-first');
   await R.page.fill('#g-n1', 'cpass12');
   await R.page.fill('#g-n2', 'cpass12');
   await R.click('[data-act="g-setpw"]');
@@ -3024,13 +3096,34 @@ test('성적: 총대가 붙여넣어 올리기(검사·미리보기), 학생은 
   await R.page.context().close();
 
   // 총대: 바꾼 학생 표시, 검색, 초기화
-  await G.click('[data-act="g-adm-reload"]').catch(() => {});
+  // 5번 틀려 잠긴 학생(b)은 잠김으로 보이고 초기화할 수 있다
+  await q(`select student_login($1, 'x' || k) from generate_series(1, 5) k`, [b.no]);
+  // 이름·시험 이름에 HTML이 있어도 글자로만 보인다
+  await q(`update students set name = '<i>기울임</i>' where id = $1`, [d.id]);
+  await q(`select grade_upload((login('총대', $1) ->> 'token')::uuid, '<b>굵게</b> 퀴즈', $2::jsonb)`, [pw.총대, JSON.stringify([{ sid: a.id, score: 1 }])]);
   await G.reload();
   await G.tab('grades');
   await G.page.waitForSelector('#g-pws');
-  assert.match(await G.text('#g-pws'), /바꾼 학생 2 \//);
+  assert.equal(await G.has('#g-exams b b, #g-pwlist i'), false, '총대 화면: 태그가 생기지 않음');
+  assert.match(await G.text('#g-exams'), /<b>굵게<\/b> 퀴즈/);
+  await G.page.fill('#g-q', '기울임');
+  assert.match(await G.text('#g-pwlist'), /<i>기울임<\/i>/);
+  await G.page.fill('#g-q', String(b.no));
+  assert.match(await G.text('#g-pwlist'), new RegExp(`${b.no}${b.name}잠김`));
+  await G.click(`[data-act="g-reset"][data-sid="${b.id}"]`);
+  await G.click(`[data-act="g-reset-yes"][data-sid="${b.id}"]`);
+  await G.page.waitForFunction((t) => document.querySelector('#g-pwlist')?.textContent.includes(t), `${b.no}${b.name}처음 비밀번호`);
+  await G.page.fill('#g-q', '');
+  await P.click('[data-act="g-reload"]');
+  await P.page.waitForFunction(() => /굵게/.test(document.querySelector('#g-list')?.textContent || ''));
+  assert.equal(await P.has('#g-list b b'), false, '학생 화면: 태그가 생기지 않음');
+  assert.match(await P.text('#g-list'), /<b>굵게<\/b> 퀴즈/);
+  await q(`update students set name = $2 where id = $1`, [d.id, d.name]);
+  // 앱을 다시 열지 않아도 새로고침 버튼으로 바꾼 학생과 바꾼 시각이 보인다
+  await G.click('#g-pws [data-act="g-adm-reload"]');
+  await G.page.waitForFunction(() => /바꾼 학생 2 \//.test(document.querySelector('#g-pws')?.textContent || ''));
   await G.page.fill('#g-q', String(a.no));
-  assert.match(await G.text('#g-pwlist'), new RegExp(`${a.no}${a.name}바꿈`));
+  assert.match(await G.text('#g-pwlist'), new RegExp(`${a.no}${a.name}바꿈\\d+/\\d+ \\d\\d:\\d\\d`));
   await G.click(`[data-act="g-reset"][data-sid="${a.id}"]`);
   assert.equal(await G.toast(`[data-act="g-reset-yes"][data-sid="${a.id}"]`), `${a.no}번 비밀번호를 처음(이름)으로 되돌렸어요`);
   await G.page.waitForFunction((t) => document.querySelector('#g-pwlist')?.textContent.includes(t), `${a.no}${a.name}처음 비밀번호`);
@@ -3038,13 +3131,19 @@ test('성적: 총대가 붙여넣어 올리기(검사·미리보기), 학생은 
   await P.click('[data-act="g-reload"]');
   await P.page.waitForSelector('#g-login-card');
   assert.match(await P.text('#toast > span'), /성적 로그인이 끊겼어요/);
+  assert.equal(await P.page.inputValue('#g-pw'), '', '로그인할 때 쳤던 비밀번호가 칸에 남아 있지 않음');
   assert.equal(await P.page.evaluate(() => localStorage.getItem('jabong-grade')), null);
   // 총대: 지우기 (한 번 더 묻는다)
   await G.click('#g-exams [data-act="g-del"]');
   await G.click('[data-act="g-del-no"]');
   assert.equal(await G.has('[data-act="g-del-yes"]'), false);
-  await G.click('#g-exams [data-act="g-del"]');
-  assert.equal(await G.toast('[data-act="g-del-yes"]'), '성적을 지웠어요 · 학생 화면에서도 사라져요');
+  await G.click('#g-pws [data-act="g-adm-reload"]');
+  await G.page.waitForFunction(() => document.querySelectorAll('#g-exams .g-row').length === 3);
+  for (let k = 0; k < 3; k++) {
+    await G.click('#g-exams [data-act="g-del"]');
+    assert.equal(await G.toast('[data-act="g-del-yes"]'), '성적을 지웠어요 · 학생 화면에서도 사라져요');
+    await G.page.waitForFunction((n) => document.querySelectorAll('#g-exams .g-row').length === n, 2 - k);
+  }
   await G.page.waitForFunction(() => /지금 올라가 있는 성적이 없어요/.test(document.querySelector('#g-exams')?.textContent || ''));
   assert.equal((await q('select count(*)::int n from exam_scores'))[0].n, 0);
   await G.page.context().close();

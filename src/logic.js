@@ -16,6 +16,14 @@ export const mdw = (d) => `${md(d)}(${DOW[new Date(d + 'T00:00:00').getDay()]})`
 export const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul' }).format(new Date());
 
 export const live = (e) => !e.voided;
+// 소수점 아래가 둘째 자리까지인지 글자로 본다 (뒤에 붙은 0은 괜찮다: 15.0, 2.50).
+// Number(v) * 100으로 보면 안 된다: 1.15 * 100 = 114.99999999999999라서 맞는 값을 거절한다.
+const dec2 = (v) => (String(v).split('.')[1] || '').replace(/0+$/, '').length <= 2;
+// 점수(자봉·이월·성적)는 소수점 아래 둘째 자리까지라, 더할 때는 1/100 단위 정수로 더한다.
+// 그냥 더하면 1.15 + (-4) = -2.8499999999999996처럼 화면에 오차가 보이고, 더하는 순서에 따라 값이 달라진다.
+const cents = (x) => Math.round(Number(x) * 100);
+export const sumPts = (list, f = (x) => x.points) => list.reduce((a, x) => a + cents(f(x)), 0) / 100;
+export const addPts = (...xs) => xs.reduce((a, x) => a + cents(x), 0) / 100;
 // 직접 입력하는 점수는 0.5점 단위까지 허용한다 (출석 자동 기록은 정수)
 // 공결 신청할 수 있는 기록: 무효가 아닌 지각·결석 (출석 체크든 직접 기록이든)
 export const excusable = (e) => !e.voided && (e.item === '지각' || e.item === '결석') && ['att', 'manual', 'request'].includes(e.src);
@@ -23,7 +31,7 @@ export const isHalfStep = (p) => Number.isFinite(p) && Number.isInteger(p * 2);
 export const stu = (S, id) => S.students.find((s) => s.id === id);
 export const noOf = (S, id) => stu(S, id)?.no ?? '?';
 export const active = (S) => S.students.filter((s) => s.active).sort((a, b) => a.no - b.no);
-export const bal = (S, sid) => S.ledger.filter((e) => e.sid === sid && live(e)).reduce((a, e) => a + Number(e.points), 0);
+export const bal = (S, sid) => sumPts(S.ledger.filter((e) => e.sid === sid && live(e)));
 
 // "56 59 김민서" 같은 입력을 학생 id 목록으로 바꾼다. 숫자는 번호, 나머지는 이름으로 찾는다.
 export function parseNums(S, str) {
@@ -275,7 +283,7 @@ export function planCarry(S, text, cut) {
   const items = [];
   const errors = [];
   const seen = new Set();
-  const sum = (l) => l.filter(live).reduce((a, e) => a + Number(e.points), 0);
+  const sum = (l) => sumPts(l.filter(live));
   text.split('\n').forEach((raw, i) => {
     const line = raw.normalize('NFKC').trim();
     if (!line) return;
@@ -287,8 +295,8 @@ export function planCarry(S, text, cut) {
     if (cells.length < 2) return void errors.push(`${i + 1}번째 줄 "${line}": 번호와 자봉을 적어 주세요`);
     const no = Number(cells[0]);
     const v = cells[cells.length - 1].replace(/^\+/, '');
-    // 엑셀에서 15.0, 2.50처럼 뒤에 0이 붙어 와도 된다 (소수점 아래는 둘째 자리까지)
-    if (!/^-?\d{1,5}(\.\d+)?$/.test(v) || Math.round(Number(v) * 100) !== Number(v) * 100) return void errors.push(`${i + 1}번째 줄 "${line}": 자봉은 숫자여야 해요 (예: 15, -2, 0.5)`);
+    // 엑셀에서 15.0, 2.50처럼 뒤에 0이 붙어 와도 된다. 장부는 0.5점 단위만 담으므로 2.55·1.15는 거절한다 (서버도 같은 규칙)
+    if (!/^-?0*\d{1,5}(\.\d+)?$/.test(v) || !isHalfStep(Number(v))) return void errors.push(`${i + 1}번째 줄 "${line}": 자봉은 0.5점 단위 숫자여야 해요 (예: 15, -2, 0.5)`);
     const st = S.students.find((x) => x.active && x.no === no);
     if (!st) return void errors.push(`${no}번은 명단에 없어요`);
     if (seen.has(no)) return void errors.push(`${no}번이 두 번 있어요`);
@@ -298,7 +306,7 @@ export function planCarry(S, text, cut) {
     const after = sum(mine.filter((e) => !cut || e.date > cut));
     const n = Number(v);
     // after: 기준 날짜 다음 날부터의 기록 합계. 결과(next) = 엑셀 값 + after (지금 자봉·그전 장부 값은 계산에 쓰지 않는다)
-    items.push({ sid: st.id, no, name: st.name || '', before: sum(pre), n, after, del: pre.length, now: sum(mine), next: n + after });
+    items.push({ sid: st.id, no, name: st.name || '', before: sum(pre), n, after, del: pre.length, now: sum(mine), next: addPts(n, after) });
   });
   items.sort((a, b) => a.no - b.no);
   const missing = S.students.filter((x) => x.active && !seen.has(x.no)).map((x) => x.no).sort((a, b) => a - b);
@@ -364,9 +372,9 @@ export function exportSheets(S, from, to) {
       const l = S.ledger.filter((x) => x.sid === st.id && live(x));
       // 보관 후 정리의 "이월" 줄은 그 전의 기록을 합친 것이라, 기간 안에 있어도 기간 시작 점수로 센다
       const opening = (x) => x.date < from || (x.src === 'carry' && x.date <= to);
-      const start = l.filter(opening).reduce((a, x) => a + Number(x.points), 0);
-      const ch = l.filter((x) => !opening(x) && x.date >= from && x.date <= to).reduce((a, x) => a + Number(x.points), 0);
-      return { no: st.active ? st.no : `${st.no} (제외)`, start, change: ch, end: start + ch, now: l.reduce((a, x) => a + Number(x.points), 0) };
+      const start = sumPts(l.filter(opening));
+      const ch = sumPts(l.filter((x) => !opening(x) && x.date >= from && x.date <= to));
+      return { no: st.active ? st.no : `${st.no} (제외)`, start, change: ch, end: addPts(start, ch), now: sumPts(l) };
     });
   const rows = S.ledger
     .filter((x) => x.date >= from && x.date <= to)
@@ -547,7 +555,8 @@ export function planGrades(S, text) {
     if (!st) return void errors.push(`${no}번은 명단에 없어요`);
     if (seen.has(no)) return void errors.push(`${no}번이 두 번 있어요`);
     const last = cells.length > 1 ? cells[cells.length - 1] : '';
-    const isNum = /^\d{1,4}(\.\d+)?$/.test(last);
+    // 앞에 붙은 0은 괜찮다 (0090 = 90). 정수 부분은 네 자리(9999)까지
+    const isNum = /^0*\d{1,4}(\.\d+)?$/.test(last);
     // 숫자나 부호로 시작하면 점수 칸이다 (90점, -3, 10000은 잘못된 점수)
     const scoreCell = cells.length > 1 && /^[-+.\d]/.test(last);
     if (scoreCell && !isNum) return void errors.push(`${i + 1}번째 줄 "${line}": 점수는 0 이상의 숫자여야 해요`);
@@ -555,11 +564,12 @@ export function planGrades(S, text) {
     if (mid && st.name && mid !== nm(st.name)) return void errors.push(`${no}번 이름 "${mid}"이 명단(${st.name})과 달라요`);
     seen.add(no);
     if (!isNum) return void blank.push(no);
-    if (Math.round(Number(last) * 100) !== Number(last) * 100) return void errors.push(`${no}번 점수 ${last}: 소수점 아래는 둘째 자리까지예요`);
+    if (!dec2(last)) return void errors.push(`${no}번 점수 ${last}: 소수점 아래는 둘째 자리까지예요`);
     items.push({ sid: st.id, no, name: st.name || '', score: Number(last) });
   });
   items.sort((a, b) => a.no - b.no);
-  const avg = items.length ? Math.round((items.reduce((a, x) => a + x.score, 0) / items.length) * 100) / 100 : null;
+  // 서버의 round(avg(score), 2)와 같게: 1/100 단위 정수 합을 인원으로 나눠 반올림 (나눈 값이 정확히 .5일 때만 올림이 갈리는데, 정수/인원이라 오차가 없다)
+  const avg = items.length ? Math.round(items.reduce((a, x) => a + cents(x.score), 0) / items.length) / 100 : null;
   const missing = S.students.filter((x) => x.active && !seen.has(x.no)).map((x) => x.no).sort((a, b) => a - b);
   return { items, errors: [...new Set(errors)], blank: blank.sort((a, b) => a - b), missing, avg };
 }

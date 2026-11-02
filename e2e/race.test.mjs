@@ -85,3 +85,38 @@ test('교시 삭제와 그 교시 출석 저장이 동시에 와도 영어 오�
     assert.equal((await db.query(`select count(*)::int as n from ledger where period_id = $1`, [p])).rows[0].n, 0);
   }
 });
+
+test('학생 성적 비밀번호: 처음 들어오는 학생(비밀번호 줄이 아직 없음)에게 동시에 30번 틀려도 5번째에서 잠기고, 맞는 이름도 막힌다', async () => {
+  const s = (await db.query(`insert into students (no, name) values (901, '동시성') returning id`)).rows[0].id;
+  const res = await Promise.all(Array.from({ length: 30 }, (_, i) => rpc(`select student_login(901, $1)::json ->> 'error' as e`, ['틀림' + i]).then((r) => r.e)));
+  assert.equal(res.filter((e) => e === '비밀번호가 맞지 않아요').length, 5);
+  assert.equal(res.filter((e) => /잠겼어요/.test(e || '')).length, 25);
+  assert.match((await rpc(`select student_login(901, '동시성')::json ->> 'error' as e`)).e, /잠겼어요/);
+  assert.equal((await db.query(`select count(*)::int as n from student_pw where student_id = $1`, [s])).rows[0].n, 1);
+  // 이미 비밀번호 줄이 있는 학생도 (잠김이 풀린 뒤 다시)
+  await db.query(`update student_pw set locked_until = now() - interval '1 second' where student_id = $1`, [s]);
+  const res2 = await Promise.all(Array.from({ length: 30 }, (_, i) => rpc(`select student_login(901, $1)::json ->> 'error' as e`, ['다시틀림' + i]).then((r) => r.e)));
+  assert.equal(res2.filter((e) => e === '비밀번호가 맞지 않아요').length, 5);
+  assert.equal(res2.filter((e) => /잠겼어요/.test(e || '')).length, 25);
+});
+
+test('학생 성적 비밀번호: 이름으로 들어온 두 기기가 동시에 새 비밀번호를 정하면 하나만 되고, 다른 기기는 끊긴다', async () => {
+  await db.query(`insert into students (no, name) values (902, '두기기')`);
+  for (let round = 0; round < 5; round++) {
+    await db.query(`delete from student_pw where student_id = (select id from students where no = 902)`);
+    const a = (await rpc(`select student_login(902, '두기기')::json ->> 'token' as t`)).t;
+    const b = (await rpc(`select student_login(902, '두기기')::json ->> 'token' as t`)).t;
+    const res = await Promise.allSettled([
+      rpc(`select student_change_pw($1, null, 'aaaa1111')`, [a]),
+      rpc(`select student_change_pw($1, null, 'bbbb2222')`, [b]),
+    ]);
+    const won = res.findIndex((r) => r.status === 'fulfilled');
+    assert.equal(res.filter((r) => r.status === 'fulfilled').length, 1, `한 기기만 (${round})`);
+    const lost = res[1 - won];
+    assert.ok(['현재 비밀번호가 맞지 않아요', '성적 로그인이 끊겼어요. 다시 로그인해 주세요'].includes(lost.reason.message), lost.reason.message);
+    const [wt, lt, wp] = won === 0 ? [a, b, 'aaaa1111'] : [b, a, 'bbbb2222'];
+    await assert.rejects(rpc(`select my_grades($1)`, [lt]), (e) => e.code === 'P0401');
+    assert.equal((await rpc(`select (my_grades($1) ->> 'initial')::boolean as i`, [wt])).i, false);
+    assert.ok((await rpc(`select student_login(902, $1)::json ->> 'token' as t`, [wp])).t);
+  }
+});

@@ -450,10 +450,13 @@ end $$;
 create or replace function _entry(p_date date, p_sid uuid, p_item text, p_detail text, p_points numeric, p_src text,
   p_period uuid, p_request uuid, p_by text, p_requested_by text default null, p_approved_by text default null)
 returns uuid language plpgsql security definer set search_path = public as $$
-declare nid uuid;
+declare nid uuid; ex boolean;
 begin
+  -- 다른 기기에서 그 학생을 지웠으면(명단 추가를 되돌리는 등) 화면이 새로 불러오게 안내한다
+  select exempt into ex from students where id = p_sid;
+  if not found then raise exception '명단에 없는 학생이 있어요. 새로 불러온 뒤 다시 해 보세요'; end if;
   -- 자봉 면제 학생에게는 +점수를 기록하지 않는다 (명단 붙여넣기의 점수 맞추기·이월은 예외). 기록 안 하면 null.
-  if p_points > 0 and p_src in ('att', 'manual', 'request') and (select exempt from students where id = p_sid) then return null; end if;
+  if p_points > 0 and p_src in ('att', 'manual', 'request') and ex then return null; end if;
   insert into ledger (date, student_id, item, detail, points, src, period_id, request_id)
   values (p_date, p_sid, p_item, coalesce(p_detail, ''), p_points, p_src, p_period, p_request)
   returning id into nid;
@@ -736,6 +739,7 @@ begin
   end if;
   if not exists (select 1 from accounts where role = p_role and is_admin) then return json_build_object('error', '복구 코드로는 부총대 비밀번호만 새로 정할 수 있어요'); end if;
   if length(coalesce(p_new, '')) < 4 then return json_build_object('error', '새 비밀번호는 4자 이상이어야 해요'); end if;
+  if octet_length(p_new) > 72 then return json_build_object('error', '새 비밀번호가 너무 길어요 (영문·숫자 72자, 한글 24자까지)'); end if;
   code := _new_code();
   update settings set recovery_hash = crypt(_norm_code(code), gen_salt('bf')), recovery_fails = 0, recovery_locked_until = null where id = 1;
   update accounts set pw_hash = crypt(p_new, gen_salt('bf')), fails = 0, locked_until = null where role = p_role;
@@ -774,6 +778,9 @@ begin
   if p_date is null then raise exception '날짜를 입력하세요'; end if;
   perform _check_items(p_item, p_points);
   if coalesce(array_length(p_sids, 1), 0) = 0 then raise exception '학생을 골라 주세요'; end if;
+  if exists (select 1 from unnest(p_sids) x where not exists (select 1 from students where id = x and active)) then
+    raise exception '명단에 없는 학생이 있어요. 새로 불러온 뒤 다시 해 보세요';
+  end if;
   perform _op(who, 'create_request', format('요청: %s %s · %s번', trim(p_item), _pt(p_points), _nums(p_sids)));
   insert into requests (requested_by, date, student_ids, item, detail, points, reason, photo_id)
   values (who, p_date, p_sids, trim(p_item), coalesce(trim(p_detail), ''), p_points, coalesce(trim(p_reason), ''), _photo(p_photo))
@@ -788,6 +795,7 @@ begin
   select pw_hash into h from accounts where role = who;
   if h <> crypt(coalesce(p_cur, ''), h) then raise exception '현재 비밀번호가 맞지 않아요'; end if;
   if length(coalesce(p_new, '')) < 4 then raise exception '새 비밀번호는 4자 이상이어야 해요'; end if;
+  if octet_length(p_new) > 72 then raise exception '새 비밀번호가 너무 길어요 (영문·숫자 72자, 한글 24자까지)'; end if;
   update accounts set pw_hash = crypt(p_new, gen_salt('bf')) where role = who;
   -- 이 기기 말고 다른 기기의 로그인은 끊는다
   delete from sessions where role = who and token <> p_token;
@@ -800,6 +808,7 @@ language plpgsql security definer set search_path = public, extensions as $$
 declare who text := _session(p_token, true);
 begin
   if length(coalesce(p_new, '')) < 4 then raise exception '새 비밀번호는 4자 이상이어야 해요'; end if;
+  if octet_length(p_new) > 72 then raise exception '새 비밀번호가 너무 길어요 (영문·숫자 72자, 한글 24자까지)'; end if;
   update accounts set pw_hash = crypt(p_new, gen_salt('bf')), fails = 0, locked_until = null where role = p_role;
   if not found then raise exception '없는 직책이에요'; end if;
   delete from sessions where role = p_role;
@@ -1685,9 +1694,10 @@ create or replace function _grade_cleanup() returns void language sql security d
   delete from student_sessions where expires_at < now();
 $$;
 
--- 이름 비교용: 띄어쓰기를 무시한다 ("홍 길동" = "홍길동")
+-- 이름 비교용: 띄어쓰기를 무시한다 ("홍 길동" = "홍길동").
+-- 붙여넣기로 들어온 줄바꿈 없는 공백(U+00A0)·폭 없는 공백·전각 공백과, 맥에서 복사해 자모가 풀린(NFD) 이름도 같게 본다.
 create or replace function _pw_name(n text) returns text language sql immutable as $$
-  select regexp_replace(coalesce(n, ''), '\s', '', 'g')
+  select regexp_replace(normalize(coalesce(n, ''), NFKC), '[\s\u00a0\u200b\u200c\u200d\u2060\ufeff\u3000]', '', 'g')
 $$;
 
 -- 총대만 성적을 올리고 학생 비밀번호를 초기화한다
@@ -1725,15 +1735,24 @@ begin
     return json_build_object('error', format('비밀번호를 여러 번 틀려서 잠겼어요. %s분 뒤에 다시 해보세요', ceil(extract(epoch from p.locked_until - now()) / 60)));
   end if;
   ok := case when p.pw_hash is null then _pw_name(st.name) <> '' and _pw_name(p_pw) = _pw_name(st.name)
-             else p.pw_hash = crypt(coalesce(p_pw, ''), p.pw_hash) end;
+             -- 저장된 비밀번호는 72바이트 이하라 더 긴 입력은 틀린 것이다 (bcrypt는 72바이트 뒤를 보지 않아 맞다고 해 버린다)
+             else octet_length(coalesce(p_pw, '')) <= 72 and p.pw_hash = crypt(coalesce(p_pw, ''), p.pw_hash) end;
   if not ok then
     update student_pw set fails = case when fails + 1 >= 5 then 0 else fails + 1 end,
       locked_until = case when fails + 1 >= 5 then now() + interval '10 minutes' else locked_until end
     where student_id = st.id;
-    return json_build_object('error', '비밀번호가 맞지 않아요');
+    -- 비밀번호를 정한 적이 없는데 이름이 안 된다면 누가 먼저 정한 것이다: 총대에게 알릴 수 있게 따로 안내한다
+    return json_build_object('error', case when p.pw_hash is not null and _pw_name(st.name) <> '' and _pw_name(p_pw) = _pw_name(st.name)
+      then '이미 새 비밀번호를 정한 번호예요. 정한 비밀번호로 들어오세요 (정한 적이 없으면 총대에게 초기화를 부탁하세요)'
+      else '비밀번호가 맞지 않아요' end);
   end if;
   update student_pw set fails = 0, locked_until = null where student_id = st.id;
-  insert into student_sessions (student_id, expires_at) values (st.id, now() + interval '30 days') returning token into t;
+  -- 처음 비밀번호(이름) 로그인은 새 비밀번호를 정하는 데만 쓰니 하루만 둔다 (정하면 30일로 늘린다)
+  insert into student_sessions (student_id, expires_at)
+  values (st.id, now() + case when p.pw_hash is null then interval '1 day' else interval '30 days' end) returning token into t;
+  -- 학생마다 로그인은 최근 5개까지만 둔다 (이름만 알면 누구나 로그인을 끝없이 만들어 표를 채울 수 있으므로)
+  delete from student_sessions where student_id = st.id
+    and token not in (select token from student_sessions where student_id = st.id order by expires_at desc, token limit 5);
   return json_build_object('token', t, 'no', st.no, 'initial', p.pw_hash is null);
 end $$;
 
@@ -1744,13 +1763,15 @@ declare sid uuid := _student_session(p_token); h text; nm text;
 begin
   select pw_hash into h from student_pw where student_id = sid for update;
   select name into nm from students where id = sid;
-  if h is not null and h <> crypt(coalesce(p_cur, ''), h) then raise exception '현재 비밀번호가 맞지 않아요'; end if;
+  if h is not null and (octet_length(coalesce(p_cur, '')) > 72 or h <> crypt(coalesce(p_cur, ''), h)) then raise exception '현재 비밀번호가 맞지 않아요'; end if;
   if length(coalesce(p_new, '')) < 4 then raise exception '새 비밀번호는 4자 이상이어야 해요'; end if;
-  if length(p_new) > 100 then raise exception '새 비밀번호는 100자까지예요'; end if;
+  -- 비밀번호 저장(bcrypt)은 앞 72바이트만 본다: 더 길면 뒤가 달라도 맞다고 하므로 막는다 (한글은 한 글자 3바이트)
+  if octet_length(p_new) > 72 then raise exception '새 비밀번호가 너무 길어요 (영문·숫자 72자, 한글 24자까지)'; end if;
   if _pw_name(p_new) = _pw_name(nm) then raise exception '이름이 아닌 다른 비밀번호로 정해 주세요'; end if;
   update student_pw set pw_hash = crypt(p_new, gen_salt('bf')), changed_at = now(), fails = 0, locked_until = null where student_id = sid;
   -- 이 기기 말고 다른 기기의 로그인은 끊는다 (이름으로 먼저 들어온 사람이 있었다면 그 사람도)
   delete from student_sessions where student_id = sid and token <> p_token;
+  update student_sessions set expires_at = now() + interval '30 days' where token = p_token;
 end $$;
 
 create or replace function student_logout(p_token uuid) returns void language sql security definer set search_path = public as $$
@@ -1768,7 +1789,9 @@ begin
   if (select pw_hash from student_pw where student_id = sid) is null then return json_build_object('no', sno, 'initial', true); end if;
   return json_build_object('no', sno, 'initial', false, 'exams', (
     select coalesce(json_agg(json_build_object('id', e.id, 'title', e.title, 'at', _kst(e.created_at), 'until', _kst(e.expires_at),
-      'score', x.score, 'avg', (select round(avg(score), 2) from exam_scores where exam_id = e.id)) order by e.created_at desc), '[]')
+      'score', x.score,
+      -- 점수가 있는 학생이 3명 미만이면 평균을 숨긴다 (2명이면 내 점수와 평균으로 상대 점수를 알 수 있다)
+      'avg', (select case when count(*) >= 3 then round(avg(score), 2) end from exam_scores where exam_id = e.id)) order by e.created_at desc), '[]')
     from exams e join exam_scores x on x.exam_id = e.id and x.student_id = sid where e.expires_at > now()));
 end $$;
 
@@ -1787,6 +1810,7 @@ begin
     end if;
     select no into sno from students where id = (x ->> 'sid')::uuid and active;
     if sno is null then raise exception '명단에 없는 학생이 있어요'; end if;
+    if x ? 'no' and (x ->> 'no') is distinct from sno::text then raise exception '명단이 바뀌었어요. 새로 불러온 뒤 다시 올려 주세요'; end if;
     if (x ->> 'sid')::uuid = any (sids) then raise exception '%번이 두 번 있어요', sno; end if;
     sids := sids || (x ->> 'sid')::uuid;
   end loop;
@@ -1805,7 +1829,7 @@ begin
   return json_build_object(
     'exams', (select coalesce(json_agg(json_build_object('id', e.id, 'title', e.title, 'at', _kst(e.created_at), 'until', _kst(e.expires_at),
       'n', (select count(*) from exam_scores where exam_id = e.id), 'avg', (select round(avg(score), 2) from exam_scores where exam_id = e.id)) order by e.created_at desc), '[]') from exams e),
-    'pw', (select coalesce(json_agg(json_build_object('sid', s.id, 'changed', p.pw_hash is not null, 'locked', coalesce(p.locked_until > now(), false)) order by s.no), '[]')
+    'pw', (select coalesce(json_agg(json_build_object('sid', s.id, 'changed', p.pw_hash is not null, 'changedAt', _kst(p.changed_at), 'locked', coalesce(p.locked_until > now(), false)) order by s.no), '[]')
       from students s left join student_pw p on p.student_id = s.id where s.active));
 end $$;
 
@@ -1838,9 +1862,9 @@ begin
   if p_cut is null or p_cut > (now() at time zone 'Asia/Seoul')::date then raise exception '기준 날짜는 오늘이나 그 전이어야 해요'; end if;
   if jsonb_typeof(coalesce(p_list, 'null')) <> 'array' or jsonb_array_length(p_list) = 0 then raise exception '바꿀 학생이 없어요'; end if;
   for x in select * from jsonb_array_elements(p_list) loop
-    -- 숫자이고 소수점 아래는 둘째 자리까지 (15.0, 2.50처럼 뒤에 0이 붙어도 된다)
-    if coalesce(x ->> 'n', '') !~ '^-?[0-9]{1,5}(\.[0-9]+)?$' or (x ->> 'n')::numeric * 100 <> trunc((x ->> 'n')::numeric * 100) then
-      raise exception '이월 자봉은 숫자여야 해요 (예: 15, -2, 0.5)';
+    -- 숫자이고 0.5점 단위 (15.0, 2.50처럼 뒤에 0이 붙어도 된다). 장부 점수 칸이 0.5점 단위만 담는다.
+    if coalesce(x ->> 'n', '') !~ '^-?[0-9]{1,5}(\.[0-9]+)?$' or (x ->> 'n')::numeric * 2 <> trunc((x ->> 'n')::numeric * 2) then
+      raise exception '이월 자봉은 0.5점 단위 숫자여야 해요 (예: 15, -2, 0.5)';
     end if;
     select no into sno from students where id = (x ->> 'sid')::uuid and active;
     if sno is null then raise exception '명단에 없는 학생이 있어요'; end if;
@@ -1918,6 +1942,7 @@ begin
     raise exception '이미 설정했어요. 비밀번호는 앱의 관리 탭에서 바꾸세요';
   end if;
   if length(coalesce(p_pw, '')) < 4 then raise exception '비밀번호는 4자 이상이어야 해요'; end if;
+  if octet_length(p_pw) > 72 then raise exception '비밀번호가 너무 길어요 (영문·숫자 72자, 한글 24자까지)'; end if;
   update accounts set pw_hash = crypt(p_pw, gen_salt('bf')) where true;
   code := _new_code();
   update settings set recovery_hash = crypt(_norm_code(code), gen_salt('bf')) where id = 1;

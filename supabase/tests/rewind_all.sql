@@ -113,6 +113,17 @@ select create_excuse(:'s1', :'req_abs', '', null) as x2 \gset
 select pg_temp.snap();
 select review_excuse(:'t', :'x1', true, null); select pg_temp.snap();
 select review_excuse(:'t', :'x2', false, '증빙 없음'); select pg_temp.snap();
+-- 성적은 작업 내역 밖: 올리고 학생 비밀번호를 바꿔도 작업이 생기지 않고, 어느 시점으로 오가도 그대로다 (끝에서 확인)
+select count(*) as nops_before_grades from ops \gset
+select grade_upload(:'ct', '되감기 시험', format('[{"sid":"%s","score":91},{"sid":"%s","score":72.5}]', :'s1', :'s2')::jsonb);
+select student_change_pw((student_login(1, '가') ->> 'token')::uuid, null, 'gaga1234');
+select pg_temp.ok((select count(*) from ops) = :nops_before_grades, '성적·학생 비밀번호는 작업 내역에 안 남음');
+create or replace function pg_temp.gsig() returns text language sql as $$
+  select md5(concat_ws('|', (select string_agg(to_jsonb(x)::text, ',' order by x.id) from exams x),
+    (select string_agg(to_jsonb(x)::text, ',' order by x.exam_id, x.student_id) from exam_scores x),
+    (select string_agg(x.student_id || x.pw_hash, ',' order by x.student_id) from student_pw x)))
+$$;
+select pg_temp.gsig() as gsig0 \gset
 select roster_apply(:'t', format('[{"op":"renum","id":"%s","no":2},{"op":"renum","id":"%s","no":1},{"op":"rename","id":"%s","name":"다다"},{"op":"remove","id":"%s"}]',
   :'s1', :'s2', :'s3', :'s4')::jsonb, '[{"name":"가","to":10}]', '2026-04-05');
 select pg_temp.snap();
@@ -219,4 +230,9 @@ begin
 end $$;
 \echo 여러 작업 빼 둔 채 이동 통과
 
+select pg_temp.ok(pg_temp.gsig() = :'gsig0', '모든 시점을 오간 뒤에도 성적·학생 비밀번호는 그대로');
+-- 번호가 바뀐 뒤에도(가: 1번 → 2번) 자기 비밀번호로 자기 성적을 본다
+select pg_temp.ok((my_grades((student_login(2, 'gaga1234') ->> 'token')::uuid) -> 'exams' -> 0 ->> 'score')::numeric = 91, '번호가 바뀌어도 자기 성적');
+select pg_temp.ok(student_login(1, 'gaga1234') ->> 'error' = '비밀번호가 맞지 않아요', '지금 1번(나)은 가의 비밀번호로 못 들어감');
+\echo 성적은 작업 내역과 따로 통과
 \echo 작업 내역 전수 테스트 통과
