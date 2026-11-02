@@ -1395,6 +1395,17 @@ set role anon;
 select request_attendance(:'ct', :'hq', format('{"%s":"late1absent1"}', :'h1')::jsonb);
 select pg_temp.ok(position('지각 1 · 결석 1' in (ops_list(:'t', 1)::jsonb -> 0 ->> 'summary')) > 0, '요청 요약에 함께');
 select pg_temp.expect(format('select save_attendance(%L, %L, %L)', :'t', :'hc', format('{"%s":"late0absent9"}', :'h1')), null, '모르는 값은 출석으로 (오류 없이)');
+-- 경계: 4시간·교시 이름 40자까지는 되고, 5시간·41자는 안 된다
+set role anon;
+select ensure_period(:'t', '2026-08-21', repeat('가', 40), false) as p40 \gset
+select pg_temp.ok(:'p40' is not null, '교시 이름 40자');
+select pg_temp.expect_msg(format('select ensure_period(%L, %L, %L, false)', :'t', '2026-08-21', repeat('가', 41)), '교시 이름은 40자까지예요', '교시 이름 41자');
+select pg_temp.ok(set_period_hours(:'t', :'p40', 4) = 0, '4시간으로');
+select pg_temp.expect_msg(format('select set_period_hours(%L, %L, 5)', :'t', :'p40'), '수업 시간은 1~4시간이에요', '5시간');
+select ensure_period(:'t', '2026-08-22', '네 시간', false, 4) as p4 \gset
+select pg_temp.expect_msg(format('select ensure_period(%L, %L, %L, false, 5)', :'t', '2026-08-22', '다섯 시간'), '수업 시간은 1~4시간이에요', '5시간 교시');
+set role postgres;
+select pg_temp.ok((select hours from periods where id = :'p40') = 4 and (select hours from periods where id = :'p4') = 4, '4시간 교시');
 \echo 26. 여러 시간 수업 통과
 
 -- ───────── 27. 엑셀 이월로 바꾸기 (기준 날짜까지 지우고 엑셀 값으로 이월 한 줄) ─────────
@@ -1572,6 +1583,9 @@ select pg_temp.ok(student_login(:gano, 'pass5678')::json ->> 'token' is not null
 -- 잠김
 select student_login(:gbno, 'x'), student_login(:gbno, 'x'), student_login(:gbno, 'x'), student_login(:gbno, 'x');
 select pg_temp.ok(student_login(:gbno, '김철수')::json ->> 'token' is not null, '4번 틀린 뒤 맞으면 들어감');
+-- 맞으면 틀린 횟수가 처음부터: 다시 4번 틀려도 잠기지 않는다
+select student_login(:gbno, 'x'), student_login(:gbno, 'x'), student_login(:gbno, 'x'), student_login(:gbno, 'x');
+select pg_temp.ok(student_login(:gbno, '김철수')::json ->> 'token' is not null, '맞으면 틀린 횟수가 처음부터');
 select student_login(:gbno, 'x'), student_login(:gbno, 'x'), student_login(:gbno, 'x'), student_login(:gbno, 'x'), student_login(:gbno, 'x');
 select pg_temp.ok(student_login(:gbno, '김철수')::json ->> 'error' like '%잠겼어요. 10분 뒤%', '5번 틀리면 10분 잠김');
 select pg_temp.ok(student_login(:gcno, '이영희')::json ->> 'token' is not null, '잠김은 그 번호만');

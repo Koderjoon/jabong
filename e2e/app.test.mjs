@@ -2739,9 +2739,14 @@ test('엑셀 이월로 바꾸기(부총대): 기준 날짜까지 붙여넣은 �
 
 test('탭 순서: 길게 눌러 끌면 자리가 바뀌고(이 폰에만, 역할마다), 맨 앞 탭이 처음 여는 탭, 바로 끌거나 짧게 누르면 보통 동작, 원래 순서로, 폰 손가락으로도', async () => {
   const P = await open();
+  // 탭 줄은 데이터가 늦게 오면 다시 그려진다 (느린 인터넷 흉내 E2E_LATENCY): 그 순간이면 잠깐 뒤에 다시 잰다
   const center = async (name) => {
-    const b = await P.page.locator(`#tabs button:has-text("${name}")`).boundingBox();
-    return [b.x + b.width / 2, b.y + b.height / 2];
+    for (let k = 0; ; k++) {
+      const b = await P.page.locator(`#tabs button:has-text("${name}")`).boundingBox();
+      if (b) return [b.x + b.width / 2, b.y + b.height / 2];
+      if (k > 40) throw new Error(`탭을 못 찾음: ${name}`);
+      await P.page.waitForTimeout(50);
+    }
   };
   const drag = async (from, to, { hold = 650 } = {}) => {
     const [x1, y1] = await center(from);
@@ -3146,6 +3151,13 @@ test('성적: 총대가 붙여넣어 올리기(검사·미리보기), 학생은 
   }
   await G.page.waitForFunction(() => /지금 올라가 있는 성적이 없어요/.test(document.querySelector('#g-exams')?.textContent || ''));
   assert.equal((await q('select count(*)::int n from exam_scores'))[0].n, 0);
+  // 총대 로그인이 서버에서 지워졌으면 성적 화면에서도 로그아웃된다 (새로고침을 누르는 순간)
+  await q(`delete from sessions where role = '총대'`);
+  await G.page.evaluate(() => (document.getElementById('toast').hidden = true));
+  await G.page.click('#g-pws [data-act="g-adm-reload"]');
+  await G.page.waitForFunction(() => !document.querySelector('#tabs [data-tab="grades"]') && !!document.querySelector('#tabs [data-tab="grade"]'));
+  assert.deepEqual(await G.tabs(), ['자봉 현황', '공결 신청', '리액션', '성적'], '학생 화면으로');
+  assert.equal((await G.text('#toast > span')).trim(), '로그인이 끊겼어요. 다시 로그인해 주세요');
   await G.page.context().close();
   await P.page.context().close();
 });

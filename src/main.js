@@ -733,7 +733,8 @@ function rxData(sid) {
   if (rxLoad && rxLoad.sid === sid && rxLoad.key === rxKey()) return rxLoad;
   const want = { sid, key: rxKey(), data: rxLoad?.sid === sid ? rxLoad.data : null, err: false };
   rxLoad = want;
-  rpc('my_reactions', { p_student: sid })
+  // 신청한 뒤 다 받을 때까지 기다릴 수 있게 약속(p)을 둔다
+  want.p = rpc('my_reactions', { p_student: sid })
     .then((d) => (want.data = d))
     .catch(() => (want.err = true))
     .finally(() => rxLoad === want && rxLoaded());
@@ -754,7 +755,7 @@ function feedData() {
   if (rxFeed && rxFeed.key === rxKey() && rxFeed.n === n) return rxFeed;
   const want = { key: rxKey(), n, data: rxFeed?.data || null, err: false };
   rxFeed = want;
-  rpc('reaction_feed', { p_limit: n })
+  want.p = rpc('reaction_feed', { p_limit: n })
     .then((d) => (want.data = d))
     .catch(() => (want.err = true))
     .finally(() => rxFeed === want && rxLoaded());
@@ -2479,6 +2480,9 @@ const A = {
     await rpc('create_reaction', { p_student: s.id, p_period: f.period.trim(), p_question: f.q.trim(), p_answer: f.a.trim() });
     UI.reactForm = { no: f.no, period: f.period, q: '', a: '' };
     await refresh();
+    render();
+    // 내 신청 내역·전체 내역을 새로 받을 때까지 기다린다: 느린 인터넷에서 "오늘 2/3" 같은 지난 숫자와 신청 칸이 잠깐 남아 있지 않게
+    await Promise.all([rxLoad, rxFeed].map((l) => l?.p));
     render();
     return toast(`신청했어요 · 부총대 확인을 기다려요${R0 ? ` (오늘 ${R0.today + 1}/${REACT_MAX})` : ''}`);
   },
