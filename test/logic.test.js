@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { genNotice, planRoster, planReactAdj, exportReactions, rosterOps, parseNums, expRange, exportSheets, bal, dupNums, excusable, suggestItems, suggestDetails, suggestPeriods, suggestTexts, reasonEvents, nameMatch } from '../src/logic.js';
+import { genNotice, planRoster, planReactAdj, exportReactions, rosterOps, parseNums, expRange, exportSheets, bal, dupNums, excusable, suggestItems, suggestDetails, suggestPeriods, suggestTexts, reasonEvents, nameMatch, planCarry } from '../src/logic.js';
 
 // 학생 70명과 기록을 만드는 도우미
 function state() {
@@ -440,4 +440,24 @@ test('공지 문구: 한 학생이 한 교시에 지각과 결석을 함께 받�
     genNotice(S, '2026-10-06', '2026-10-06'),
     ['😿 10/6 자봉, 상점 공지하겠습니다.', '[1-3교시 생리학 (3시간)]', '지각(+1): 9', '결석(+4): 4, 9'].join('\n'),
   );
+});
+
+test('엑셀 이월 계획: 그날까지 장부 합계 → 엑셀 값, 지울 기록 수(무효 포함), 지금 자봉 = 엑셀 값 + 그 뒤 기록, 검사', () => {
+  const S = state();
+  S.add('2026-10-20', '지각', '1교시', 1, [5]);
+  S.add('2026-10-21', '결석', '1교시', 2, [5], { voided: { reason: '공결 승인' } });
+  S.add('2026-10-26', '실습', '', 2, [5]);
+  S.add('2026-10-27', '매점', '', -4, [5]);
+  S.add('2026-10-28', '매점', '', -1, [6]);
+  const p = planCarry(S, '번호\t자봉\n5\t15\n6\t-2.5\n\n7 +3', '2026-10-26');
+  assert.deepEqual(p.errors, []);
+  assert.deepEqual(p.items.map(({ no, before, n, del, now, next }) => ({ no, before, n, del, now, next })), [
+    { no: 5, before: 3, n: 15, del: 3, now: -1, next: 11 },
+    { no: 6, before: 0, n: -2.5, del: 0, now: -1, next: -3.5 },
+    { no: 7, before: 0, n: 3, del: 0, now: 0, next: 3 },
+  ]);
+  assert.equal(p.missing.length, 67);
+  assert.ok(!p.missing.includes(5));
+  const bad = planCarry(S, '5 열다섯\n99 1\n5 1\n6 2\n6 3\n아무말', '2026-10-26');
+  assert.deepEqual(bad.errors, ['1번째 줄 "5 열다섯": 자봉은 숫자여야 해요 (예: 15, -2, 0.5)', '99번은 명단에 없어요', '6번이 두 번 있어요', '6번째 줄 "아무말": 번호와 자봉을 적어 주세요']);
 });

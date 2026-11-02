@@ -2624,6 +2624,62 @@ test('여러 시간 수업: 지각은 누를 때마다 1점씩, 결석은 2점�
   await A.page.fill('#attDate', TODAY);
 });
 
+test('엑셀 이월로 바꾸기(부총대): 기준 날짜까지 붙여넣은 학생의 기록을 지우고 엑셀 값을 이월 한 줄로, 그 뒤 기록은 그대로, 미리보기·검사·확인 입력·되돌리기', async () => {
+  const [x, y] = await q(`select id, no from students where active and not exempt order by no limit 2`);
+  const tok = await A.token();
+  const CUT = '2026-02-11';
+  await db.query(`select add_entries($1, '2026-02-10', array[$2::uuid, $3::uuid], '엑셀 이월 시험 전', '', 3)`, [tok, x.id, y.id]);
+  await db.query(`select add_entries($1, '2026-02-12', array[$2::uuid], '엑셀 이월 시험 뒤', '', -4)`, [tok, x.id]);
+  const sumOf = async (id, cond) => (await one(`select coalesce(sum(points), 0)::float as s from ledger where student_id = $1 and voided_at is null ${cond}`, [id])).s;
+  const xBefore = await sumOf(x.id, `and date <= '${CUT}'`);
+  const xNow = await sumOf(x.id, '');
+  const xAfter = await sumOf(x.id, `and date > '${CUT}'`);
+  const nDel = (await one(`select count(*)::int as n from ledger where date <= $1 and student_id = any($2::uuid[])`, [CUT, [x.id, y.id]])).n;
+  await A.reload();
+  await A.tab('manage');
+  await A.page.fill('#rb-cut', CUT);
+  await A.page.fill('#rb-text', `번호\t자봉\n${x.no}\t15\n${y.no}\t0\n999\t1`);
+  assert.match(await A.text('#rb-preview'), /999번은 명단에 없어요/);
+  assert.ok(await A.page.isDisabled('[data-act="rb-apply"]'));
+  await A.page.fill('#rb-text', `번호\t자봉\n${x.no}\t15\n${y.no}\t0`);
+  const pv = await A.text('#rb-preview');
+  assert.match(pv, new RegExp(`2명 · 지울 기록 ${nDel}건 → 이월 1줄 · 붙여넣지 않은 \\d+명은 그대로`));
+  assert.match(pv, new RegExp(`2/11까지 ${xBefore} → 15 · 지금 ${xNow} → ${15 + xAfter}`));
+  // 전체 기간 파일을 먼저 받아야 확인 입력이 켜진다
+  assert.match(pv, /전체<\/b> 기간 파일을 먼저|전체 기간 파일을 먼저/);
+  assert.ok(await A.page.isDisabled('#rb-typed'));
+  await A.tab('notice');
+  await A.click('[data-act="exp-range"][data-v="all"]');
+  await A.download('[data-act="exp-make"]');
+  await A.tab('manage');
+  assert.equal(await A.page.inputValue('#rb-text'), `번호\t자봉\n${x.no}\t15\n${y.no}\t0`, '붙여넣은 내용은 그대로');
+  assert.ok(await A.page.isEnabled('#rb-typed'));
+  assert.ok(await A.page.isDisabled('[data-act="rb-apply"]'));
+  await A.page.fill('#rb-typed', '이월');
+  assert.ok(await A.page.isEnabled('[data-act="rb-apply"]'));
+  assert.equal(await A.toast('[data-act="rb-apply"]'), `2명을 2/11 기준 엑셀 이월로 바꿨어요 · 기록 ${nDel}건 정리`);
+  // 기준 날짜까지는 이월 한 줄, 그 뒤 기록은 그대로
+  assert.deepEqual(await q(`select item, points::float as p, src from ledger where student_id = $1 and date <= $2`, [x.id, CUT]), [{ item: '이월', p: 15, src: 'carry' }]);
+  assert.equal((await q(`select 1 from ledger where student_id = $1 and date <= $2`, [y.id, CUT])).length, 0, '0이면 이월 줄 없이');
+  assert.equal(await sumOf(x.id, ''), 15 + xAfter);
+  assert.equal((await one(`select count(*)::int as n from ledger where item = '엑셀 이월 시험 뒤' and student_id = $1`, [x.id])).n, 1);
+  assert.equal(await A.page.inputValue('#rb-text'), '', '적용하면 칸을 비운다');
+  // 학생 상세에도 이월로 보인다
+  await A.tab('board');
+  await A.click(`#board-grid .tile:has(.no:text-is("${x.no}"))`);
+  assert.match(await A.text(), /이월[\s\S]*2\/11 기준 엑셀 이월|2\/11 기준 엑셀 이월/);
+  await A.click('[data-act="back"]');
+  // 되돌리기: 작업 내역에서 이 작업만 되돌리면 지운 기록이 돌아온다
+  await A.tab('history');
+  assert.match(await A.text(), /엑셀 이월로 바꾸기 \(2\/11 기준, 2명\)/);
+  await A.click('#view .rec-row:has-text("엑셀 이월로 바꾸기") [data-act="hist-drop-pv"]');
+  assert.equal(await A.toast('[data-act="hist-run"]'), '되돌렸어요');
+  assert.equal(await sumOf(x.id, `and date <= '${CUT}'`), xBefore);
+  assert.equal(await sumOf(x.id, ''), xNow);
+  assert.equal((await one(`select count(*)::int as n from ledger where date <= $1 and student_id = any($2::uuid[])`, [CUT, [x.id, y.id]])).n, nDel);
+  await A.fits('엑셀 이월');
+});
+
 test('탭 순서: 길게 눌러 끌면 자리가 바뀌고(이 폰에만, 역할마다), 맨 앞 탭이 처음 여는 탭, 바로 끌거나 짧게 누르면 보통 동작, 원래 순서로, 폰 손가락으로도', async () => {
   const P = await open();
   const center = async (name) => {

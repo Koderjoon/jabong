@@ -269,6 +269,40 @@ export function planReactAdj(S, text) {
   return { items, errors: [...new Set(errors)] };
 }
 
+// 엑셀 이월로 바꾸기: "번호  그날 기준 자봉"을 붙여넣으면, 학생마다 기준 날짜까지의 기록을 지우고 그 값을 이월 한 줄로 넣는 계획.
+// 그날 뒤의 기록은 그대로이므로 지금 자봉 = 엑셀 값 + 그 뒤 기록 합계. 붙여넣지 않은 재학생은 그대로(missing).
+export function planCarry(S, text, cut) {
+  const items = [];
+  const errors = [];
+  const seen = new Set();
+  const sum = (l) => l.filter(live).reduce((a, e) => a + Number(e.points), 0);
+  text.split('\n').forEach((raw, i) => {
+    const line = raw.normalize('NFKC').trim();
+    if (!line) return;
+    const cells = line.split(/[\t,\s]+/).filter(Boolean);
+    if (!/^\d+$/.test(cells[0] || '')) {
+      if (!/번호|자봉|이월|이름/.test(line)) errors.push(`${i + 1}번째 줄 "${line}": 번호와 자봉을 적어 주세요`);
+      return;
+    }
+    if (cells.length < 2) return void errors.push(`${i + 1}번째 줄 "${line}": 번호와 자봉을 적어 주세요`);
+    const no = Number(cells[0]);
+    const v = cells[cells.length - 1].replace(/^\+/, '');
+    if (!/^-?\d{1,5}(\.\d{1,2})?$/.test(v)) return void errors.push(`${i + 1}번째 줄 "${line}": 자봉은 숫자여야 해요 (예: 15, -2, 0.5)`);
+    const st = S.students.find((x) => x.active && x.no === no);
+    if (!st) return void errors.push(`${no}번은 명단에 없어요`);
+    if (seen.has(no)) return void errors.push(`${no}번이 두 번 있어요`);
+    seen.add(no);
+    const mine = S.ledger.filter((e) => e.sid === st.id);
+    const pre = mine.filter((e) => cut && e.date <= cut);
+    const after = sum(mine.filter((e) => !cut || e.date > cut));
+    const n = Number(v);
+    items.push({ sid: st.id, no, name: st.name || '', before: sum(pre), n, del: pre.length, now: sum(mine), next: n + after });
+  });
+  items.sort((a, b) => a.no - b.no);
+  const missing = S.students.filter((x) => x.active && !seen.has(x.no)).map((x) => x.no).sort((a, b) => a - b);
+  return { items, errors: [...new Set(errors)], missing };
+}
+
 // 서버 roster_apply()에 보낼 작업 목록
 export function rosterOps(plan) {
   const ops = plan.changes.map((c) =>

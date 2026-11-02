@@ -35,8 +35,8 @@ select pg_temp.ok(
   = (select array_agg(x order by x) from unnest(array['public_state', 'create_excuse', 'create_excuse_day', 'create_reaction', 'my_reactions', 'reaction_feed', 'reaction_adjust', 'reaction_export', 'review_reaction', 'login', 'recover', 'private_state', 'logout', 'get_photo',
       'create_request', 'change_pw', 'reset_pw', 'new_recovery', 'ensure_period', 'delete_period', 'rename_period', 'save_attendance', 'request_attendance', 'review_attendance',
       'add_entries', 'edit_entry', 'void_entry', 'review_request', 'review_excuse', 'roster_apply', 'my_presets_save', 'my_periods_save', 'purge', 'backup_dump',
-      'restore_backup', 'history_move', 'history_drop', 'history_restore', 'ops_list', 'set_link', 'set_period_hours']) x),
-  '브라우저(anon)에 열린 함수가 정확히 화면이 쓰는 41개');
+      'restore_backup', 'history_move', 'history_drop', 'history_restore', 'ops_list', 'set_link', 'set_period_hours', 'carry_rebase']) x),
+  '브라우저(anon)에 열린 함수가 정확히 화면이 쓰는 42개');
 select pg_temp.ok(not exists (select 1 from pg_proc p where p.pronamespace = 'public'::regnamespace
   and has_function_privilege('anon', p.oid, 'execute') <> has_function_privilege('authenticated', p.oid, 'execute')), 'anon과 authenticated 권한이 같음');
 select pg_temp.ok(not exists (select 1 from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname !~ '^_'
@@ -71,7 +71,7 @@ declare
     'select review_excuse(%s, gen_random_uuid(), true, null)', 'select roster_apply(%s, ''[]'', ''[]'', current_date)',
     'select purge(%s, current_date)', 'select restore_backup(%s, ''{}'')', 'select history_move(%s, 0, true)',
     'select history_drop(%s, 1, true)', 'select history_restore(%s, 1, true)', 'select ops_list(%s, 10)',
-    'select set_link(%s, ''store'', ''https://x'')'];
+    'select set_link(%s, ''store'', ''https://x'')', 'select carry_rebase(%s, current_date, ''[]'')'];
   any_login text[] := array[
     'select private_state(%s)', 'select get_photo(%s, gen_random_uuid())',
     'select create_request(%s, current_date, array[gen_random_uuid()], ''x'', '''', 1, '''', null)',
@@ -94,7 +94,7 @@ begin
       n := n + 1;
     end loop;
   end loop;
-  if n <> 17 * 5 + 5 * 2 + 3 * 3 then raise exception 'FAIL: 권한 검사 수 %', n; end if;
+  if n <> 18 * 5 + 5 * 2 + 3 * 3 then raise exception 'FAIL: 권한 검사 수 %', n; end if;
 end $$;
 -- 로그인 없이 부를 수 있는 함수
 select pg_temp.ok(public_state() is not null and backup_dump() is not null, '공개 함수');
@@ -1387,5 +1387,78 @@ select request_attendance(:'ct', :'hq', format('{"%s":"late1absent1"}', :'h1')::
 select pg_temp.ok(position('지각 1 · 결석 1' in (ops_list(:'t', 1)::jsonb -> 0 ->> 'summary')) > 0, '요청 요약에 함께');
 select pg_temp.expect(format('select save_attendance(%L, %L, %L)', :'t', :'hc', format('{"%s":"late0absent9"}', :'h1')), null, '모르는 값은 출석으로 (오류 없이)');
 \echo 26. 여러 시간 수업 통과
+
+-- ───────── 27. 엑셀 이월로 바꾸기 (기준 날짜까지 지우고 엑셀 값으로 이월 한 줄) ─────────
+set role anon;
+select (login('부총대', '1234')::json ->> 'token') as t \gset
+select (login('학습부장', '1234')::json ->> 'token') as ot \gset
+set role postgres;
+select id as ra from students where active order by no limit 1 \gset
+select id as rb from students where active order by no offset 1 limit 1 \gset
+select id as rc from students where active order by no offset 2 limit 1 \gset
+update students set exempt = false where id in (:'ra', :'rb', :'rc');
+set role anon;
+select add_entries(:'t', '2026-01-10', array[:'ra', :'rb', :'rc']::uuid[], '이월 시험 전', '', 3);
+select add_entries(:'t', '2026-01-11', array[:'ra']::uuid[], '이월 시험 무효', '', 2);
+select add_entries(:'t', '2026-01-12', array[:'ra']::uuid[], '결석', '이월 시험 결석', 2);
+select add_entries(:'t', '2026-01-20', array[:'ra', :'rc']::uuid[], '이월 시험 뒤', '', -4);
+set role postgres;
+select id as rv from ledger where item = '이월 시험 무효' \gset
+select id as rx from ledger where detail = '이월 시험 결석' \gset
+select id as re from ledger where item = '이월 시험 전' and student_id = :'ra' \gset
+set role anon;
+select void_entry(:'t', :'rv', '착오');
+select edit_entry(:'t', :'re', '2026-01-10', '이월 시험 전', '', 3.5, '고침');
+select create_excuse(:'ra', :'rx', '병원', null) as rxx \gset
+-- 검사: 권한·날짜·숫자·중복·명단·대기 중 공결
+select pg_temp.expect(format('select carry_rebase(%L, %L, %L)', :'ot', '2026-01-15', format('[{"sid":"%s","n":1}]', :'ra')), '42501', '총대단은 못 함');
+select pg_temp.expect_msg(format('select carry_rebase(%L, %L, %L)', :'t', '2999-01-01', format('[{"sid":"%s","n":1}]', :'ra')), '기준 날짜는 오늘이나 그 전이어야 해요', '앞날');
+select pg_temp.expect_msg(format('select carry_rebase(%L, %L, %L)', :'t', '2026-01-15', '[]'), '바꿀 학생이 없어요', '빈 목록');
+select pg_temp.expect_msg(format('select carry_rebase(%L, %L, %L)', :'t', '2026-01-15', format('[{"sid":"%s","n":"열"}]', :'ra')), '이월 자봉은 숫자여야 해요%', '숫자 아님');
+select pg_temp.expect_msg(format('select carry_rebase(%L, %L, %L)', :'t', '2026-01-15', format('[{"sid":"%s","n":1},{"sid":"%s","n":2}]', :'ra', :'ra')), '%번이 두 번 있어요', '두 번');
+select pg_temp.expect_msg(format('select carry_rebase(%L, %L, %L)', :'t', '2026-01-15', format('[{"sid":"%s","n":1}]', gen_random_uuid())), '명단에 없는 학생이 있어요', '없는 학생');
+select pg_temp.expect_msg(format('select carry_rebase(%L, %L, %L)', :'t', '2026-01-15', format('[{"sid":"%s","n":15}]', :'ra')), '기준 날짜까지에 아직 처리하지 않은%', '대기 중 공결');
+select review_excuse(:'t', :'rxx', true, null);
+-- 적용: ra는 15로, rb는 0(지우기만), rc는 붙여넣지 않음
+set role postgres;
+create temp table rb_before as select * from ledger;
+create temp table rbp_before as select * from ledger_private;
+create temp table rbr_before as select * from ledger_revisions;
+create temp table rbe_before as select * from excuses;
+set role anon;
+select carry_rebase(:'t', '2026-01-15', format('[{"sid":"%s","n":15},{"sid":"%s","n":0}]', :'ra', :'rb')::jsonb) as rbres \gset
+select pg_temp.ok((:'rbres'::jsonb ->> 'students')::int = 2 and (:'rbres'::jsonb ->> 'deleted')::int >= 4 and (:'rbres'::jsonb ->> 'carry')::int = 1, '결과 수');
+set role postgres;
+select pg_temp.ok((select count(*) from ledger where student_id = :'ra' and date <= '2026-01-15') = 1
+  and (select points = 15 and item = '이월' and src = 'carry' and detail = '1/15 기준 엑셀 이월' and date = '2026-01-15' and voided_at is null from ledger where student_id = :'ra' and date <= '2026-01-15'), '기준 날짜까지는 이월 15 한 줄');
+select pg_temp.ok((select count(*) from ledger where student_id = :'ra' and item = '이월 시험 뒤' and voided_at is null) = 1, '그 뒤 기록은 그대로');
+select pg_temp.ok((select points from ledger where student_id = :'ra' and item = '이월 시험 뒤') = -4
+  and (select sum(points) from ledger where student_id = :'ra' and voided_at is null and date between '2026-01-01' and '2026-01-31') = 11, '15 - 4 = 11');
+select pg_temp.ok(not exists (select 1 from ledger where student_id = :'rb' and date between '2026-01-01' and '2026-01-15'), '0이면 이월 줄 없이 지우기만');
+select pg_temp.ok((select count(*) from ledger where student_id = :'rc' and item like '이월 시험%') = 2, '붙여넣지 않은 학생은 그대로');
+select pg_temp.ok(not exists (select 1 from excuses where id = :'rxx') and not exists (select 1 from ledger_revisions where ledger_id = :'re'), '지운 기록의 공결 신청·수정 이력도');
+select pg_temp.ok((select ledger_private.created_by from ledger join ledger_private on ledger_private.ledger_id = ledger.id where student_id = :'ra' and src = 'carry' and date = '2026-01-15') = '부총대', '이월 기록자');
+-- 되돌리기·다시 살리기
+select max(id) as rbop from ops \gset
+set role anon;
+select history_drop(:'t', :rbop, false);
+set role postgres;
+select pg_temp.ok((select count(*) from ledger) = (select count(*) from rb_before)
+  and not exists (select * from rb_before except select * from ledger)
+  and not exists (select * from rbp_before except select * from ledger_private)
+  and not exists (select * from rbr_before except select * from ledger_revisions)
+  and not exists (select * from rbe_before except select * from excuses), '되돌리면 지운 기록·기록자·수정 이력·공결 신청이 그대로 돌아온다');
+set role anon;
+select history_restore(:'t', :rbop, false);
+set role postgres;
+select pg_temp.ok((select sum(points) from ledger where student_id = :'ra' and voided_at is null and date between '2026-01-01' and '2026-01-31') = 11, '다시 살리면 다시 이월');
+-- 면제 학생도 +이월은 들어간다
+update students set exempt = true where id = :'rc';
+set role anon;
+select carry_rebase(:'t', '2026-01-15', format('[{"sid":"%s","n":7.5}]', :'rc')::jsonb);
+set role postgres;
+select pg_temp.ok((select points from ledger where student_id = :'rc' and src = 'carry' and date = '2026-01-15') = 7.5, '면제 학생도 이월 7.5');
+update students set exempt = false where id = :'rc';
+\echo 27. 엑셀 이월로 바꾸기 통과
 
 \echo 모든 서버 함수 테스트 통과

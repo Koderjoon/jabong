@@ -1647,6 +1647,44 @@ begin
   return json_build_object('students', (select count(*) from students), 'ledger', (select count(*) from ledger), 'createdAt', p_data ->> 'createdAt');
 end $$;
 
+-- 엑셀 이월로 바꾸기 (부총대): 붙여넣은 학생마다 기준 날짜까지의 기록을 모두 지우고, 엑셀의 그날 기준 자봉을 그 날짜의 "이월" 한 줄로 넣는다.
+-- 그 뒤의 기록은 그대로다. p_list: [{sid, n}] (n은 그날 기준 자봉, 0이면 이월 줄 없이 지우기만).
+-- 되돌릴 수 있다: 자식 행(공결 신청·수정 이력·기록자)을 먼저 지워서 작업 기록이 자식 → 부모 순서가 되게 한다 (되돌릴 때 부모부터 다시 넣는다).
+create or replace function carry_rebase(p_token uuid, p_cut date, p_list jsonb) returns json
+language plpgsql security definer set search_path = public as $$
+declare who text := _session(p_token, true); x jsonb; sids uuid[] := '{}'; n_del int; n_carry int := 0; sno int;
+begin
+  perform _wlock();
+  if p_cut is null or p_cut > (now() at time zone 'Asia/Seoul')::date then raise exception '기준 날짜는 오늘이나 그 전이어야 해요'; end if;
+  if jsonb_typeof(coalesce(p_list, 'null')) <> 'array' or jsonb_array_length(p_list) = 0 then raise exception '바꿀 학생이 없어요'; end if;
+  for x in select * from jsonb_array_elements(p_list) loop
+    if coalesce(x ->> 'n', '') !~ '^-?[0-9]{1,5}(\.[0-9]{1,2})?$' then raise exception '이월 자봉은 숫자여야 해요 (예: 15, -2, 0.5)'; end if;
+    select no into sno from students where id = (x ->> 'sid')::uuid and active;
+    if sno is null then raise exception '명단에 없는 학생이 있어요'; end if;
+    if (x ->> 'sid')::uuid = any (sids) then raise exception '%번이 두 번 있어요', sno; end if;
+    sids := sids || (x ->> 'sid')::uuid;
+  end loop;
+  if exists (select 1 from excuses e join ledger l on l.id = e.ledger_id where e.status = 'pending' and l.date <= p_cut and l.student_id = any (sids))
+     or exists (select 1 from attendance_requests a join periods p on p.id = a.period_id where a.status = 'pending' and p.date <= p_cut)
+     or exists (select 1 from requests r where r.status = 'pending' and r.date <= p_cut) then
+    raise exception '기준 날짜까지에 아직 처리하지 않은 공결 신청이나 출석 요청, 총대단 요청이 있어요. 요청함에서 먼저 처리하세요';
+  end if;
+  perform _op(who, 'carry_rebase', format('엑셀 이월로 바꾸기 (%s 기준, %s명)', to_char(p_cut, 'FMMM/FMDD'), cardinality(sids)));
+  create temp table _rb on commit drop as select id from ledger where date <= p_cut and student_id = any (sids);
+  select count(*) into n_del from _rb;
+  delete from excuses where ledger_id in (select id from _rb);
+  delete from ledger_revisions where ledger_id in (select id from _rb);
+  delete from ledger_private where ledger_id in (select id from _rb);
+  delete from ledger where id in (select id from _rb);
+  for x in select * from jsonb_array_elements(p_list) loop
+    if (x ->> 'n')::numeric <> 0 then
+      perform _entry(p_cut, (x ->> 'sid')::uuid, '이월', format('%s 기준 엑셀 이월', to_char(p_cut, 'FMMM/FMDD')), (x ->> 'n')::numeric, 'carry', null, null, who);
+      n_carry := n_carry + 1;
+    end if;
+  end loop;
+  return json_build_object('students', cardinality(sids), 'deleted', n_del, 'carry', n_carry);
+end $$;
+
 create or replace function purge(p_token uuid, p_cut date) returns json
 language plpgsql security definer set search_path = public as $$
 declare who text := _session(p_token, true); old_n int; carry_n int := 0; rx_n int := 0; r record;
@@ -1711,7 +1749,7 @@ do $$ declare f text; begin
     foreach f in array array[
       'public_state()', 'create_excuse(uuid,uuid,text,text)', 'create_excuse_day(uuid,date,text,text)', 'create_reaction(uuid,text,text,text)', 'my_reactions(uuid)', 'reaction_feed(integer)', 'reaction_adjust(uuid,jsonb)', 'reaction_export(uuid,date,date)', 'review_reaction(uuid,uuid[],boolean,text)', 'login(text,text)', 'recover(text,text,text)',
       'private_state(uuid)', 'logout(uuid)', 'get_photo(uuid,uuid)', 'create_request(uuid,date,uuid[],text,text,numeric,text,text)',
-      'change_pw(uuid,text,text)', 'reset_pw(uuid,text,text)', 'new_recovery(uuid,text)', 'ensure_period(uuid,date,text,boolean,integer)', 'set_period_hours(uuid,uuid,integer)', 'delete_period(uuid,uuid)', 'rename_period(uuid,uuid,text)',
+      'change_pw(uuid,text,text)', 'reset_pw(uuid,text,text)', 'new_recovery(uuid,text)', 'ensure_period(uuid,date,text,boolean,integer)', 'set_period_hours(uuid,uuid,integer)', 'carry_rebase(uuid,date,jsonb)', 'delete_period(uuid,uuid)', 'rename_period(uuid,uuid,text)',
       'save_attendance(uuid,uuid,jsonb)', 'request_attendance(uuid,uuid,jsonb)', 'review_attendance(uuid,uuid,boolean,text)', 'add_entries(uuid,date,uuid[],text,text,numeric)', 'edit_entry(uuid,uuid,date,text,text,numeric,text)',
       'void_entry(uuid,uuid,text)', 'review_request(uuid,uuid,boolean,text)', 'review_excuse(uuid,uuid,boolean,text)',
       'roster_apply(uuid,jsonb,jsonb,date)', 'my_presets_save(uuid,jsonb)', 'my_periods_save(uuid,jsonb)', 'purge(uuid,date)', 'backup_dump()', 'restore_backup(uuid,jsonb)', 'history_move(uuid,bigint,boolean)', 'history_drop(uuid,bigint,boolean)', 'history_restore(uuid,bigint,boolean)', 'ops_list(uuid,integer)', 'set_link(uuid,text,text)'

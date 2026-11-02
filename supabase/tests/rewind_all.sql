@@ -61,6 +61,7 @@ select save_attendance(:'t', :'pren', format('{"%s":"late2","%s":"absent"}', :'s
 select save_attendance(:'t', :'pren', format('{"%s":"late3","%s":"absent2"}', :'s1', :'s3')::jsonb); select pg_temp.snap();
 select save_attendance(:'t', :'pren', format('{"%s":"late1absent2","%s":"late2absent1"}', :'s1', :'s3')::jsonb); select pg_temp.snap();
 select set_period_hours(:'t', :'pren', 2); select pg_temp.snap();
+select carry_rebase(:'t', '2026-04-03', format('[{"sid":"%s","n":15},{"sid":"%s","n":0}]', :'s1', :'s2')::jsonb); select pg_temp.snap();
 select ensure_period(:'t', '2026-04-03', '7교시', false) as pday \gset
 select pg_temp.snap();
 select save_attendance(:'t', :'pday', format('{"%s":"absent"}', :'s1')::jsonb); select pg_temp.snap();
@@ -122,9 +123,9 @@ select roster_apply(:'t', format('[{"op":"exempt","id":"%s","on":true}]', :'s2')
 select save_attendance(:'t', :'p2', format('{"%s":"late"}', :'s2')::jsonb); select pg_temp.snap();
 
 select pg_temp.ok((select count(*) from sigs) = (select count(*) from ops) + 1, '작업마다 시점 하나 (+ 맨 처음)');
-select pg_temp.ok((select array_agg(distinct kind order by kind) from ops) = array['add_entries', 'create_excuse', 'create_excuse_day', 'create_reaction', 'create_request', 'delete_period', 'edit_entry', 'ensure_period',
+select pg_temp.ok((select array_agg(distinct kind order by kind) from ops) = array['add_entries', 'carry_rebase', 'create_excuse', 'create_excuse_day', 'create_reaction', 'create_request', 'delete_period', 'edit_entry', 'ensure_period',
   'my_periods_save', 'my_presets_save', 'reaction_adjust', 'rename_period', 'request_attendance', 'review_attendance', 'review_excuse', 'review_reaction', 'review_request', 'roster_apply', 'save_attendance', 'set_link', 'set_period_hours', 'void_entry'],
-  '데이터를 바꾸는 함수 22종 모두 사용');
+  '데이터를 바꾸는 함수 23종 모두 사용');
 select max(op) as last from sigs \gset
 select count(*) as nops from ops \gset
 \echo 시나리오 준비 (작업 :nops 개)
