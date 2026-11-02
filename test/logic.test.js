@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { genNotice, planRoster, planReactAdj, exportReactions, rosterOps, parseNums, expRange, exportSheets, bal, dupNums, excusable, suggestItems, suggestDetails, suggestPeriods, suggestTexts, reasonEvents, nameMatch, planCarry } from '../src/logic.js';
+import { genNotice, planRoster, planReactAdj, exportReactions, rosterOps, parseNums, expRange, exportSheets, bal, dupNums, excusable, suggestItems, suggestDetails, suggestPeriods, suggestTexts, reasonEvents, nameMatch, planCarry, planGrades } from '../src/logic.js';
 
 // 학생 70명과 기록을 만드는 도우미
 function state() {
@@ -464,4 +464,31 @@ test('엑셀 이월 계획: 그날까지 장부 합계 → 엑셀 값, 지울 �
   assert.ok(!p.missing.includes(5));
   const bad = planCarry(S, '5 열다섯\n99 1\n5 1\n6 2\n6 3\n아무말\n8 1.255', '2026-10-26');
   assert.deepEqual(bad.errors, ['1번째 줄 "5 열다섯": 자봉은 숫자여야 해요 (예: 15, -2, 0.5)', '99번은 명단에 없어요', '6번이 두 번 있어요', '6번째 줄 "아무말": 번호와 자봉을 적어 주세요', '7번째 줄 "8 1.255": 자봉은 숫자여야 해요 (예: 15, -2, 0.5)']);
+});
+
+test('시험 성적 붙여넣기: 번호 점수 또는 번호 이름 점수, 이름이 다르면 막고, 빈 점수는 빼고, 평균', () => {
+  const S = state();
+  S.students[4].name = '홍 길동';
+  S.students[69].active = false;
+  const p = planGrades(S, '번호\t이름\t점수\n5\t홍길동\t90\n6\t학생6\t75.50\n7 0\n8\t학생8\t\n\n9,학생9,88.25');
+  assert.deepEqual(p.errors, []);
+  assert.deepEqual(p.items.map(({ no, score }) => ({ no, score })), [{ no: 5, score: 90 }, { no: 6, score: 75.5 }, { no: 7, score: 0 }, { no: 9, score: 88.25 }]);
+  assert.deepEqual(p.blank, [8]);
+  assert.equal(p.avg, 63.44);
+  assert.equal(p.missing.length, 64);
+  assert.ok(!p.missing.includes(8) && !p.missing.includes(70));
+  const bad = planGrades(S, '5 학생6 90\n99 1\n70 1\n6 1\n6 2\n아무말\n7 -3\n8 1.255\n9 90점\n10 10000');
+  assert.deepEqual(bad.errors, [
+    '5번 이름 "학생6"이 명단(홍 길동)과 달라요',
+    '99번은 명단에 없어요',
+    '70번은 명단에 없어요',
+    '6번이 두 번 있어요',
+    '6번째 줄 "아무말": 번호와 점수를 적어 주세요',
+    '7번째 줄 "7 -3": 점수는 0 이상의 숫자여야 해요',
+    '8번 점수 1.255: 소수점 아래는 둘째 자리까지예요',
+    '9번째 줄 "9 90점": 점수는 0 이상의 숫자여야 해요',
+    '10번째 줄 "10 10000": 점수는 0 이상의 숫자여야 해요',
+  ]);
+  assert.deepEqual(bad.items.map((x) => x.no), [6]);
+  assert.equal(planGrades(S, '').avg, null);
 });

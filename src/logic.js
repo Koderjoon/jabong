@@ -524,3 +524,42 @@ export function nameMatch(name, q) {
   for (let i = 0; i < chars.length; i++) if (chars.slice(i).join('').startsWith(qk)) return true;
   return false;
 }
+
+// 시험 성적 붙여넣기 (총대): 엑셀의 "번호 점수" 또는 "번호 이름 점수" 줄.
+// 이름 칸이 있으면 명단 이름과 맞는지 본다 (줄이 밀려 다른 학생 점수가 들어가지 않게, 띄어쓰기는 무시).
+// 점수 칸이 빈 줄(번호 이름만)은 빼고 blank에 모은다. 점수는 0~9999, 소수점 아래 둘째 자리까지.
+export function planGrades(S, text) {
+  const items = [];
+  const errors = [];
+  const blank = [];
+  const seen = new Set();
+  const nm = (s) => String(s || '').replace(/\s/g, '');
+  text.split('\n').forEach((raw, i) => {
+    const line = raw.normalize('NFKC').trim();
+    if (!line) return;
+    const cells = line.split(/[\t,\s]+/).filter(Boolean);
+    if (!/^\d+$/.test(cells[0] || '')) {
+      if (!/번호|점수|이름/.test(line)) errors.push(`${i + 1}번째 줄 "${line}": 번호와 점수를 적어 주세요`);
+      return;
+    }
+    const no = Number(cells[0]);
+    const st = S.students.find((x) => x.active && x.no === no);
+    if (!st) return void errors.push(`${no}번은 명단에 없어요`);
+    if (seen.has(no)) return void errors.push(`${no}번이 두 번 있어요`);
+    const last = cells.length > 1 ? cells[cells.length - 1] : '';
+    const isNum = /^\d{1,4}(\.\d+)?$/.test(last);
+    // 숫자나 부호로 시작하면 점수 칸이다 (90점, -3, 10000은 잘못된 점수)
+    const scoreCell = cells.length > 1 && /^[-+.\d]/.test(last);
+    if (scoreCell && !isNum) return void errors.push(`${i + 1}번째 줄 "${line}": 점수는 0 이상의 숫자여야 해요`);
+    const mid = nm(cells.slice(1, scoreCell ? -1 : undefined).join(''));
+    if (mid && st.name && mid !== nm(st.name)) return void errors.push(`${no}번 이름 "${mid}"이 명단(${st.name})과 달라요`);
+    seen.add(no);
+    if (!isNum) return void blank.push(no);
+    if (Math.round(Number(last) * 100) !== Number(last) * 100) return void errors.push(`${no}번 점수 ${last}: 소수점 아래는 둘째 자리까지예요`);
+    items.push({ sid: st.id, no, name: st.name || '', score: Number(last) });
+  });
+  items.sort((a, b) => a.no - b.no);
+  const avg = items.length ? Math.round((items.reduce((a, x) => a + x.score, 0) / items.length) * 100) / 100 : null;
+  const missing = S.students.filter((x) => x.active && !seen.has(x.no)).map((x) => x.no).sort((a, b) => a - b);
+  return { items, errors: [...new Set(errors)], blank: blank.sort((a, b) => a - b), missing, avg };
+}

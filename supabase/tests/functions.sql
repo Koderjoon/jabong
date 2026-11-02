@@ -35,8 +35,9 @@ select pg_temp.ok(
   = (select array_agg(x order by x) from unnest(array['public_state', 'create_excuse', 'create_excuse_day', 'create_reaction', 'my_reactions', 'reaction_feed', 'reaction_adjust', 'reaction_export', 'review_reaction', 'login', 'recover', 'private_state', 'logout', 'get_photo',
       'create_request', 'change_pw', 'reset_pw', 'new_recovery', 'ensure_period', 'delete_period', 'rename_period', 'save_attendance', 'request_attendance', 'review_attendance',
       'add_entries', 'edit_entry', 'void_entry', 'review_request', 'review_excuse', 'roster_apply', 'my_presets_save', 'my_periods_save', 'purge', 'backup_dump',
-      'restore_backup', 'history_move', 'history_drop', 'history_restore', 'ops_list', 'set_link', 'set_period_hours', 'carry_rebase']) x),
-  '브라우저(anon)에 열린 함수가 정확히 화면이 쓰는 42개');
+      'restore_backup', 'history_move', 'history_drop', 'history_restore', 'ops_list', 'set_link', 'set_period_hours', 'carry_rebase',
+      'student_login', 'student_change_pw', 'student_logout', 'my_grades', 'grade_upload', 'grade_admin', 'grade_delete', 'student_pw_reset']) x),
+  '브라우저(anon)에 열린 함수가 정확히 화면이 쓰는 50개');
 select pg_temp.ok(not exists (select 1 from pg_proc p where p.pronamespace = 'public'::regnamespace
   and has_function_privilege('anon', p.oid, 'execute') <> has_function_privilege('authenticated', p.oid, 'execute')), 'anon과 authenticated 권한이 같음');
 select pg_temp.ok(not exists (select 1 from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname !~ '^_'
@@ -1465,5 +1466,143 @@ set role postgres;
 select pg_temp.ok((select points from ledger where student_id = :'rc' and src = 'carry' and date = '2026-01-15') = 7.5, '면제 학생도 이월 7.5');
 update students set exempt = false where id = :'rc';
 \echo 27. 엑셀 이월로 바꾸기 통과
+
+-- ───────── 28. 시험 성적 ─────────
+set role postgres;
+update accounts set pw_hash = extensions.crypt('1234', extensions.gen_salt('bf')), fails = 0, locked_until = null where role in ('총대', '부총대', '학습부장');
+select id as ga, no as gano from students where active order by no limit 1 \gset
+select id as gb, no as gbno from students where active order by no offset 1 limit 1 \gset
+select id as gc, no as gcno from students where active order by no offset 2 limit 1 \gset
+update students set name = '홍 길동' where id = :'ga';
+update students set name = '김철수' where id = :'gb';
+update students set name = '이영희' where id = :'gc';
+select max(version) as gver from app_version \gset
+select count(*) as gops from ops \gset
+set role anon;
+select (login('총대', '1234')::json ->> 'token') as gt \gset
+select (login('부총대', '1234')::json ->> 'token') as gat \gset
+select (login('학습부장', '1234')::json ->> 'token') as got \gset
+select set_config('tt.gat', :'gat', false), set_config('tt.got', :'got', false);
+-- 권한: 총대만 (부총대·다른 총대단·로그인 없음은 못 함)
+do $$ declare q text; tok text; want text; st text; n int := 0;
+begin
+  foreach q in array array['select grade_upload(%s, ''x'', ''[]'')', 'select grade_admin(%s)', 'select grade_delete(%s, gen_random_uuid())', 'select student_pw_reset(%s, gen_random_uuid())'] loop
+    foreach tok in array array[gen_random_uuid()::text, current_setting('tt.gat'), current_setting('tt.got')] loop
+      want := case when tok = current_setting('tt.gat') or tok = current_setting('tt.got') then '42501' else '28000' end;
+      st := null;
+      begin execute format(q, quote_literal(tok)); exception when others then st := sqlstate; end;
+      if st is distinct from want then raise exception 'FAIL: 성적 권한 % : 오류 코드 %, 기대 %', q, coalesce(st, '없음'), want; end if;
+      n := n + 1;
+    end loop;
+  end loop;
+  if n <> 12 then raise exception 'FAIL: 성적 권한 검사 수 %', n; end if;
+end $$;
+
+-- 올리기 검사
+select pg_temp.expect_msg(format('select grade_upload(%L, %L, %L)', :'gt', ' ', format('[{"sid":"%s","score":90}]', :'ga')), '시험 이름을 입력하세요', '이름 없음');
+select pg_temp.expect_msg(format('select grade_upload(%L, %L, %L)', :'gt', repeat('가', 61), format('[{"sid":"%s","score":90}]', :'ga')), '시험 이름은 60자까지예요', '이름 길이');
+select pg_temp.expect_msg(format('select grade_upload(%L, %L, %L)', :'gt', '중간', '[]'), '올릴 점수가 없어요', '빈 목록');
+select pg_temp.expect_msg(format('select grade_upload(%L, %L, %L)', :'gt', '중간', format('[{"sid":"%s","score":-1}]', :'ga')), '점수는 0 이상의 숫자%', '음수');
+select pg_temp.expect_msg(format('select grade_upload(%L, %L, %L)', :'gt', '중간', format('[{"sid":"%s","score":"90점"}]', :'ga')), '점수는 0 이상의 숫자%', '글자');
+select pg_temp.expect_msg(format('select grade_upload(%L, %L, %L)', :'gt', '중간', format('[{"sid":"%s","score":90.125}]', :'ga')), '점수는 0 이상의 숫자%', '소수 셋째 자리');
+select pg_temp.expect_msg(format('select grade_upload(%L, %L, %L)', :'gt', '중간', format('[{"sid":"%s","score":10000}]', :'ga')), '점수는 0 이상의 숫자%', '너무 큼');
+select pg_temp.expect_msg(format('select grade_upload(%L, %L, %L)', :'gt', '중간', format('[{"sid":"%s","score":1}]', gen_random_uuid())), '명단에 없는 학생이 있어요', '명단 밖');
+select pg_temp.expect_msg(format('select grade_upload(%L, %L, %L)', :'gt', '중간', format('[{"sid":"%s","score":1},{"sid":"%s","score":2}]', :'ga', :'ga')), '%번이 두 번 있어요', '두 번');
+select grade_upload(:'gt', ' 성적시험XQ 중간 ', format('[{"sid":"%s","score":90},{"sid":"%s","score":"75.50"},{"sid":"%s","score":0}]', :'ga', :'gb', :'gc')::jsonb) as up \gset
+select pg_temp.ok((:'up'::json ->> 'n')::int = 3 and (:'up'::json ->> 'avg')::numeric = 55.17, '올리면 인원·평균 (90+75.5+0)/3');
+select (:'up'::json ->> 'id') as ge \gset
+select grade_upload(:'gt', '생리학 퀴즈', format('[{"sid":"%s","score":8}]', :'gb')::jsonb);
+set role postgres;
+select pg_temp.ok((select max(version) from app_version) = :gver and (select count(*) from ops) = :gops, '성적은 작업 내역·변경 알림에 남지 않음');
+select pg_temp.ok((select expires_at - created_at from exams where id = :'ge') = interval '10 days', '10일 뒤 지움');
+select pg_temp.ok(backup_dump()::text not like '%성적시험XQ 중간%' and public_state()::text not like '%성적시험XQ%' and private_state(:'gat')::text not like '%성적시험XQ%', '백업·공개·로그인 상태에 성적 없음');
+select pg_temp.ok(not exists (select 1 from pg_trigger where tgrelid in ('exams'::regclass, 'exam_scores'::regclass, 'student_pw'::regclass, 'student_sessions'::regclass) and not tgisinternal), '성적 표에는 기록·알림 트리거 없음');
+set role anon;
+-- 학생 로그인: 처음 비밀번호는 이름 (띄어쓰기 무시), 틀리면 5번에 10분 잠김
+select pg_temp.ok(student_login(99999, '홍길동')::json ->> 'error' = '명단에 없는 번호예요', '없는 번호');
+select pg_temp.ok(student_login(:gano, '홍길순')::json ->> 'error' = '비밀번호가 맞지 않아요', '다른 이름');
+select pg_temp.ok(student_login(:gano, null)::json ->> 'error' = '비밀번호가 맞지 않아요', '빈 비밀번호');
+select student_login(:gano, '홍길동') as la \gset
+select pg_temp.ok((:'la'::json ->> 'initial')::boolean and (:'la'::json ->> 'no')::int = :gano, '이름(띄어쓰기 무시)으로 들어가면 처음 비밀번호 상태');
+select (:'la'::json ->> 'token') as sa \gset
+select pg_temp.ok((my_grades(:'sa')::json ->> 'initial')::boolean and my_grades(:'sa')::json -> 'exams' is null, '처음 비밀번호로는 성적이 안 보임');
+select pg_temp.expect(format('select my_grades(%L)', gen_random_uuid()), 'P0401', '없는 학생 토큰');
+-- 비밀번호 바꾸기
+select pg_temp.expect_msg(format('select student_change_pw(%L, null, %L)', :'sa', 'abc'), '새 비밀번호는 4자 이상이어야 해요', '짧음');
+select pg_temp.expect_msg(format('select student_change_pw(%L, null, %L)', :'sa', ' 홍길 동 '), '이름이 아닌 다른 비밀번호로 정해 주세요', '이름 그대로');
+select student_login(:gano, '홍 길동') as la2 \gset
+select (:'la2'::json ->> 'token') as sa2 \gset
+select student_change_pw(:'sa', null, 'pass1234');
+select pg_temp.expect(format('select my_grades(%L)', :'sa2'), 'P0401', '바꾸면 다른 기기(이름으로 들어온 사람)는 끊김');
+select pg_temp.ok(student_login(:gano, '홍길동')::json ->> 'error' = '비밀번호가 맞지 않아요', '바꾼 뒤에는 이름으로 못 들어감');
+select pg_temp.ok(not (student_login(:gano, 'pass1234')::json ->> 'initial')::boolean, '새 비밀번호로 들어감');
+select my_grades(:'sa') as mg \gset
+select pg_temp.ok(json_array_length(:'mg'::json -> 'exams') = 1 and (:'mg'::json -> 'exams' -> 0 ->> 'title') = '성적시험XQ 중간'
+  and (:'mg'::json -> 'exams' -> 0 ->> 'score')::numeric = 90 and (:'mg'::json -> 'exams' -> 0 ->> 'avg')::numeric = 55.17
+  and :'mg'::json -> 'exams' -> 0 ->> 'until' is not null, '내 성적: 내 점수와 평균만, 내 점수가 없는 시험은 안 보임');
+select pg_temp.ok(:'mg'::text not like '%75.5%' and :'mg'::text not like '%' || :'gb' || '%', '다른 학생 점수·id는 없음');
+select pg_temp.expect_msg(format('select student_change_pw(%L, %L, %L)', :'sa', 'wrong', 'pass5678'), '현재 비밀번호가 맞지 않아요', '바꾼 뒤에는 현재 비밀번호를 물음');
+select student_change_pw(:'sa', 'pass1234', 'pass5678');
+select pg_temp.ok(student_login(:gano, 'pass5678')::json ->> 'token' is not null, '다시 바꾸기');
+-- 잠김
+select student_login(:gbno, 'x'), student_login(:gbno, 'x'), student_login(:gbno, 'x'), student_login(:gbno, 'x');
+select pg_temp.ok(student_login(:gbno, '김철수')::json ->> 'token' is not null, '4번 틀린 뒤 맞으면 들어감');
+select student_login(:gbno, 'x'), student_login(:gbno, 'x'), student_login(:gbno, 'x'), student_login(:gbno, 'x'), student_login(:gbno, 'x');
+select pg_temp.ok(student_login(:gbno, '김철수')::json ->> 'error' like '%잠겼어요. 10분 뒤%', '5번 틀리면 10분 잠김');
+select pg_temp.ok(student_login(:gcno, '이영희')::json ->> 'token' is not null, '잠김은 그 번호만');
+-- 총대 화면: 시험 목록(점수 없이)과 비밀번호 상태
+select grade_admin(:'gt') as ga2 \gset
+select pg_temp.ok(json_array_length(:'ga2'::json -> 'exams') = 2 and (:'ga2'::json -> 'exams' -> 1 ->> 'n')::int = 3 and :'ga2'::text not like '%"score"%', '총대: 시험 2개, 인원, 점수는 안 보냄');
+select pg_temp.ok((select (x ->> 'changed')::boolean from json_array_elements(:'ga2'::json -> 'pw') x where x ->> 'sid' = :'ga')
+  and (select (x ->> 'locked')::boolean and not (x ->> 'changed')::boolean from json_array_elements(:'ga2'::json -> 'pw') x where x ->> 'sid' = :'gb'), '비밀번호 바꿈·잠김 표시');
+-- 초기화: 이름으로 돌아가고 로그인이 끊기며 잠김도 풀림
+select (student_login(:gano, 'pass5678')::json ->> 'token') as sa3 \gset
+select student_pw_reset(:'gt', :'ga');
+select student_pw_reset(:'gt', :'gb');
+select pg_temp.expect(format('select my_grades(%L)', :'sa3'), 'P0401', '초기화하면 로그인이 끊김');
+select pg_temp.ok((student_login(:gano, '홍길동')::json ->> 'initial')::boolean and student_login(:gbno, '김철수')::json ->> 'token' is not null, '초기화하면 이름으로, 잠김도 풀림');
+select pg_temp.expect_msg(format('select student_pw_reset(%L, %L)', :'gt', gen_random_uuid()), '명단에 없는 학생이에요', '없는 학생 초기화');
+-- 지우기
+select pg_temp.expect_msg(format('select grade_delete(%L, %L)', :'gt', gen_random_uuid()), '이미 지워진 시험이에요', '없는 시험');
+select grade_delete(:'gt', :'ge');
+set role postgres;
+select pg_temp.ok(not exists (select 1 from exam_scores where exam_id = :'ge'), '시험을 지우면 점수도');
+-- 10일 지나면 안 보이고 지워짐
+update exams set expires_at = now() - interval '1 second';
+set role anon;
+select student_change_pw((student_login(:gcno, '이영희')::json ->> 'token')::uuid, null, 'young1234');
+select pg_temp.ok(json_array_length(my_grades((student_login(:gcno, 'young1234')::json ->> 'token')::uuid)::json -> 'exams') = 0, '지난 시험은 안 보임');
+set role postgres;
+select pg_temp.ok(not exists (select 1 from exams) and not exists (select 1 from exam_scores), '지난 시험은 지워짐');
+-- 명단에서 빠진 학생은 끊김, 백업에서 되살려도 비밀번호는 그대로
+set role anon;
+select (student_login(:gcno, 'young1234')::json ->> 'token') as sc \gset
+set role postgres;
+update students set active = false where id = :'gc';
+set role anon;
+select pg_temp.expect(format('select my_grades(%L)', :'sc'), 'P0401', '명단에서 빠지면 끊김');
+select pg_temp.ok(student_login(:gcno, 'young1234')::json ->> 'error' = '명단에 없는 번호예요', '명단에서 빠지면 로그인 못 함');
+set role postgres;
+update students set active = true where id = :'gc';
+set role anon;
+select restore_backup(:'gat', backup_dump());
+select pg_temp.ok(student_login(:gcno, 'young1234')::json ->> 'token' is not null, '백업에서 되살려도 학생 비밀번호는 그대로');
+select student_logout(:'sc');
+select pg_temp.expect(format('select my_grades(%L)', :'sc'), 'P0401', '로그아웃하면 끊김');
+-- 이름이 비어 있는 학생은 빈 비밀번호로 못 들어감, 만료된 로그인은 끊김
+set role postgres;
+update students set name = '' where id = :'gb';
+set role anon;
+select student_pw_reset(:'gt', :'gb');
+select pg_temp.ok(student_login(:gbno, '')::json ->> 'error' = '비밀번호가 맞지 않아요' and student_login(:gbno, null)::json ->> 'error' = '비밀번호가 맞지 않아요', '이름이 없으면 처음 비밀번호로 못 들어감');
+set role postgres;
+update students set name = '김철수' where id = :'gb';
+insert into student_sessions (student_id, expires_at) values (:'ga', now() - interval '1 second') returning token as gx \gset
+set role anon;
+select pg_temp.expect(format('select student_change_pw(%L, null, %L)', :'gx', 'zzzz9999'), 'P0401', '만료된 학생 로그인 (정리 전에도)');
+select pg_temp.expect(format('select my_grades(%L)', :'gx'), 'P0401', '만료된 학생 로그인');
+set role postgres;
+select pg_temp.ok((select expires_at > now() + interval '29 days' from student_sessions where token = (select token from student_sessions where student_id = :'gc' order by expires_at desc limit 1)) is not false, '학생 로그인은 30일');
+\echo 28. 시험 성적 통과
 
 \echo 모든 서버 함수 테스트 통과

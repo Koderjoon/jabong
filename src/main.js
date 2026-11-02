@@ -39,6 +39,7 @@ const UI = {
     }
   })(),
   exp: { range: 'month', from: '', to: '' }, fullBackup: false, purgeCut: '', purgeTyped: '', rbCut: '', rbText: '', rbTyped: '',
+  gLogin: { no: '', pw: '' }, gPw: { cur: '', n1: '', n2: '', open: false }, gUp: { title: '', text: '' }, gDel: null, gReset: null, gQ: '',
   rosterText: '', rosterReplace: false, rxAdjText: '', rxFeedN: 30, recover: false, newCode: null,
   // 학생이 정해 둔 "내 번호" (이 기기에만 기억한다)
   myNo: (() => {
@@ -61,7 +62,7 @@ function setMyNo(no) {
 const myStudent = () => (UI.myNo ? S.students.find((x) => x.active && x.no === UI.myNo) : null);
 
 const TABS = {
-  student: [['board', '자봉 현황'], ['excuse', '공결 신청'], ['react', '리액션']],
+  student: [['board', '자봉 현황'], ['excuse', '공결 신청'], ['react', '리액션'], ['grade', '성적']],
   officer: [['request', '요청하기'], ['reqs', '요청 현황'], ['board', '자봉 현황']],
   admin: [['attend', '출석'], ['record', '자봉'], ['inbox', '요청함'], ['notice', '공지'], ['history', '작업 내역'], ['manage', '관리'], ['board', '자봉 현황']],
 };
@@ -71,7 +72,9 @@ const canAttend = () => Boolean(S.accounts.find((a) => a.role === UI.user)?.atte
 // 총대단·부총대는 디데이 관리자 링크가 있으면 맨 앞(처음 여는 탭)이 디데이다 (여기서 바로 추가·수정·삭제)
 const baseTabs = (role) => {
   if (role === 'student') return ddayUrl() ? [['dday', '디데이'], ...TABS.student] : TABS.student;
-  const base = role === 'officer' && UI.user && canAttend() ? [['attend', '출석'], ...TABS.officer] : TABS[role];
+  let base = role === 'officer' && UI.user && canAttend() ? [['attend', '출석'], ...TABS.officer] : TABS[role];
+  // 시험 성적은 총대만 올린다
+  if (role === 'officer' && UI.user === '총대') base = [...base, ['grades', '성적']];
   return ddayAdminUrl() ? [['dday', '디데이'], ...base] : base;
 };
 // 탭 순서는 길게 눌러 끌어서 바꾼다. 역할마다 이 폰에만 기억한다(jabong-taborder). 맨 앞 탭이 처음 여는 탭이다.
@@ -801,6 +804,136 @@ function vReact() {
   ${vReactFeed()}`;
 }
 
+// ───────── 시험 성적 ─────────
+// 학생: 번호 + 비밀번호(처음엔 이름)로 들어와 내 점수와 평균만 본다. 처음 비밀번호로는 성적이 안 보이고 먼저 바꾼다.
+// 로그인(토큰)은 이 폰에만 기억한다 (jabong-grade). 성적은 화면 상태(S)에 싣지 않고 이 탭에서만 받아 온다.
+const GRADE_KEY = 'jabong-grade';
+function loadGs() {
+  try {
+    const g = JSON.parse(localStorage.getItem(GRADE_KEY) || 'null');
+    return g && g.token ? g : null;
+  } catch {
+    return null;
+  }
+}
+function setGs(g) {
+  UI.gs = g;
+  gMine = null;
+  try {
+    if (g) localStorage.setItem(GRADE_KEY, JSON.stringify(g));
+    else localStorage.removeItem(GRADE_KEY);
+  } catch {}
+}
+UI.gs = loadGs();
+let gMine = null; // { token, at, data, err }
+function myGrades(force) {
+  const g = UI.gs;
+  if (!g) return null;
+  if (!force && gMine && gMine.token === g.token && (gMine.loading || Date.now() - gMine.at < 60000)) return gMine;
+  const want = { token: g.token, at: Date.now(), data: gMine?.token === g.token ? gMine.data : null, err: null, loading: true };
+  gMine = want;
+  rpc('my_grades', { p_token: g.token })
+    .then((d) => (want.data = d))
+    .catch((e) => {
+      if (e.code === 'P0401') {
+        if (UI.gs?.token === want.token) setGs(null);
+        toast(e.message);
+      } else want.err = e.message || '불러오지 못했어요';
+    })
+    .finally(() => {
+      want.loading = false;
+      want.at = Date.now();
+      if (UI.tab === 'grade') softRender();
+    });
+  return want;
+}
+// 학생 화면에서 성적 함수를 부른다. 로그인이 끊겼으면 이 폰의 성적 로그인을 지운다.
+async function gradeRpc(fn, args) {
+  try {
+    return await rpc(fn, { p_token: UI.gs?.token, ...args });
+  } catch (e) {
+    if (e.code === 'P0401') setGs(null);
+    throw e;
+  }
+}
+const num = (x) => (x == null ? '-' : String(Number(x)));
+function vGrade() {
+  const head = '<div><h1>성적</h1><p class="sub">총대가 올린 시험 성적을 <b>나만</b> 볼 수 있어요. 내 점수와 반 평균이 보이고, 올린 뒤 10일이 지나면 사라져요.</p></div>';
+  if (!UI.gs) {
+    const f = UI.gLogin;
+    return `${head}<div class="card" id="g-login-card">
+    <label class="fld"><span>내 번호</span><input id="g-no" inputmode="numeric" value="${esc(f.no || (UI.myNo ? String(UI.myNo) : ''))}" data-bind="gLogin.no" placeholder="예: 56" autocomplete="off"></label>
+    <label class="fld"><span>비밀번호</span><input type="password" id="g-pw" value="${esc(f.pw)}" data-bind="gLogin.pw" autocomplete="current-password"></label>
+    <button class="btn" data-act="g-login">성적 보기</button>
+    <p class="hint" style="margin:0">처음 비밀번호는 <b>내 이름</b>이에요 (예: 홍길동). 처음 들어오면 새 비밀번호로 바꿔야 성적이 보여요. 비밀번호를 잊었으면 총대에게 초기화를 부탁하세요.</p></div>`;
+  }
+  const G = myGrades();
+  const D = G?.data;
+  const out = '<button class="btn ghost small" data-act="g-logout">로그아웃</button>';
+  if (!D) return `${head}${G?.err ? `<div class="warn">성적을 불러오지 못했어요. ${esc(G.err)}</div><div class="btns"><button class="btn ghost small" data-act="g-reload">다시 시도</button>${out}</div>` : '<p class="boot">불러오는 중…</p>'}`;
+  const p = UI.gPw;
+  if (D.initial)
+    return `${head}<div class="card" id="g-first"><h2>${D.no}번 · 새 비밀번호 정하기</h2>
+    <div class="warn">처음 비밀번호(이름)는 다른 사람도 알 수 있어요. 나만 아는 새 비밀번호로 바꿔야 성적이 보여요.</div>
+    <input type="password" id="g-n1" placeholder="새 비밀번호 (4자 이상)" value="${esc(p.n1)}" data-bind="gPw.n1" autocomplete="new-password">
+    <input type="password" id="g-n2" placeholder="새 비밀번호 확인" value="${esc(p.n2)}" data-bind="gPw.n2" autocomplete="new-password">
+    <div class="btns"><button class="btn" data-act="g-setpw">비밀번호 정하고 성적 보기</button>${out}</div></div>`;
+  const list = D.exams || [];
+  return `${head}<div class="req-top"><b>${D.no}번 성적</b><div class="btns"><button class="btn ghost small" data-act="g-reload">새로고침</button><button class="btn ghost small" data-act="g-pw-open">비밀번호 바꾸기</button>${out}</div></div>
+  ${G.err ? `<div class="warn">새로 불러오지 못했어요 (아래는 지난 것). ${esc(G.err)}</div>` : ''}
+  ${p.open ? `<div class="card" id="g-chpw"><h2>비밀번호 바꾸기</h2>
+    <input type="password" id="g-cur" placeholder="현재 비밀번호" value="${esc(p.cur)}" data-bind="gPw.cur" autocomplete="current-password">
+    <input type="password" id="g-n1" placeholder="새 비밀번호 (4자 이상)" value="${esc(p.n1)}" data-bind="gPw.n1" autocomplete="new-password">
+    <input type="password" id="g-n2" placeholder="새 비밀번호 확인" value="${esc(p.n2)}" data-bind="gPw.n2" autocomplete="new-password">
+    <div class="btns"><button class="btn" data-act="g-chpw">바꾸기</button><button class="btn ghost" data-act="g-pw-close">그만두기</button></div></div>` : ''}
+  <div id="g-list">${list.map((e) => `<div class="card g-exam"><div class="req-top"><b>${esc(e.title)}</b><span class="note">${esc(md(e.at.slice(0, 10)))} 올림</span></div>
+    <div class="g-nums"><div><span class="note">내 점수</span><b class="g-score">${num(e.score)}</b></div><div><span class="note">평균</span><b>${num(e.avg)}</b></div></div>
+    <p class="note" style="margin:0">${esc(md(e.until.slice(0, 10)))}에 사라져요</p></div>`).join('') || '<p class="empty">지금 볼 수 있는 성적이 없어요.</p>'}</div>`;
+}
+
+// 총대: 성적 올리기·지우기, 학생 비밀번호 상태와 초기화. 올린 점수는 다시 받아 오지 않는다(인원·평균만).
+let gAdm = null; // { key, data, err, loading }
+function gradeAdmin(force) {
+  const key = token();
+  if (!force && gAdm && gAdm.key === key) return gAdm;
+  const want = { key, data: gAdm?.key === key ? gAdm.data : null, err: null, loading: true };
+  gAdm = want;
+  rpc('grade_admin', { p_token: key })
+    .then((d) => (want.data = d))
+    .catch((e) => (want.err = e.message || '불러오지 못했어요'))
+    .finally(() => {
+      want.loading = false;
+      if (gAdm === want && UI.tab === 'grades') softRender();
+    });
+  return want;
+}
+function vGrades() {
+  const u = UI.gUp;
+  const plan = u.text.trim() ? L.planGrades(S, u.text) : null;
+  const ok = plan && plan.items.length && !plan.errors.length;
+  const A0 = gradeAdmin();
+  const D = A0.data;
+  const pw = D ? D.pw.map((x) => ({ ...x, s: S.students.find((s) => s.id === x.sid) })).filter((x) => x.s) : [];
+  const q = UI.gQ.trim();
+  const shown = q ? pw.filter((x) => String(x.s.no).startsWith(q) || L.nameMatch(x.s.name, q)) : pw;
+  return `<div><h1>성적</h1><p class="sub">학생은 번호와 비밀번호로 들어와 <b>자기 점수와 평균만</b> 봐요. 올린 성적은 <b>10일 뒤 자동으로 지워지고</b>, 백업·작업 내역에도 남지 않아요.</p></div>
+  <div class="card"><h2>성적 올리기</h2>
+  <label class="fld"><span>시험 이름</span><input id="g-title" maxlength="60" value="${esc(u.title)}" data-bind="gUp.title" data-region="g-btn" placeholder="예: 구강해부학 중간고사" autocomplete="off"></label>
+  <textarea id="g-text" aria-label="번호와 점수 붙여넣기" data-bind="gUp.text" data-region="g-preview" placeholder="번호&#9;점수&#10;1&#9;90&#10;2&#9;75.5" style="min-height:110px;font-family:var(--mono)">${esc(u.text)}</textarea>
+  <p class="hint" style="margin:0">엑셀에서 <b>번호·점수</b> 열(또는 번호·이름·점수)을 복사해 붙여넣으세요. 이름이 있으면 명단과 맞는지 확인해요. 점수 칸이 빈 학생은 빼요.</p>
+  <div id="g-preview" style="display:flex;flex-direction:column;gap:8px">${plan ? `${plan.errors.length ? `<div class="warn">${plan.errors.map(esc).join('<br>')}</div>` : ''}
+    ${plan.items.length ? `<div class="note" id="g-sum">${plan.items.length}명 · 평균 ${plan.avg}${plan.blank.length ? ` · 점수 없음 ${plan.blank.join(', ')}번` : ''}${plan.missing.length ? ` · 붙여넣지 않은 ${plan.missing.length}명` : ''}</div>
+    <div class="mlist" style="max-height:200px">${plan.items.map((x) => `<div class="mrow"><span class="mono">${x.no}</span><span class="grow">${esc(x.name)}</span><span class="mono">${x.score}</span></div>`).join('')}</div>` : ''}` : ''}</div>
+  <div id="g-btn"><button class="btn" data-act="g-upload" ${ok && u.title.trim() ? '' : 'disabled'}>${ok ? `${plan.items.length}명 성적 올리기` : '성적 올리기'}</button></div></div>
+  <div class="card" id="g-exams"><h2>올린 성적</h2>${!D ? (A0.err ? `<div class="warn">${esc(A0.err)}</div><button class="btn ghost small" data-act="g-adm-reload">다시 시도</button>` : '<p class="note">불러오는 중…</p>')
+    : D.exams.map((e) => `<div class="g-row"><div class="grow"><b>${esc(e.title)}</b><div class="note">${e.n}명 · 평균 ${num(e.avg)} · ${esc(md(e.at.slice(0, 10)))} 올림 · ${esc(md(e.until.slice(0, 10)))}에 지워짐</div></div>
+      ${UI.gDel === e.id ? `<div class="btns"><button class="btn danger small" data-act="g-del-yes" data-id="${e.id}">네, 지우기</button><button class="btn ghost small" data-act="g-del-no">그만두기</button></div>` : `<button class="btn ghost small" data-act="g-del" data-id="${e.id}">지우기</button>`}</div>`).join('') || '<p class="note" style="margin:0">지금 올라가 있는 성적이 없어요.</p>'}</div>
+  ${D ? `<div class="card" id="g-pws"><h2>학생 비밀번호</h2>
+  <p class="note" style="margin:0">바꾼 학생 ${pw.filter((x) => x.changed).length} / ${pw.length}명. 아직 바꾸지 않은 학생은 이름으로 들어갈 수 있어요. 비밀번호를 잊었거나 남이 먼저 바꿨다는 학생은 초기화하면 다시 이름으로 들어가요.</p>
+  <input type="search" id="g-q" aria-label="학생 찾기" placeholder="번호·이름 검색" value="${esc(UI.gQ)}" data-bind="gQ" data-region="g-pwlist">
+  <div class="mlist" id="g-pwlist" style="max-height:320px">${shown.map((x) => `<div class="mrow"><span class="mono">${x.s.no}</span><span class="grow">${esc(x.s.name)}</span><span class="pill ${x.locked ? 'rejected' : x.changed ? 'approved' : 'pending'}">${x.locked ? '잠김' : x.changed ? '바꿈' : '처음 비밀번호'}</span>${UI.gReset === x.sid ? `<button class="btn danger small" data-act="g-reset-yes" data-sid="${x.sid}">초기화</button><button class="btn ghost small" data-act="g-reset-no">취소</button>` : x.changed || x.locked ? `<button class="btn ghost small" data-act="g-reset" data-sid="${x.sid}">초기화</button>` : ''}</div>`).join('') || '<p class="note">찾는 학생이 없어요.</p>'}</div></div>` : ''}`;
+}
+
 // 출석: 날짜마다 "아침 출석"은 항상 맨 앞에 있다. 아직 서버에 없는 교시는 v: 로 시작하는 임시 id를 쓴다.
 // 아침 출석은 부총대만 한다. 총대단 화면에는 나오지 않고, 총대단은 교시를 추가해서 체크한다.
 function periodsOf(date) {
@@ -1404,7 +1537,7 @@ function render() {
       : locked
         ? '<div class="mocknote">총대단과 부총대는 자기 직책의 비밀번호로 로그인해요.</div>'
         : `<div class="who"><b style="color:var(--ink)">${esc(UI.user)}</b>로 로그인됨 ${UI.role === 'officer' ? '<button class="btn ghost small" data-act="pw-open">비밀번호 바꾸기</button> ' : ''}<button class="btn ghost small" data-act="logout">로그아웃</button></div>`;
-  const V = { dday: vDday, board: vBoard, excuse: vExcuse, react: vReact, request: vRequest, reqs: vReqs, attend: vAttend, record: vRecord, inbox: vInbox, notice: vNotice, history: vHistory, manage: vManage };
+  const V = { grade: vGrade, grades: vGrades, dday: vDday, board: vBoard, excuse: vExcuse, react: vReact, request: vRequest, reqs: vReqs, attend: vAttend, record: vRecord, inbox: vInbox, notice: vNotice, history: vHistory, manage: vManage };
   const codeCard =
     !locked && UI.role === 'admin' && UI.newCode
       ? `<div class="card" style="border-color:var(--warn)"><h2>새 복구 코드</h2><div class="mono" style="font-size:22px;letter-spacing:.06em">${esc(UI.newCode)}</div>
@@ -1463,7 +1596,7 @@ function setPath(p, v) {
 
 // 입력칸은 그대로 두고 화면의 한 영역만 새로 그린다 (한글 입력이 끊기지 않게)
 function updateRegion(id) {
-  const V = { board: vBoard, record: vRecord, manage: vManage, notice: vNotice };
+  const V = { board: vBoard, record: vRecord, manage: vManage, notice: vNotice, grades: vGrades };
   if (!V[UI.tab] || UI.sid) return;
   const t = document.createElement('div');
   t.innerHTML = V[UI.tab]();
@@ -2156,6 +2289,89 @@ const A = {
     await run('review_excuse', { p_id: d.id, p_approve: false, p_note: val('note-' + d.id) }, '반려했어요');
     return true;
   },
+  'g-login': async () => {
+    const no = Number(String(UI.gLogin.no || (UI.myNo ? UI.myNo : '')).trim());
+    if (!no) return toast('번호를 입력하세요');
+    if (!UI.gLogin.pw) return toast('비밀번호를 입력하세요');
+    const r = await rpc('student_login', { p_no: no, p_pw: UI.gLogin.pw });
+    if (r.error) return toast(r.error);
+    UI.gLogin = { no: '', pw: '' };
+    UI.gPw = { cur: '', n1: '', n2: '', open: false };
+    setGs({ token: r.token, no: r.no });
+    toast(r.initial ? '처음 비밀번호로 들어왔어요 · 새 비밀번호를 정해 주세요' : `${r.no}번으로 들어왔어요`);
+  },
+  'g-logout': async () => {
+    const g = UI.gs;
+    setGs(null);
+    UI.gPw = { cur: '', n1: '', n2: '', open: false };
+    if (g) await rpc('student_logout', { p_token: g.token }).catch(() => {});
+    toast('성적에서 로그아웃했어요');
+  },
+  'g-reload': () => {
+    myGrades(true);
+  },
+  'g-pw-open': () => {
+    UI.gPw = { cur: '', n1: '', n2: '', open: true };
+  },
+  'g-pw-close': () => {
+    UI.gPw = { cur: '', n1: '', n2: '', open: false };
+  },
+  'g-setpw': async () => {
+    const p = UI.gPw;
+    if (p.n1.length < 4) return toast('새 비밀번호는 4자 이상이어야 해요');
+    if (p.n1 !== p.n2) return toast('새 비밀번호 두 칸이 달라요');
+    await gradeRpc('student_change_pw', { p_cur: null, p_new: p.n1 });
+    UI.gPw = { cur: '', n1: '', n2: '', open: false };
+    myGrades(true);
+    toast('새 비밀번호를 정했어요 · 다음부터 이 비밀번호로 들어와요');
+  },
+  'g-chpw': async () => {
+    const p = UI.gPw;
+    if (!p.cur) return toast('현재 비밀번호를 입력하세요');
+    if (p.n1.length < 4) return toast('새 비밀번호는 4자 이상이어야 해요');
+    if (p.n1 !== p.n2) return toast('새 비밀번호 두 칸이 달라요');
+    await gradeRpc('student_change_pw', { p_cur: p.cur, p_new: p.n1 });
+    UI.gPw = { cur: '', n1: '', n2: '', open: false };
+    toast('비밀번호를 바꿨어요 · 다른 기기의 로그인은 끊겼어요');
+  },
+  'g-upload': async () => {
+    const u = UI.gUp;
+    const plan = L.planGrades(S, u.text);
+    if (!u.title.trim()) return toast('시험 이름을 입력하세요');
+    if (!plan.items.length || plan.errors.length) return toast('붙여넣은 내용을 확인하세요');
+    const r = await rpc('grade_upload', { p_token: token(), p_title: u.title.trim(), p_list: plan.items.map((x) => ({ sid: x.sid, score: x.score })) });
+    UI.gUp = { title: '', text: '' };
+    gradeAdmin(true);
+    toast(`"${u.title.trim()}" ${r.n}명 성적을 올렸어요 · 평균 ${num(r.avg)}`);
+  },
+  'g-adm-reload': () => {
+    gradeAdmin(true);
+  },
+  'g-del': (d) => {
+    UI.gDel = d.id;
+  },
+  'g-del-no': () => {
+    UI.gDel = null;
+  },
+  'g-del-yes': async (d) => {
+    UI.gDel = null;
+    await rpc('grade_delete', { p_token: token(), p_id: d.id });
+    gradeAdmin(true);
+    toast('성적을 지웠어요 · 학생 화면에서도 사라져요');
+  },
+  'g-reset': (d) => {
+    UI.gReset = d.sid;
+  },
+  'g-reset-no': () => {
+    UI.gReset = null;
+  },
+  'g-reset-yes': async (d) => {
+    UI.gReset = null;
+    await rpc('student_pw_reset', { p_token: token(), p_sid: d.sid });
+    gradeAdmin(true);
+    const s = S.students.find((x) => x.id === d.sid);
+    toast(`${s ? `${s.no}번 ` : ''}비밀번호를 처음(이름)으로 되돌렸어요`);
+  },
   'rx-retry': () => {
     rxLoad = null;
     rxFeed = null;
@@ -2636,6 +2852,7 @@ document.addEventListener('keydown', (ev) => {
     return;
   }
   if (ev.key === 'Enter' && ev.target.id === 'login-pw') document.querySelector('[data-act="login"]')?.click();
+  if (ev.key === 'Enter' && ev.target.id === 'g-pw') document.querySelector('[data-act="g-login"]')?.click();
   if (ev.key === 'Enter' && !ev.isComposing && /-pr(name|pts)$/.test(ev.target.id || '')) {
     ev.preventDefault();
     document.querySelector(`[data-act="pr-save"][data-fk="${ev.target.id.split('-')[0]}"]`)?.click();

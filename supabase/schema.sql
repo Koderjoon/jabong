@@ -196,6 +196,35 @@ create table if not exists attendance_requests (
   reviewed_at timestamptz
 );
 
+-- 시험 성적 (총대만 올린다). 학생은 번호·비밀번호로 들어와 자기 점수와 평균만 본다.
+-- 성적·학생 비밀번호는 작업 내역·백업·변경 알림에 넣지 않는다 (백업은 공개 저장소에 올라간다). 올린 지 10일이 지나면 지운다.
+-- 학생 표를 외래키로 잇지 않는다: 백업에서 되살리기가 학생 표를 지웠다 다시 넣을 때 비밀번호·성적이 같이 지워지지 않게.
+create table if not exists exams (
+  id uuid primary key default gen_random_uuid(),
+  title text not null,
+  created_at timestamptz not null default now(),
+  expires_at timestamptz not null default now() + interval '10 days'
+);
+create table if not exists exam_scores (
+  exam_id uuid not null references exams on delete cascade,
+  student_id uuid not null,
+  score numeric not null,
+  primary key (exam_id, student_id)
+);
+-- 학생 성적 비밀번호. pw_hash가 없으면(줄이 없어도) 처음 비밀번호 = 자기 이름이고, 그 상태로는 성적을 볼 수 없다(먼저 바꾼다).
+create table if not exists student_pw (
+  student_id uuid primary key,
+  pw_hash text,
+  fails int not null default 0,
+  locked_until timestamptz,
+  changed_at timestamptz
+);
+create table if not exists student_sessions (
+  token uuid primary key default gen_random_uuid(),
+  student_id uuid not null,
+  expires_at timestamptz not null
+);
+
 -- 작업 로그 (뒤로가기·앞으로 가기용). 서버 함수 하나를 부를 때마다 ops 한 줄이 생기고,
 -- 그 작업이 바꾼 행의 전·후가 op_changes에 남는다 (트리거 _log_change).
 -- 작업들은 한 줄로 이어진 시간선이다. 뒤로 가면 최근 작업부터 undone이 되고, 앞으로 가면 다시 적용된다.
@@ -309,7 +338,7 @@ update presets set owner = '부총대' where owner is null;
 
 -- 이미 켜져 있으면 건드리지 않는다 (서버 반영 때 앱이 쓰는 중인 표를 잠그는 횟수를 줄여서, 앱의 요청과 서로 기다리다 멈추지(교착) 않게)
 do $$ declare t text; begin
-  foreach t in array array['students', 'presets', 'links', 'periods', 'attendance', 'ledger', 'ledger_private', 'ledger_revisions', 'photos', 'requests', 'excuses', 'attendance_requests', 'reactions', 'ops', 'op_changes', 'accounts', 'sessions', 'settings', 'app_version'] loop
+  foreach t in array array['students', 'presets', 'links', 'periods', 'attendance', 'ledger', 'ledger_private', 'ledger_revisions', 'photos', 'requests', 'excuses', 'attendance_requests', 'reactions', 'exams', 'exam_scores', 'student_pw', 'student_sessions', 'ops', 'op_changes', 'accounts', 'sessions', 'settings', 'app_version'] loop
     if not (select relrowsecurity from pg_class where oid = format('public.%I', t)::regclass) then
       execute format('alter table %I enable row level security', t);
     end if;
@@ -459,6 +488,7 @@ begin
     select photo_id from excuses where photo_id is not null and status <> 'pending' and reviewed_at < now() - interval '180 days'
   );
   delete from sessions where expires_at < now();
+  perform _grade_cleanup();
 end $$;
 
 create or replace function _check_items(p_item text, p_points numeric) returns void language plpgsql as $$
@@ -1647,6 +1677,155 @@ begin
   return json_build_object('students', (select count(*) from students), 'ledger', (select count(*) from ledger), 'createdAt', p_data ->> 'createdAt');
 end $$;
 
+-- ───────────────────────── 시험 성적 ─────────────────────────
+-- 올린 지 10일 지난 시험과 끝난 학생 로그인을 지운다 (성적 함수와 로그인할 때마다)
+create or replace function _grade_cleanup() returns void language sql security definer set search_path = public as $$
+  delete from exams where expires_at <= now();
+  delete from student_sessions where expires_at < now();
+$$;
+
+-- 이름 비교용: 띄어쓰기를 무시한다 ("홍 길동" = "홍길동")
+create or replace function _pw_name(n text) returns text language sql immutable as $$
+  select regexp_replace(coalesce(n, ''), '\s', '', 'g')
+$$;
+
+-- 총대만 성적을 올리고 학생 비밀번호를 초기화한다
+create or replace function _grade_session(p_token uuid) returns text
+language plpgsql security definer set search_path = public as $$
+declare r text := _session(p_token, false);
+begin
+  if r <> '총대' then raise exception '성적은 총대만 다룰 수 있어요' using errcode = '42501'; end if;
+  return r;
+end $$;
+
+-- 학생 로그인 토큰을 확인하고 학생 id를 돌려준다 (명단에서 빠진 학생은 끊는다)
+create or replace function _student_session(p_token uuid) returns uuid
+language plpgsql security definer set search_path = public as $$
+declare sid uuid;
+begin
+  select ss.student_id into sid from student_sessions ss join students s on s.id = ss.student_id and s.active
+  where ss.token = p_token and ss.expires_at > now();
+  if sid is null then raise exception '성적 로그인이 끊겼어요. 다시 로그인해 주세요' using errcode = 'P0401'; end if;
+  return sid;
+end $$;
+
+-- 학생 로그인: 번호 + 비밀번호(처음엔 자기 이름). 5번 틀리면 그 번호는 10분 잠긴다.
+create or replace function student_login(p_no int, p_pw text) returns json
+language plpgsql security definer set search_path = public, extensions as $$
+declare st students; p student_pw; t uuid; ok boolean;
+begin
+  perform _grade_cleanup();
+  select * into st from students where no = p_no and active;
+  if not found then return json_build_object('error', '명단에 없는 번호예요'); end if;
+  insert into student_pw (student_id) values (st.id) on conflict do nothing;
+  -- 동시에 들어온 시도도 하나씩 처리한다 (한꺼번에 보내 잠금을 피하지 못하게)
+  select * into p from student_pw where student_id = st.id for update;
+  if p.locked_until > now() then
+    return json_build_object('error', format('비밀번호를 여러 번 틀려서 잠겼어요. %s분 뒤에 다시 해보세요', ceil(extract(epoch from p.locked_until - now()) / 60)));
+  end if;
+  ok := case when p.pw_hash is null then _pw_name(st.name) <> '' and _pw_name(p_pw) = _pw_name(st.name)
+             else p.pw_hash = crypt(coalesce(p_pw, ''), p.pw_hash) end;
+  if not ok then
+    update student_pw set fails = case when fails + 1 >= 5 then 0 else fails + 1 end,
+      locked_until = case when fails + 1 >= 5 then now() + interval '10 minutes' else locked_until end
+    where student_id = st.id;
+    return json_build_object('error', '비밀번호가 맞지 않아요');
+  end if;
+  update student_pw set fails = 0, locked_until = null where student_id = st.id;
+  insert into student_sessions (student_id, expires_at) values (st.id, now() + interval '30 days') returning token into t;
+  return json_build_object('token', t, 'no', st.no, 'initial', p.pw_hash is null);
+end $$;
+
+-- 학생 비밀번호 바꾸기. 처음 비밀번호(이름)로 들어온 상태면 현재 비밀번호를 다시 묻지 않는다.
+create or replace function student_change_pw(p_token uuid, p_cur text, p_new text) returns void
+language plpgsql security definer set search_path = public, extensions as $$
+declare sid uuid := _student_session(p_token); h text; nm text;
+begin
+  select pw_hash into h from student_pw where student_id = sid for update;
+  select name into nm from students where id = sid;
+  if h is not null and h <> crypt(coalesce(p_cur, ''), h) then raise exception '현재 비밀번호가 맞지 않아요'; end if;
+  if length(coalesce(p_new, '')) < 4 then raise exception '새 비밀번호는 4자 이상이어야 해요'; end if;
+  if length(p_new) > 100 then raise exception '새 비밀번호는 100자까지예요'; end if;
+  if _pw_name(p_new) = _pw_name(nm) then raise exception '이름이 아닌 다른 비밀번호로 정해 주세요'; end if;
+  update student_pw set pw_hash = crypt(p_new, gen_salt('bf')), changed_at = now(), fails = 0, locked_until = null where student_id = sid;
+  -- 이 기기 말고 다른 기기의 로그인은 끊는다 (이름으로 먼저 들어온 사람이 있었다면 그 사람도)
+  delete from student_sessions where student_id = sid and token <> p_token;
+end $$;
+
+create or replace function student_logout(p_token uuid) returns void language sql security definer set search_path = public as $$
+  delete from student_sessions where token = p_token
+$$;
+
+-- 내 성적: 시험마다 내 점수와 평균(점수가 있는 학생들). 처음 비밀번호 상태면 성적 없이 initial만.
+create or replace function my_grades(p_token uuid) returns json
+language plpgsql security definer set search_path = public as $$
+declare sid uuid; sno int;
+begin
+  perform _grade_cleanup();
+  sid := _student_session(p_token);
+  select no into sno from students where id = sid;
+  if (select pw_hash from student_pw where student_id = sid) is null then return json_build_object('no', sno, 'initial', true); end if;
+  return json_build_object('no', sno, 'initial', false, 'exams', (
+    select coalesce(json_agg(json_build_object('id', e.id, 'title', e.title, 'at', _kst(e.created_at), 'until', _kst(e.expires_at),
+      'score', x.score, 'avg', (select round(avg(score), 2) from exam_scores where exam_id = e.id)) order by e.created_at desc), '[]')
+    from exams e join exam_scores x on x.exam_id = e.id and x.student_id = sid where e.expires_at > now()));
+end $$;
+
+-- 총대: 성적 올리기. p_list: [{sid, score}] (점수는 0~9999, 소수점 아래 둘째 자리까지)
+create or replace function grade_upload(p_token uuid, p_title text, p_list jsonb) returns json
+language plpgsql security definer set search_path = public as $$
+declare who text := _grade_session(p_token); x jsonb; sids uuid[] := '{}'; sno int; eid uuid;
+begin
+  perform _grade_cleanup();
+  if coalesce(trim(p_title), '') = '' then raise exception '시험 이름을 입력하세요'; end if;
+  if length(trim(p_title)) > 60 then raise exception '시험 이름은 60자까지예요'; end if;
+  if jsonb_typeof(coalesce(p_list, 'null')) <> 'array' or jsonb_array_length(p_list) = 0 then raise exception '올릴 점수가 없어요'; end if;
+  for x in select * from jsonb_array_elements(p_list) loop
+    if coalesce(x ->> 'score', '') !~ '^[0-9]{1,4}(\.[0-9]+)?$' or (x ->> 'score')::numeric * 100 <> trunc((x ->> 'score')::numeric * 100) then
+      raise exception '점수는 0 이상의 숫자여야 해요 (소수점 아래 둘째 자리까지)';
+    end if;
+    select no into sno from students where id = (x ->> 'sid')::uuid and active;
+    if sno is null then raise exception '명단에 없는 학생이 있어요'; end if;
+    if (x ->> 'sid')::uuid = any (sids) then raise exception '%번이 두 번 있어요', sno; end if;
+    sids := sids || (x ->> 'sid')::uuid;
+  end loop;
+  insert into exams (title) values (trim(p_title)) returning id into eid;
+  insert into exam_scores (exam_id, student_id, score)
+  select eid, (j ->> 'sid')::uuid, (j ->> 'score')::numeric from jsonb_array_elements(p_list) j;
+  return json_build_object('id', eid, 'n', jsonb_array_length(p_list), 'avg', (select round(avg(score), 2) from exam_scores where exam_id = eid));
+end $$;
+
+-- 총대 화면: 올린 시험(점수 없이 인원·평균만)과 학생별 비밀번호 상태
+create or replace function grade_admin(p_token uuid) returns json
+language plpgsql security definer set search_path = public as $$
+declare who text := _grade_session(p_token);
+begin
+  perform _grade_cleanup();
+  return json_build_object(
+    'exams', (select coalesce(json_agg(json_build_object('id', e.id, 'title', e.title, 'at', _kst(e.created_at), 'until', _kst(e.expires_at),
+      'n', (select count(*) from exam_scores where exam_id = e.id), 'avg', (select round(avg(score), 2) from exam_scores where exam_id = e.id)) order by e.created_at desc), '[]') from exams e),
+    'pw', (select coalesce(json_agg(json_build_object('sid', s.id, 'changed', p.pw_hash is not null, 'locked', coalesce(p.locked_until > now(), false)) order by s.no), '[]')
+      from students s left join student_pw p on p.student_id = s.id where s.active));
+end $$;
+
+create or replace function grade_delete(p_token uuid, p_id uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare who text := _grade_session(p_token);
+begin
+  delete from exams where id = p_id;
+  if not found then raise exception '이미 지워진 시험이에요'; end if;
+end $$;
+
+-- 총대: 학생 비밀번호를 처음(이름)으로 되돌리고 그 학생의 로그인을 모두 끊는다
+create or replace function student_pw_reset(p_token uuid, p_sid uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare who text := _grade_session(p_token);
+begin
+  if not exists (select 1 from students where id = p_sid and active) then raise exception '명단에 없는 학생이에요'; end if;
+  delete from student_pw where student_id = p_sid;
+  delete from student_sessions where student_id = p_sid;
+end $$;
+
 -- 엑셀 이월로 바꾸기 (부총대): 붙여넣은 학생마다 기준 날짜까지의 기록을 모두 지우고, 엑셀의 그날 기준 자봉을 그 날짜의 "이월" 한 줄로 넣는다.
 -- 그 뒤의 기록은 그대로다. p_list: [{sid, n}] (n은 그날 기준 자봉, 0이면 이월 줄 없이 지우기만).
 -- 되돌릴 수 있다: 자식 행(공결 신청·수정 이력·기록자)을 먼저 지워서 작업 기록이 자식 → 부모 순서가 되게 한다 (되돌릴 때 부모부터 다시 넣는다).
@@ -1754,7 +1933,8 @@ do $$ declare f text; begin
       'change_pw(uuid,text,text)', 'reset_pw(uuid,text,text)', 'new_recovery(uuid,text)', 'ensure_period(uuid,date,text,boolean,integer)', 'set_period_hours(uuid,uuid,integer)', 'carry_rebase(uuid,date,jsonb)', 'delete_period(uuid,uuid)', 'rename_period(uuid,uuid,text)',
       'save_attendance(uuid,uuid,jsonb)', 'request_attendance(uuid,uuid,jsonb)', 'review_attendance(uuid,uuid,boolean,text)', 'add_entries(uuid,date,uuid[],text,text,numeric)', 'edit_entry(uuid,uuid,date,text,text,numeric,text)',
       'void_entry(uuid,uuid,text)', 'review_request(uuid,uuid,boolean,text)', 'review_excuse(uuid,uuid,boolean,text)',
-      'roster_apply(uuid,jsonb,jsonb,date)', 'my_presets_save(uuid,jsonb)', 'my_periods_save(uuid,jsonb)', 'purge(uuid,date)', 'backup_dump()', 'restore_backup(uuid,jsonb)', 'history_move(uuid,bigint,boolean)', 'history_drop(uuid,bigint,boolean)', 'history_restore(uuid,bigint,boolean)', 'ops_list(uuid,integer)', 'set_link(uuid,text,text)'
+      'roster_apply(uuid,jsonb,jsonb,date)', 'my_presets_save(uuid,jsonb)', 'my_periods_save(uuid,jsonb)', 'purge(uuid,date)', 'backup_dump()', 'restore_backup(uuid,jsonb)', 'history_move(uuid,bigint,boolean)', 'history_drop(uuid,bigint,boolean)', 'history_restore(uuid,bigint,boolean)', 'ops_list(uuid,integer)', 'set_link(uuid,text,text)',
+      'student_login(integer,text)', 'student_change_pw(uuid,text,text)', 'student_logout(uuid)', 'my_grades(uuid)', 'grade_upload(uuid,text,jsonb)', 'grade_admin(uuid)', 'grade_delete(uuid,uuid)', 'student_pw_reset(uuid,uuid)'
     ] loop
       execute format('grant execute on function %s to anon, authenticated', f);
     end loop;
