@@ -1401,6 +1401,8 @@ set role anon;
 select add_entries(:'t', '2026-01-10', array[:'ra', :'rb', :'rc']::uuid[], '이월 시험 전', '', 3);
 select add_entries(:'t', '2026-01-11', array[:'ra']::uuid[], '이월 시험 무효', '', 2);
 select add_entries(:'t', '2026-01-12', array[:'ra']::uuid[], '결석', '이월 시험 결석', 2);
+select add_entries(:'t', '2026-01-15', array[:'ra']::uuid[], '이월 시험 당일', '', 1);
+select add_entries(:'t', '2026-01-16', array[:'ra']::uuid[], '이월 시험 다음 날', '', 1);
 select add_entries(:'t', '2026-01-20', array[:'ra', :'rc']::uuid[], '이월 시험 뒤', '', -4);
 set role postgres;
 select id as rv from ledger where item = '이월 시험 무효' \gset
@@ -1416,6 +1418,7 @@ select pg_temp.expect_msg(format('select carry_rebase(%L, %L, %L)', :'t', '2999-
 select pg_temp.expect_msg(format('select carry_rebase(%L, %L, %L)', :'t', '2026-01-15', '[]'), '바꿀 학생이 없어요', '빈 목록');
 select pg_temp.expect_msg(format('select carry_rebase(%L, %L, %L)', :'t', '2026-01-15', format('[{"sid":"%s","n":"열"}]', :'ra')), '이월 자봉은 숫자여야 해요%', '숫자 아님');
 select pg_temp.expect_msg(format('select carry_rebase(%L, %L, %L)', :'t', '2026-01-15', format('[{"sid":"%s","n":1},{"sid":"%s","n":2}]', :'ra', :'ra')), '%번이 두 번 있어요', '두 번');
+select pg_temp.expect_msg(format('select carry_rebase(%L, %L, %L)', :'t', '2026-01-15', format('[{"sid":"%s","n":1.255}]', :'ra')), '이월 자봉은 숫자여야 해요%', '소수 셋째 자리');
 select pg_temp.expect_msg(format('select carry_rebase(%L, %L, %L)', :'t', '2026-01-15', format('[{"sid":"%s","n":1}]', gen_random_uuid())), '명단에 없는 학생이 있어요', '없는 학생');
 select pg_temp.expect_msg(format('select carry_rebase(%L, %L, %L)', :'t', '2026-01-15', format('[{"sid":"%s","n":15}]', :'ra')), '기준 날짜까지에 아직 처리하지 않은%', '대기 중 공결');
 select review_excuse(:'t', :'rxx', true, null);
@@ -1426,14 +1429,16 @@ create temp table rbp_before as select * from ledger_private;
 create temp table rbr_before as select * from ledger_revisions;
 create temp table rbe_before as select * from excuses;
 set role anon;
-select carry_rebase(:'t', '2026-01-15', format('[{"sid":"%s","n":15},{"sid":"%s","n":0}]', :'ra', :'rb')::jsonb) as rbres \gset
+select carry_rebase(:'t', '2026-01-15', format('[{"sid":"%s","n":15.00},{"sid":"%s","n":0}]', :'ra', :'rb')::jsonb) as rbres \gset
 select pg_temp.ok((:'rbres'::jsonb ->> 'students')::int = 2 and (:'rbres'::jsonb ->> 'deleted')::int >= 4 and (:'rbres'::jsonb ->> 'carry')::int = 1, '결과 수');
 set role postgres;
 select pg_temp.ok((select count(*) from ledger where student_id = :'ra' and date <= '2026-01-15') = 1
   and (select points = 15 and item = '이월' and src = 'carry' and detail = '1/15 기준 엑셀 이월' and date = '2026-01-15' and voided_at is null from ledger where student_id = :'ra' and date <= '2026-01-15'), '기준 날짜까지는 이월 15 한 줄');
-select pg_temp.ok((select count(*) from ledger where student_id = :'ra' and item = '이월 시험 뒤' and voided_at is null) = 1, '그 뒤 기록은 그대로');
+select pg_temp.ok((select count(*) from ledger where student_id = :'ra' and item = '이월 시험 뒤' and voided_at is null) = 1
+  and (select count(*) from ledger where student_id = :'ra' and item = '이월 시험 다음 날') = 1
+  and not exists (select 1 from ledger where item = '이월 시험 당일'), '기준 날짜 당일까지 지우고 다음 날부터는 그대로');
 select pg_temp.ok((select points from ledger where student_id = :'ra' and item = '이월 시험 뒤') = -4
-  and (select sum(points) from ledger where student_id = :'ra' and voided_at is null and date between '2026-01-01' and '2026-01-31') = 11, '15 - 4 = 11');
+  and (select sum(points) from ledger where student_id = :'ra' and voided_at is null and date between '2026-01-01' and '2026-01-31') = 12, '15 - 4 = 11');
 select pg_temp.ok(not exists (select 1 from ledger where student_id = :'rb' and date between '2026-01-01' and '2026-01-15'), '0이면 이월 줄 없이 지우기만');
 select pg_temp.ok((select count(*) from ledger where student_id = :'rc' and item like '이월 시험%') = 2, '붙여넣지 않은 학생은 그대로');
 select pg_temp.ok(not exists (select 1 from excuses where id = :'rxx') and not exists (select 1 from ledger_revisions where ledger_id = :'re'), '지운 기록의 공결 신청·수정 이력도');
@@ -1451,7 +1456,7 @@ select pg_temp.ok((select count(*) from ledger) = (select count(*) from rb_befor
 set role anon;
 select history_restore(:'t', :rbop, false);
 set role postgres;
-select pg_temp.ok((select sum(points) from ledger where student_id = :'ra' and voided_at is null and date between '2026-01-01' and '2026-01-31') = 11, '다시 살리면 다시 이월');
+select pg_temp.ok((select sum(points) from ledger where student_id = :'ra' and voided_at is null and date between '2026-01-01' and '2026-01-31') = 12, '다시 살리면 다시 이월');
 -- 면제 학생도 +이월은 들어간다
 update students set exempt = true where id = :'rc';
 set role anon;

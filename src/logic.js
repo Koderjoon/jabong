@@ -287,7 +287,8 @@ export function planCarry(S, text, cut) {
     if (cells.length < 2) return void errors.push(`${i + 1}번째 줄 "${line}": 번호와 자봉을 적어 주세요`);
     const no = Number(cells[0]);
     const v = cells[cells.length - 1].replace(/^\+/, '');
-    if (!/^-?\d{1,5}(\.\d{1,2})?$/.test(v)) return void errors.push(`${i + 1}번째 줄 "${line}": 자봉은 숫자여야 해요 (예: 15, -2, 0.5)`);
+    // 엑셀에서 15.0, 2.50처럼 뒤에 0이 붙어 와도 된다 (소수점 아래는 둘째 자리까지)
+    if (!/^-?\d{1,5}(\.\d+)?$/.test(v) || Math.round(Number(v) * 100) !== Number(v) * 100) return void errors.push(`${i + 1}번째 줄 "${line}": 자봉은 숫자여야 해요 (예: 15, -2, 0.5)`);
     const st = S.students.find((x) => x.active && x.no === no);
     if (!st) return void errors.push(`${no}번은 명단에 없어요`);
     if (seen.has(no)) return void errors.push(`${no}번이 두 번 있어요`);

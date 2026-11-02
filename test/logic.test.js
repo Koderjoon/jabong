@@ -449,7 +449,7 @@ test('엑셀 이월 계획: 그날까지 장부 합계 → 엑셀 값, 지울 �
   S.add('2026-10-26', '실습', '', 2, [5]);
   S.add('2026-10-27', '매점', '', -4, [5]);
   S.add('2026-10-28', '매점', '', -1, [6]);
-  const p = planCarry(S, '번호\t자봉\n5\t15\n6\t-2.5\n\n7 +3', '2026-10-26');
+  const p = planCarry(S, '번호\t자봉\n5\t15.0\n6\t-2.50\n\n7 +3', '2026-10-26');
   assert.deepEqual(p.errors, []);
   assert.deepEqual(p.items.map(({ no, before, n, del, now, next }) => ({ no, before, n, del, now, next })), [
     { no: 5, before: 3, n: 15, del: 3, now: -1, next: 11 },
@@ -458,6 +458,6 @@ test('엑셀 이월 계획: 그날까지 장부 합계 → 엑셀 값, 지울 �
   ]);
   assert.equal(p.missing.length, 67);
   assert.ok(!p.missing.includes(5));
-  const bad = planCarry(S, '5 열다섯\n99 1\n5 1\n6 2\n6 3\n아무말', '2026-10-26');
-  assert.deepEqual(bad.errors, ['1번째 줄 "5 열다섯": 자봉은 숫자여야 해요 (예: 15, -2, 0.5)', '99번은 명단에 없어요', '6번이 두 번 있어요', '6번째 줄 "아무말": 번호와 자봉을 적어 주세요']);
+  const bad = planCarry(S, '5 열다섯\n99 1\n5 1\n6 2\n6 3\n아무말\n8 1.255', '2026-10-26');
+  assert.deepEqual(bad.errors, ['1번째 줄 "5 열다섯": 자봉은 숫자여야 해요 (예: 15, -2, 0.5)', '99번은 명단에 없어요', '6번이 두 번 있어요', '6번째 줄 "아무말": 번호와 자봉을 적어 주세요', '7번째 줄 "8 1.255": 자봉은 숫자여야 해요 (예: 15, -2, 0.5)']);
 });

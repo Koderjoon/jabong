@@ -1652,13 +1652,16 @@ end $$;
 -- 되돌릴 수 있다: 자식 행(공결 신청·수정 이력·기록자)을 먼저 지워서 작업 기록이 자식 → 부모 순서가 되게 한다 (되돌릴 때 부모부터 다시 넣는다).
 create or replace function carry_rebase(p_token uuid, p_cut date, p_list jsonb) returns json
 language plpgsql security definer set search_path = public as $$
-declare who text := _session(p_token, true); x jsonb; sids uuid[] := '{}'; n_del int; n_carry int := 0; sno int;
+declare who text := _session(p_token, true); x jsonb; sids uuid[] := '{}'; ids uuid[]; n_carry int := 0; sno int;
 begin
   perform _wlock();
   if p_cut is null or p_cut > (now() at time zone 'Asia/Seoul')::date then raise exception '기준 날짜는 오늘이나 그 전이어야 해요'; end if;
   if jsonb_typeof(coalesce(p_list, 'null')) <> 'array' or jsonb_array_length(p_list) = 0 then raise exception '바꿀 학생이 없어요'; end if;
   for x in select * from jsonb_array_elements(p_list) loop
-    if coalesce(x ->> 'n', '') !~ '^-?[0-9]{1,5}(\.[0-9]{1,2})?$' then raise exception '이월 자봉은 숫자여야 해요 (예: 15, -2, 0.5)'; end if;
+    -- 숫자이고 소수점 아래는 둘째 자리까지 (15.0, 2.50처럼 뒤에 0이 붙어도 된다)
+    if coalesce(x ->> 'n', '') !~ '^-?[0-9]{1,5}(\.[0-9]+)?$' or (x ->> 'n')::numeric * 100 <> trunc((x ->> 'n')::numeric * 100) then
+      raise exception '이월 자봉은 숫자여야 해요 (예: 15, -2, 0.5)';
+    end if;
     select no into sno from students where id = (x ->> 'sid')::uuid and active;
     if sno is null then raise exception '명단에 없는 학생이 있어요'; end if;
     if (x ->> 'sid')::uuid = any (sids) then raise exception '%번이 두 번 있어요', sno; end if;
@@ -1670,19 +1673,18 @@ begin
     raise exception '기준 날짜까지에 아직 처리하지 않은 공결 신청이나 출석 요청, 총대단 요청이 있어요. 요청함에서 먼저 처리하세요';
   end if;
   perform _op(who, 'carry_rebase', format('엑셀 이월로 바꾸기 (%s 기준, %s명)', to_char(p_cut, 'FMMM/FMDD'), cardinality(sids)));
-  create temp table _rb on commit drop as select id from ledger where date <= p_cut and student_id = any (sids);
-  select count(*) into n_del from _rb;
-  delete from excuses where ledger_id in (select id from _rb);
-  delete from ledger_revisions where ledger_id in (select id from _rb);
-  delete from ledger_private where ledger_id in (select id from _rb);
-  delete from ledger where id in (select id from _rb);
+  ids := array(select id from ledger where date <= p_cut and student_id = any (sids));
+  delete from excuses where ledger_id = any (ids);
+  delete from ledger_revisions where ledger_id = any (ids);
+  delete from ledger_private where ledger_id = any (ids);
+  delete from ledger where id = any (ids);
   for x in select * from jsonb_array_elements(p_list) loop
     if (x ->> 'n')::numeric <> 0 then
       perform _entry(p_cut, (x ->> 'sid')::uuid, '이월', format('%s 기준 엑셀 이월', to_char(p_cut, 'FMMM/FMDD')), (x ->> 'n')::numeric, 'carry', null, null, who);
       n_carry := n_carry + 1;
     end if;
   end loop;
-  return json_build_object('students', cardinality(sids), 'deleted', n_del, 'carry', n_carry);
+  return json_build_object('students', cardinality(sids), 'deleted', cardinality(ids), 'carry', n_carry);
 end $$;
 
 create or replace function purge(p_token uuid, p_cut date) returns json
