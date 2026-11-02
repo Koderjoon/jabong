@@ -996,7 +996,8 @@ set role postgres;
 select pg_temp.ok((my_reactions(:'rs5') ->> 'prog')::int = 1 and (my_reactions(:'rs4') ->> 'prog')::int = 2, '이월 맞추기 되돌리기');
 -- 전체 내역: 최신순, 번호, 반려 사유 없음, 개수 제한
 select pg_temp.ok((select (reaction_feed(1) -> 0 ->> 'id')::uuid) = :'rr2' and json_array_length(reaction_feed(2)) = 2, '최신순·개수');
-select pg_temp.ok((reaction_feed(300) -> 0 ->> 'no')::int = :'rs5no' and not exists (select 1 from jsonb_array_elements(reaction_feed(300)::jsonb) r where r ? 'note'), '번호만, 반려 사유 없음');
+select pg_temp.ok((reaction_feed(300) -> 0 ->> 'no')::int = :'rs5no' and (reaction_feed(300) -> 0 ->> 'name') = (select name from students where no = :'rs5no' and active)
+  and not exists (select 1 from jsonb_array_elements(reaction_feed(300)::jsonb) r where r ? 'note' or r ? 'reviewed_by'), '번호·이름, 반려 사유 없음');
 select pg_temp.ok(json_array_length(reaction_feed(100000)) <= 300 and json_array_length(reaction_feed(null)) <= 30, '많아야 300, 기본 30');
 -- 부총대가 넣은 이월 줄은 그날 학생의 "하루 3번"에 들어가지 않는다
 set role postgres;

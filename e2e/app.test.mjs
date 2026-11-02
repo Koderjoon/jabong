@@ -2041,6 +2041,9 @@ test('리액션 이월 맞추기(부총대, 붙여넣기)와 전체 리액션 �
   await S.page.waitForSelector('#rx-feed .rx-feed');
   const me = await one(`select no from students where name = '박하준'`);
   assert.match(await S.text('#rx-feed .rx-feed:first-child'), new RegExp(`${me.no}번[\\s\\S]*4교시 · Q\\. 질문 · A\\. 대답`), '가장 최근 것이 맨 위');
+  // 이름을 크게, 번호는 옆에 작게
+  assert.equal(await S.text('#rx-feed .rx-feed:first-child .rx-name'), '박하준');
+  assert.ok(await S.page.$eval('#rx-feed .rx-feed:first-child .rx-name', (b) => parseFloat(getComputedStyle(b).fontSize) >= 18), '이름이 크다');
   assert.equal(await S.has('[data-act="rx-more"]'), false, '30개가 안 되면 더 보기 없음');
   await S.fits('전체 리액션 내역');
   // 30개가 넘으면 더 보기

@@ -1165,7 +1165,7 @@ $$;
 create or replace function reaction_feed(p_limit int) returns json
 language sql stable security definer set search_path = public as $$
   select coalesce(json_agg(t.r order by t.ord desc, t.r ->> 'id' desc), '[]') from (
-    select json_build_object('id', x.id, 'no', s.no, 'active', s.active, 'date', x.date, 'period', x.period, 'q', x.question, 'a', x.answer,
+    select json_build_object('id', x.id, 'no', s.no, 'name', s.name, 'active', s.active, 'date', x.date, 'period', x.period, 'q', x.question, 'a', x.answer,
       'status', x.status, 'merit', x.merit is not null and x.merit <> _merit_cleared(), 'at', _kst(x.created_at)) as r, x.created_at as ord
     from reactions x join students s on s.id = x.student_id
     where not x.adj
@@ -1173,6 +1173,7 @@ language sql stable security definer set search_path = public as $$
     limit least(greatest(coalesce(p_limit, 30), 1), 300)) t
 $$;
 
+-- (전체 리액션 내역은 누구나 보므로 번호와 함께 이름을 싣는다. 반려 사유·처리자는 싣지 않는다)
 -- 내보내기(엑셀)용 리액션 내역 (부총대): 기간 안의 실제 리액션 (이월 줄 제외), 날짜·신청 순
 create or replace function reaction_export(p_token uuid, p_from date, p_to date) returns json
 language plpgsql stable security definer set search_path = public as $$

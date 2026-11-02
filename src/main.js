@@ -763,10 +763,10 @@ function feedData() {
 function vReactFeed() {
   const L0 = feedData();
   const F = L0.data;
-  return `<h2>전체 리액션 내역</h2><p class="sub" style="margin-top:-12px">모든 학생의 리액션이 최신순으로 보여요.</p>
+  return `<h2>전체 리액션 내역</h2><p class="sub" style="margin-top:-12px">모든 학생의 리액션이 최신순으로 보여요 (이름과 번호).</p>
   ${L0.err ? `<div class="warn">리액션 내역을 ${F ? '새로 ' : ''}불러오지 못했어요. ${rxRetry}</div>` : ''}
   <div id="rx-feed">${F
-    ? F.map((r) => `<div class="card rx-feed"><div class="req-top"><span class="pill ${r.status}">${STATUS[r.status]}${r.merit ? ' · 상점 반영' : ''}</span><span class="note">${r.no}번${r.active ? '' : ' (제외)'} · ${esc(r.at)}</span></div><div class="req-body">${rxText(r)}</div></div>`).join('') || '<p class="empty">아직 리액션이 없어요.</p>'
+    ? F.map((r) => `<div class="card rx-feed"><div class="rx-who"><b class="rx-name">${esc(r.name || `${r.no}번`)}</b>${r.name ? `<span class="note">${r.no}번</span>` : ''}${r.active ? '' : '<span class="note">(제외)</span>'}</div><div class="req-top"><span class="pill ${r.status}">${STATUS[r.status]}${r.merit ? ' · 상점 반영' : ''}</span><span class="note">${esc(r.at)}</span></div><div class="req-body">${rxText(r)}</div></div>`).join('') || '<p class="empty">아직 리액션이 없어요.</p>'
     : L0.err ? '' : '<p class="note">불러오는 중…</p>'}</div>
   ${F && F.length >= UI.rxFeedN && UI.rxFeedN < 300 ? '<button class="btn ghost" data-act="rx-more">더 보기</button>' : ''}`;
 }
