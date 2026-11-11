@@ -1711,4 +1711,15 @@ set role postgres;
 update students set active = true where id = :'gone';
 \echo 29. 그사이 지워진 학생 통과
 
+-- ───────── 30. 비밀번호 재설정 알림 ─────────
+set role anon;
+select (login('부총대', '1234') ->> 'token') as rt \gset
+select reset_pw(:'rt', '운영부장', 'zzzz1111');
+select login('운영부장', 'zzzz1111') as rl \gset
+select pg_temp.ok((:'rl'::json -> 'resetNotice' ->> 'by') = '부총대' and (:'rl'::json -> 'resetNotice' ->> 'at') ~ '^\d{4}-\d\d-\d\d \d\d:\d\d$', '재설정 뒤 첫 로그인에 알림');
+select pg_temp.ok((login('운영부장', 'zzzz1111') ->> 'resetNotice') is null, '알림은 한 번만');
+select pg_temp.ok(login('운영부장', 'x') ->> 'resetNotice' is null, '틀린 로그인에는 알림 없음');
+set role postgres;
+select pg_temp.ok(not exists (select 1 from ops where kind = 'reset_pw') and (select reset_at is null from accounts where role = '운영부장'), '작업 내역은 그대로(이동을 막지 않게), 알림은 지워짐');
+\echo 30. 비밀번호 재설정 알림 통과
 \echo 모든 서버 함수 테스트 통과

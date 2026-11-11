@@ -325,6 +325,9 @@ on conflict do nothing;
 update accounts set is_admin = false where role = '총대' and is_admin;
 -- 출석 요청을 보낼 수 있는 총대단: 실습부장 1·2와 총대 (고정)
 alter table accounts add column if not exists can_attend boolean not null default false;
+-- 부총대가 이 직책의 비밀번호를 재설정했으면 누가·언제 했는지 남겨 두고, 그 직책이 다음에 로그인할 때 알려 준다
+alter table accounts add column if not exists reset_by text;
+alter table accounts add column if not exists reset_at timestamptz;
 update accounts set can_attend = (role in ('실습부장 1', '실습부장 2', '총대')) where true;
 
 -- 처음 만들 때는 부총대의 항목으로 기본 목록을 넣는다. 예전의 공용 항목도 부총대 항목이 된다.
@@ -723,7 +726,10 @@ begin
   update accounts set fails = 0, locked_until = null where role = p_role;
   perform _cleanup();
   insert into sessions (role, expires_at) values (p_role, now() + interval '30 days') returning token into t;
-  return json_build_object('token', t, 'role', p_role, 'admin', a.is_admin);
+  -- 재설정 알림은 한 번만 보여 준다
+  if a.reset_at is not null then update accounts set reset_by = null, reset_at = null where role = p_role; end if;
+  return json_build_object('token', t, 'role', p_role, 'admin', a.is_admin,
+    'resetNotice', case when a.reset_at is not null then json_build_object('by', a.reset_by, 'at', _kst(a.reset_at)) end);
 end $$;
 
 create or replace function recover(p_code text, p_role text, p_new text) returns json
@@ -809,8 +815,9 @@ declare who text := _session(p_token, true);
 begin
   if length(coalesce(p_new, '')) < 4 then raise exception '새 비밀번호는 4자 이상이어야 해요'; end if;
   if octet_length(p_new) > 72 then raise exception '새 비밀번호가 너무 길어요 (영문·숫자 72자, 한글 24자까지)'; end if;
-  update accounts set pw_hash = crypt(p_new, gen_salt('bf')), fails = 0, locked_until = null where role = p_role;
-  if not found then raise exception '없는 직책이에요'; end if;
+  if not exists (select 1 from accounts where role = p_role) then raise exception '없는 직책이에요'; end if;
+  -- 작업 내역에는 넣지 않는다: 되돌릴 수 없는 작업은 그 너머로 이동을 막으므로. 대신 그 직책이 다음에 로그인할 때 알린다
+  update accounts set pw_hash = crypt(p_new, gen_salt('bf')), fails = 0, locked_until = null, reset_by = who, reset_at = now() where role = p_role;
   delete from sessions where role = p_role;
 end $$;
 

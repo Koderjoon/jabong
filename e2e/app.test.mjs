@@ -1282,6 +1282,14 @@ test('관리: 다른 직책 비밀번호 재설정 → 그 직책은 다음 동�
   assert.equal(await O.toast('[data-act="req-add"]'), '로그인이 끊겼어요. 다시 로그인해 주세요');
   assert.deepEqual(await O.tabs(), ['자봉 현황', '공결 신청', '리액션', '성적']);
   await O.login('총대단', '학습부장', 'qwer');
+  // 다시 들어가면 부총대가 재설정했다는 알림이 한 번 보인다
+  assert.match(await O.text('#reset-notice'), /부총대가 \d{4}-\d\d-\d\d \d\d:\d\d에 학습부장 비밀번호를 재설정했어요/);
+  await O.fits('재설정 알림');
+  await O.click('[data-act="reset-ok"]');
+  assert.equal(await O.has('#reset-notice'), false);
+  await O.click('[data-act="logout"]');
+  await O.login('총대단', '학습부장', 'qwer');
+  assert.equal(await O.has('#reset-notice'), false, '알림은 한 번만');
 });
 
 test('관리: 새 복구 코드 → 복구 코드로 들어가기(소문자·붙여 쓰기) → 새 코드 표시', async () => {

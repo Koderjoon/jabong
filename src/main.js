@@ -209,6 +209,7 @@ function resetDrafts() {
 
 async function signOut(msg) {
   setSession(null);
+  UI.resetNotice = null;
   resetDrafts();
   UI.user = null;
   UI.role = 'student';
@@ -1564,7 +1565,14 @@ function render() {
     <p class="hint" style="margin:0">현재 비밀번호를 잊었으면 부총대에게 재설정을 부탁하세요.</p>
     <div class="btns"><button class="btn" data-act="pw-change">바꾸기</button><button class="btn ghost" data-act="pw-open">닫기</button></div></div>`
       : '';
-  view.innerHTML = locked ? vLogin() : codeCard + pwCard + (UI.sid ? vDetail() : (V[UI.tab] || vBoard)());
+  const n = UI.resetNotice;
+  const noticeCard =
+    !locked && n
+      ? `<div class="card" id="reset-notice" style="border-color:var(--warn)"><h2>비밀번호가 재설정됐었어요</h2>
+    <p class="note" style="margin:0"><b>${esc(n.by)}</b>가 <b>${esc(n.at)}</b>에 ${esc(UI.user)} 비밀번호를 재설정했어요. 직접 부탁한 게 아니라면 그 사람에게 확인해 보세요.${UI.user === '총대' ? ' 그사이 학생 성적 비밀번호가 초기화됐는지 <b>성적</b> 탭의 학생 비밀번호 목록(바꾼 시각)도 확인해 보세요.' : ''}</p>
+    <div class="btns"><button class="btn small" data-act="reset-ok">확인했어요</button></div></div>`
+      : '';
+  view.innerHTML = locked ? vLogin() : noticeCard + codeCard + pwCard + (UI.sid ? vDetail() : (V[UI.tab] || vBoard)());
   pwEnhance(view);
   const pc = pendingCount();
   tabs.innerHTML = locked
@@ -1919,9 +1927,14 @@ const A = {
     setSession({ token: r.token, role: r.role });
     UI.user = r.role;
     UI.roleSet = true;
+    // 부총대가 그사이 이 직책 비밀번호를 재설정했으면 알린다 (한 번만 온다)
+    UI.resetNotice = r.resetNotice || null;
     resetDrafts();
     await refresh();
     UI.tab = tabsOf(UI.role)[0][0];
+  },
+  'reset-ok': () => {
+    UI.resetNotice = null;
   },
   logout: async () => {
     try {
