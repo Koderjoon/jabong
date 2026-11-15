@@ -351,7 +351,7 @@ function vDday() {
   const item = ({ t, d, diff }) => `<div class="card dd-item"><div class="dd-when"><div class="dd-md">${d.day.getMonth() + 1}/${d.day.getDate()}</div><div class="note">${WD[d.day.getDay()]}요일</div>
     <div class="dd-d ${diff === 0 ? 'hot' : diff <= 2 ? 'warm' : ''}">${diff === 0 ? 'D-day' : `D-${diff}`}</div></div>
     <div class="dd-body"><b>${esc(t.title)}</b><div class="note">${d.hm ? `<b>${d.hm}</b>${diff === 0 ? ' 까지' : ''}` : '시각 미정 (당일 중)'}</div>
-    ${t.detail ? `<div class="dd-detail">${esc(t.detail)}</div>` : ''}${t.room || (adm && t.manual) ? `<div class="btns">${t.room ? `<span class="pill">${esc(t.room)}</span>` : ''}${adm && t.manual ? '<span class="pill pending">직접 입력</span>' : ''}</div>` : ''}
+    ${t.detail ? `<div class="dd-detail">${esc(t.detail)}</div>` : ''}${ddLink(t.link) ? `<a class="btn small dd-link" href="${esc(ddLink(t.link))}" target="_blank" rel="noopener noreferrer">${ddLinkLabel(t.link)} 열기 ↗</a>` : ''}${t.room || (adm && t.manual) ? `<div class="btns">${t.room ? `<span class="pill">${esc(t.room)}</span>` : ''}${adm && t.manual ? '<span class="pill pending">직접 입력</span>' : ''}</div>` : ''}
     ${adm && t.id != null ? ddayActs(t) : ''}</div></div>${adm && UI.ddForm?.id === String(t.id) ? ddayFormCard(D) : ''}`;
   const list = [['today', '오늘'], ['tomorrow', '내일'], ['week', '7일 이내'], ['later', '그 이후']]
     .filter(([k]) => groups[k].length)
@@ -376,6 +376,15 @@ function ddayActs(t) {
     <div class="btns"><button class="btn danger small" data-act="dd-del-yes" data-id="${esc(id)}">네, 지우기</button><button class="btn ghost small" data-act="dd-del-no">그만두기</button></div></div>`;
   return `<div class="btns"><button class="btn ghost small" data-act="dd-edit" data-id="${esc(id)}">수정</button><button class="btn ghost small" data-act="dd-del" data-id="${esc(id)}">삭제</button></div>`;
 }
+// 일정의 링크 (구글 시트·폼 등). 디데이 사이트와 같게 http(s) 주소만 버튼으로 연다
+const ddLink = (u) => (/^https?:\/\/[^\s<>"']+$/i.test(String(u || '').trim()) ? String(u).trim() : '');
+function ddLinkLabel(u) {
+  if (/docs\.google\.com\/spreadsheets/.test(u)) return '구글 시트';
+  if (/docs\.google\.com\/forms|forms\.gle/.test(u)) return '구글 폼';
+  if (/docs\.google\.com\/document/.test(u)) return '구글 문서';
+  if (/naver\.me|form\.naver\.com/.test(u)) return '네이버 폼';
+  return '링크';
+}
 // 일정 추가·수정 칸 (UI.ddForm: id가 ''면 새 일정)
 function ddayFormCard(D) {
   const f = UI.ddForm;
@@ -387,6 +396,7 @@ function ddayFormCard(D) {
   <label class="fld grow"><span>시각 (모르면 비워 두기)</span><input type="time" id="dd-time" value="${esc(f.time)}" data-bind="ddForm.time"></label></div>
   <label class="fld"><span>분류</span><select id="dd-room" data-bind="ddForm.room">${[...rooms, ''].map((r) => `<option value="${esc(r)}" ${f.room === r ? 'selected' : ''}>${r ? esc(r) : '기타'}</option>`).join('')}</select></label>
   <label class="fld"><span>세부 내용 (선택)</span><textarea id="dd-detail" maxlength="500" data-bind="ddForm.detail">${esc(f.detail)}</textarea></label>
+  <label class="fld"><span>링크 (구글 시트·폼 등, 없으면 비워 두기)</span><input id="dd-link" type="url" inputmode="url" maxlength="1000" value="${esc(f.link)}" data-bind="ddForm.link" autocomplete="off" placeholder="https://"></label>
   <div class="btns"><button class="btn" data-act="dd-save">저장</button><button class="btn ghost" data-act="dd-cancel">취소</button></div></div>`;
 }
 
@@ -2195,14 +2205,14 @@ const A = {
   },
   'dd-new': () => {
     UI.ddDel = null;
-    UI.ddForm = { id: '', title: '', date: '', time: '', room: dday?.data?.rooms?.[0] || '', detail: '' };
+    UI.ddForm = { id: '', title: '', date: '', time: '', room: dday?.data?.rooms?.[0] || '', detail: '', link: '' };
   },
   'dd-edit': (d) => {
     const t = dday?.data?.tasks.find((x) => String(x.id) === d.id);
     if (!t) return;
     const due = ddayDue(t.due);
     UI.ddDel = null;
-    UI.ddForm = { id: String(t.id), title: t.title || '', date: due ? String(t.due).slice(0, 10) : '', time: due?.hm || '', room: t.room || '', detail: t.detail || '' };
+    UI.ddForm = { id: String(t.id), title: t.title || '', date: due ? String(t.due).slice(0, 10) : '', time: due?.hm || '', room: t.room || '', detail: t.detail || '', link: t.link || '' };
   },
   'dd-cancel': () => {
     UI.ddForm = null;
@@ -2211,9 +2221,10 @@ const A = {
     const f = UI.ddForm;
     if (!f) return;
     if (!f.title.trim() || !f.date) return toast('제목과 날짜는 꼭 입력하세요');
+    if ((f.link || '').trim() && !ddLink(f.link)) return toast('링크는 http:// 또는 https:// 로 시작해야 해요');
     const src = ddayAdminUrl();
     if (!src || !dday?.data?.api) return toast('디데이를 다시 불러온 뒤 해 보세요');
-    await ddayPost(src, dday.data.api, { type: f.id ? 'edit' : 'add', id: f.id, title: f.title.trim(), due: f.date + (f.time ? ` ${f.time}` : ''), room: f.room, detail: f.detail.trim() });
+    await ddayPost(src, dday.data.api, { type: f.id ? 'edit' : 'add', id: f.id, title: f.title.trim(), due: f.date + (f.time ? ` ${f.time}` : ''), room: f.room, detail: f.detail.trim(), link: (f.link || '').trim() });
     const msg = f.id ? '일정을 고쳤어요' : '일정을 추가했어요';
     UI.ddForm = null;
     ddayLoad(src, true);

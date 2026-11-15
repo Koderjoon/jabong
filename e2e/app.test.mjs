@@ -2320,8 +2320,8 @@ test('디데이: 부총대가 링크(보기 키까지)를 넣으면 학생 첫 �
     { id: 't1', title: '지난 과제', due: `${day(-1)} 10:00`, detail: '', room: '' },
     { id: 't2', title: '그 이후 시험', due: day(20), detail: '범위: 1~3장', room: '해부학', extra: '모르는 칸' },
     { id: 't3', title: '<b>오늘</b> 마감', due: day(0), detail: '', room: '공지방' },
-    { id: 't4', title: '내일 실습', due: `${day(1)} 09:00`, detail: '', room: '' },
-    { id: 't5', title: '이번 주 퀴즈', due: day(5), detail: '', room: '' },
+    { id: 't4', title: '내일 실습', due: `${day(1)} 09:00`, detail: '', room: '', link: 'https://docs.google.com/spreadsheets/d/abc' },
+    { id: 't5', title: '이번 주 퀴즈', due: day(5), detail: '', room: '', link: 'javascript:alert(1)' },
     { id: 't6', title: '날짜 없음', due: '', detail: '', room: '' },
   ];
   const calls = { site: 0, api: 0 };
@@ -2349,8 +2349,8 @@ test('디데이: 부총대가 링크(보기 키까지)를 넣으면 학생 첫 �
             return json({ ok: true, log: ['새 메시지 12개', '일정 1개 추가'] });
           });
         }
-        if (b.type === 'add') tasks.push({ id: `n${posts.length}`, title: b.title, due: b.due, room: b.room, detail: b.detail, manual: true });
-        else if (b.type === 'edit') Object.assign(tasks.find((t) => t.id === b.id), { title: b.title, due: b.due, room: b.room, detail: b.detail, manual: true });
+        if (b.type === 'add') tasks.push({ id: `n${posts.length}`, title: b.title, due: b.due, room: b.room, detail: b.detail, link: b.link, manual: true });
+        else if (b.type === 'edit') Object.assign(tasks.find((t) => t.id === b.id), { title: b.title, due: b.due, room: b.room, detail: b.detail, link: b.link, manual: true });
         else if (b.type === 'delete') tasks.splice(tasks.findIndex((t) => t.id === b.id), 1);
         return json({ ok: true });
       }
@@ -2383,6 +2383,11 @@ test('디데이: 부총대가 링크(보기 키까지)를 넣으면 학생 첫 �
   assert.equal(await P.has('.dd-item b b'), false, '제목의 HTML은 글자로');
   assert.match(v, /시각 미정 \(당일 중\)/);
   assert.equal(await P.page.getAttribute('a:has-text("원본 사이트 열기")', 'href'), `${SITE}#k=jnudent25`);
+  // 일정의 링크(구글 시트·폼 등)는 버튼으로 새 창에 연다. http(s)가 아닌 주소는 버튼을 만들지 않는다
+  assert.equal(await P.page.getAttribute('.dd-item:has-text("내일 실습") a.dd-link', 'href'), 'https://docs.google.com/spreadsheets/d/abc');
+  assert.equal(await P.text('.dd-item:has-text("내일 실습") a.dd-link'), '구글 시트 열기 ↗');
+  assert.equal(await P.page.getAttribute('.dd-item:has-text("내일 실습") a.dd-link', 'target'), '_blank');
+  assert.equal(await P.has('.dd-item:has-text("이번 주 퀴즈") a.dd-link'), false);
   await P.fits('디데이');
   // 첫 화면이 디데이여도 설치 버튼이 맨 위에 보인다
   await P.page.evaluate(() => {
@@ -2443,20 +2448,24 @@ test('디데이: 부총대가 링크(보기 키까지)를 넣으면 학생 첫 �
   await A.page.fill('#dd-time', '14:30');
   await A.page.selectOption('#dd-room', '해부학');
   await A.page.fill('#dd-detail', '2장까지');
+  await A.page.fill('#dd-link', 'forms.gle/xyz');
+  assert.equal(await A.toast('[data-act="dd-save"]'), '링크는 http:// 또는 https:// 로 시작해야 해요');
+  await A.page.fill('#dd-link', 'https://forms.gle/xyz');
   assert.equal(await A.toast('[data-act="dd-save"]'), '일정을 추가했어요');
-  assert.deepEqual(posts.at(-1), { type: 'add', id: '', title: '구강해부학 과제', due: `${day(3)} 14:30`, room: '해부학', detail: '2장까지', token: 'admin-test-key' });
+  assert.deepEqual(posts.at(-1), { type: 'add', id: '', title: '구강해부학 과제', due: `${day(3)} 14:30`, room: '해부학', detail: '2장까지', link: 'https://forms.gle/xyz', token: 'admin-test-key' });
   await A.page.waitForSelector('.dd-item:has-text("구강해부학 과제")');
-  assert.match(await A.text('.dd-item:has-text("구강해부학 과제")'), /14:30[\s\S]*2장까지[\s\S]*해부학[\s\S]*직접 입력/);
+  assert.match(await A.text('.dd-item:has-text("구강해부학 과제")'), /14:30[\s\S]*2장까지[\s\S]*구글 폼 열기 ↗[\s\S]*해부학[\s\S]*직접 입력/);
   assert.equal(await A.has('#dd-form'), false, '저장하면 칸이 닫힌다');
   // 수정: 칸에 지금 값이 들어 있고, 고쳐 저장
   await A.click('.dd-item:has-text("내일 실습") [data-act="dd-edit"]');
   assert.equal(await A.page.inputValue('#dd-title'), '내일 실습');
   assert.equal(await A.page.inputValue('#dd-date'), day(1));
   assert.equal(await A.page.inputValue('#dd-time'), '09:00');
+  assert.equal(await A.page.inputValue('#dd-link'), 'https://docs.google.com/spreadsheets/d/abc');
   await A.page.fill('#dd-title', '내일 실습 (장소 변경)');
   await A.page.fill('#dd-time', '');
   assert.equal(await A.toast('[data-act="dd-save"]'), '일정을 고쳤어요');
-  assert.deepEqual(posts.at(-1), { type: 'edit', id: 't4', title: '내일 실습 (장소 변경)', due: day(1), room: '', detail: '', token: 'admin-test-key' });
+  assert.deepEqual(posts.at(-1), { type: 'edit', id: 't4', title: '내일 실습 (장소 변경)', due: day(1), room: '', detail: '', link: 'https://docs.google.com/spreadsheets/d/abc', token: 'admin-test-key' });
   await A.page.waitForSelector('.dd-item:has-text("내일 실습 (장소 변경)")');
   // 디데이 쪽에서 거절하면 그 이유를 보여 주고 칸은 남긴다
   await A.click('.dd-item:has-text("그 이후 시험") [data-act="dd-edit"]');
