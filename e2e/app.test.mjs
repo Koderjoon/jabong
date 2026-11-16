@@ -2399,7 +2399,8 @@ test('디데이: 부총대가 링크(보기 키까지)를 넣으면 학생 첫 �
   await P.page.locator(it).scrollIntoViewIfNeeded();
   await P.page.screenshot({ path: process.env.SHOT_DIR ? `${process.env.SHOT_DIR}/dd2.png` : '/dev/null' }).catch(() => {});
   assert.equal(await P.page.$eval(`${it} .dd-title`, (e) => getComputedStyle(e).textDecorationLine), 'line-through');
-  assert.equal(await P.text(`${it} [data-act="dd-done"]`), '완료함');
+  assert.equal(await P.text(`${it} [data-act="dd-done"]`), '완료 취소');
+  assert.equal(await P.text(`${it} .dd-donemark`), '✓ 완료');
   assert.match(await P.text(), /완료 표시는 이 폰에만 저장돼요 · 완료 1개/);
   assert.deepEqual(Object.keys(JSON.parse(await P.page.evaluate(() => localStorage.getItem('jabong-dday-done')))), [`t2|${day(20)}`], '목록에 없는 일정의 표시는 정리');
   await P.fits('디데이 완료 표시');
