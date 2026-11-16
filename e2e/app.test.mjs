@@ -2392,10 +2392,14 @@ test('디데이: 부총대가 링크(보기 키까지)를 넣으면 학생 첫 �
   // 완료 표시 (이 폰에만): 누르면 흐려지고 취소선, 다시 열어도 그대로, 숨기기·보기, 다시 누르면 풀림
   const it = '.dd-item:has-text("그 이후 시험")';
   await P.page.evaluate(() => localStorage.setItem('jabong-dday-done', JSON.stringify({ 'gone|2020-01-01': 1 })));
+  assert.equal(await P.text(`${it} [data-act="dd-done"]`), '완료하기');
+  await P.page.screenshot({ path: process.env.SHOT_DIR ? `${process.env.SHOT_DIR}/dd1.png` : '/dev/null', clip: { x: 0, y: 0, width: 390, height: 844 } }).catch(() => {});
   await P.click(`${it} [data-act="dd-done"]`);
   assert.match(await P.page.getAttribute(it, 'class'), /\bdone\b/);
+  await P.page.locator(it).scrollIntoViewIfNeeded();
+  await P.page.screenshot({ path: process.env.SHOT_DIR ? `${process.env.SHOT_DIR}/dd2.png` : '/dev/null' }).catch(() => {});
   assert.equal(await P.page.$eval(`${it} .dd-title`, (e) => getComputedStyle(e).textDecorationLine), 'line-through');
-  assert.equal(await P.text(`${it} [data-act="dd-done"]`), '✓ 완료');
+  assert.equal(await P.text(`${it} [data-act="dd-done"]`), '완료함');
   assert.match(await P.text(), /완료 표시는 이 폰에만 저장돼요 · 완료 1개/);
   assert.deepEqual(Object.keys(JSON.parse(await P.page.evaluate(() => localStorage.getItem('jabong-dday-done')))), [`t2|${day(20)}`], '목록에 없는 일정의 표시는 정리');
   await P.fits('디데이 완료 표시');
