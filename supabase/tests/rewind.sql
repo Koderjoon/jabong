@@ -149,6 +149,13 @@ set role postgres; select pg_temp.ok(pg_temp.sig() = :'sig_a', '앞으로 가면
 -- 뒤의 작업(번호 변경)이 같은 학생을 바꿨으면 멈춘다
 set role anon;
 select pg_temp.expect(format('select history_drop(%L, %s, false)', :'t', :op1), 'P0002', '뒤 작업과 겹치면 멈춤');
+-- 안내는 막는 뒤 작업의 이름을 알려 주고 하나씩 되돌리기를 권한다 ("이 시점으로"는 권하지 않는다)
+select set_config('tt.q', format('select history_drop(%L, %s, false)', :'t', :op1), false);
+do $$ declare m text; begin
+  begin execute current_setting('tt.q'); exception when others then m := sqlerrm; end;
+  if m is null or m not like '%막는 작업(최근 것부터): "%". 그 작업을 먼저 "이 작업만 되돌리기" 한 뒤%' or m like '%이 시점으로%' then
+    raise exception 'FAIL: 겹침 안내 (메시지 %)', m; end if;
+end $$;
 set role postgres; select pg_temp.ok(pg_temp.sig() = :'sig_a', '멈추면 그대로 (이 작업만)');
 -- 빼 둔 작업 뒤에 같은 기록을 바꾸는 새 작업을 하면 살리기가 멈춘다
 set role anon;

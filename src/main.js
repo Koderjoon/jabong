@@ -1428,8 +1428,27 @@ function vHistory() {
   const pos = histPos(h.list);
   const p = h.preview;
   const opRows = (ops) => `<div class="mlist" style="max-height:160px">${ops.map((o) => `<div class="mrow"><span class="note mono">${esc(o.at.slice(5))}</span><span class="grow">${esc(o.summary)}</span><span class="note">${esc(o.actor)}</span></div>`).join('')}</div>`;
+  // 이동 미리보기: 지금 위치와 이동 후 위치(그 작업 "직후"). 목록은 최신순이라 id가 target 이하인 첫 줄이 이동 후 위치다
+  const isMove = p && !p.drop;
+  // 이름은 빼 둔 작업을 건너뛰고 실제로 적용된(될) 마지막 작업으로 보여 준다
+  const destOp = isMove ? h.list.find((o) => o.id <= p.target && !o.dropped) || null : null;
+  const hereOp = pos.cur;
+  const endOp = h.list.find((o) => !o.dropped) || null;
+  const spot = (o) => (o ? `"${esc(o.summary)}" 직후 <span class="note mono">${esc(o.at.slice(5))}</span>` : '맨 처음 <span class="note">(아무 작업도 없던 때)</span>');
+  const goingBack = isMove && p.data.back.length > 0;
+  // 이동 후 "뒤로 감"이 될(새 작업 한 번에 사라질) 작업 수
+  const atRisk = goingBack ? pos.ahead + p.data.back.length : 0;
+  // 목록처럼 최근 쪽을 위에 둔다: 뒤로 가면 "지금" 아래에 도착지, 앞으로 가면 위에 도착지
+  const map = (toTag, toHtml, back, arrow) => {
+    const from = `<div class="hm-row"><span class="hm-tag">지금</span><span>▶ ${spot(hereOp)}</span></div>`;
+    const to = `<div class="hm-row hm-dest"><span class="hm-tag">${toTag}</span><span>▷ ${toHtml}</span></div>`;
+    return `<div class="hist-map">${back ? `${from}<div class="hm-arrow">↓ ${arrow}</div>${to}` : `${to}<div class="hm-arrow">↑ ${arrow}</div>${from}`}</div>`;
+  };
+  const moveMap = isMove ? map('이동 후', `${p.target === pos.end ? '<b>맨 끝</b> · ' : ''}${spot(destOp)}`, goingBack, goingBack ? '과거로' : '최근으로') : '';
+  const riskWarn = goingBack ? `<div class="warn"><b>⚠️ 이동하면 작업 ${atRisk}개가 '뒤로 감' 상태가 돼요.</b> 이 상태에서 누구든 새 작업을 하면(학생의 공결·리액션 신청도 포함) 이 작업들은 <b>영영 사라져요.</b><br>작업 하나만 취소하려면 이동하지 말고 그 줄의 <b>"이 작업만 되돌리기"</b>를 쓰세요. 이동했다면 확인만 하고 바로 <b>"맨 끝으로 돌아가기"</b>를 누르세요.</div>` : '';
   const previewCard = p
     ? `<div class="card" style="border-color:var(--warn)"><h2>${esc(p.title)}</h2>
+    ${moveMap}${riskWarn}
     ${p.data.back.length ? `<div class="note">되돌릴 작업 ${p.data.back.length}개</div>${opRows(p.data.back)}` : ''}
     ${p.data.forward.length ? `<div class="note">다시 적용할 작업 ${p.data.forward.length}개</div>${opRows(p.data.forward)}` : ''}
     ${!p.drop && !p.data.back.length && !p.data.forward.length ? '<div class="note">빼 둔 작업만 제자리로 옮겨요 (데이터는 그대로예요).</div>' : ''}
@@ -1441,25 +1460,32 @@ function vHistory() {
       if (x.beforeActive !== x.afterActive) bits.push(x.afterActive ? '명단에 다시 들어감' : x.afterActive === false ? '명단에서 빠짐' : '명단에서 사라짐');
       return `<div class="mrow"><span class="mono">${x.no ?? ''}</span><span class="grow">${esc(x.name || '')}</span><span class="note">${bits.join(' · ') || '기록만 바뀜'}</span></div>`;
     }).join('')}</div>` : '<div class="note">학생별 점수·번호는 그대로예요 (요청·신청 같은 기록만 바뀌어요).</div>'}
-    <div class="btns"><button class="btn danger" data-act="hist-run">${p.restore ? '다시 살리기' : p.drop ? '되돌리기' : '이동'}</button><button class="btn ghost" data-act="hist-cancel">그만두기</button></div></div>`
+    <div class="btns"><button class="btn danger" data-act="hist-run">${p.restore ? '다시 살리기' : p.drop ? '되돌리기' : goingBack ? '그래도 이동하기' : '이동'}</button><button class="btn ghost" data-act="hist-cancel">그만두기</button></div></div>`
     : '';
   const here = '<div class="rec-row" style="color:var(--accent);font-weight:600"><span>▶</span><span>지금 여기</span><span></span></div>';
   // 빼 둔 작업도 뒤로 가지 않았으면 "지금" 아래(지난 쪽)에 둔다
   const hereId = h.list.find((o) => !o.undone)?.id;
+  // 이동 미리보기 중이면 목록에도 "이동하면 여기로"와 바뀌는 줄을 표시한다
+  const dest = isMove ? '<div class="rec-row hm-mark"><span>▷</span><span>이동하면 여기로</span><span></span></div>' : '';
+  const destId = isMove ? h.list.find((o) => o.id <= p.target)?.id : undefined;
+  const willBack = new Set(isMove ? p.data.back.map((o) => o.id) : []);
+  const willFwd = new Set(isMove ? p.data.forward.map((o) => o.id) : []);
   const row = (o) => {
     const isCur = pos.cur && o.id === pos.cur.id;
-    const tag = !o.undoable ? '<span class="pill">이 너머로는 못 가요</span>' : o.dropped ? '<span class="pill rejected">이 작업만 되돌림</span>' : o.undone ? '<span class="pill rejected">뒤로 감</span>' : '';
+    const tag = (!o.undoable ? '<span class="pill">이 너머로는 못 가요</span>' : o.dropped ? '<span class="pill rejected">이 작업만 되돌림</span>' : o.undone ? '<span class="pill rejected">뒤로 감</span>' : '')
+      + (o.id === pos.end ? ' <span class="pill">맨 끝</span>' : '')
+      + (willBack.has(o.id) ? ' <span class="pill rejected">이동하면 되돌려짐</span>' : willFwd.has(o.id) ? ' <span class="pill">이동하면 다시 적용</span>' : '');
     const canGo = !isCur && !o.dropped;
     const canDrop = o.undoable && !o.undone && !o.dropped;
     const dim = o.undone || o.dropped ? ' style="opacity:.55"' : '';
-    return `${o.id === hereId ? here : ''}<div class="rec-row"><span class="note mono"${dim}>${esc(o.at.slice(5))}</span><span class="${o.undone || o.dropped ? 'off' : ''}"${dim}>${esc(o.summary)}<br><span class="d">${esc(o.actor)}</span></span><span>${tag}</span>
+    return `${o.id === destId ? dest : ''}${o.id === hereId ? here : ''}<div class="rec-row"><span class="note mono"${dim}>${esc(o.at.slice(5))}</span><span class="${o.undone || o.dropped ? 'off' : ''}"${dim}>${esc(o.summary)}<br><span class="d">${esc(o.actor)}</span></span><span>${tag}</span>
     ${canGo || canDrop || o.dropped ? `<div class="acts">${canGo ? `<button class="btn ghost small" data-act="hist-pv" data-target="${o.id}" data-title="이 작업 직후로 이동">이 시점으로</button>` : ''}${canDrop ? `<button class="btn ghost small" data-act="hist-drop-pv" data-id="${o.id}">이 작업만 되돌리기</button>` : ''}${o.dropped ? `<button class="btn ghost small" data-act="hist-drop-pv" data-id="${o.id}" data-restore="1">다시 살리기</button>` : ''}</div>` : ''}</div>`;
   };
-  const list = h.list.map(row).join('') + (hereId == null && h.list.length ? here : '');
+  const list = h.list.map(row).join('') + (isMove && destId == null && h.list.length ? dest : '') + (hereId == null && h.list.length ? here : '');
   const complete = h.list.length < h.limit;
   return `<div><h1>작업 내역</h1><p class="sub">누가 언제 무엇을 바꿨는지 최신순으로 보여요. 뒤로가기·앞으로 가기로 작업 단위로 오가거나, 작업 하나만 되돌릴 수 있어요. 이동이나 되돌리기는 작업 내역에 남지 않아요.</p></div>
   ${previewCard}
-  ${pos.end != null ? `<div class="warn">지금 <b>뒤로 간 상태</b>예요. 이대로 누가 새 작업을 하면(학생의 공결·리액션 신청, 총대단 요청도 포함) ${[pos.ahead ? `앞으로 갈 수 있는 작업 ${pos.ahead}개` : '', pos.aheadDropped ? `빼 둔 작업 ${pos.aheadDropped}개` : ''].filter(Boolean).join('와 ')}가 사라져요. 확인이 끝나면 바로 맨 끝으로 돌아오세요.
+  ${pos.end != null ? `<div class="warn">지금 <b>뒤로 간 상태</b>예요. 이대로 누가 새 작업을 하면(학생의 공결·리액션 신청, 총대단 요청도 포함) ${[pos.ahead ? `앞으로 갈 수 있는 작업 ${pos.ahead}개` : '', pos.aheadDropped ? `빼 둔 작업 ${pos.aheadDropped}개` : ''].filter(Boolean).join('와 ')}가 사라져요. 확인이 끝나면 바로 맨 끝으로 돌아오세요.${pos.end != null ? `<div style="margin-top:6px">${map('맨 끝', `${spot(endOp)} <span class="note">(가장 최근 작업)</span>`, false, '맨 끝으로')}</div>` : ''}
     <div class="btns" style="margin-top:6px"><button class="btn small" data-act="hist-pv" data-target="${pos.end}" data-title="맨 끝으로 돌아가기">맨 끝으로 돌아가기</button></div></div>` : ''}
   <div class="card"><div class="btns">
     <button class="btn ghost" data-act="hist-pv" data-target="${pos.back ?? ''}" data-title="뒤로가기" ${pos.back == null ? 'disabled' : ''}>← 뒤로가기</button>
@@ -1467,7 +1493,7 @@ function vHistory() {
   </div>${pos.start != null && complete ? '<button class="btn ghost small" data-act="hist-pv" data-target="0" data-title="맨 처음으로 이동">맨 처음으로</button>' : ''}</div>
   <div class="card" style="gap:0">${list || '<p class="empty">아직 작업이 없어요.</p>'}
   ${!complete ? '<button class="btn ghost" data-act="hist-more" style="margin-top:10px">더 보기</button>' : ''}</div>
-  <p class="hint">"뒤로 감" 줄은 앞으로 가기나 "이 시점으로"로 다시 적용할 수 있어요. 다만 뒤로 간 상태에서 누가 새 작업(기록, 승인, 학생의 공결·리액션 신청 등)을 하면 그 줄들은 사라져요. "이 작업만 되돌리기"는 그 작업 하나만 빼 두고, "다시 살리기"로 언제든 되살릴 수 있어요. 뒤의 작업이 같은 기록을 바꿨으면 할 수 없다고 알려줘요. 이동하기 전에 무엇이 바뀌는지 먼저 보여줘요. 보관 후 정리나 백업에서 되살리기 너머로는 갈 수 없어요.</p>`;
+  <p class="hint"><b>작업 하나만 취소할 땐 "이 작업만 되돌리기"를 쓰세요.</b> 뒤의 작업은 그대로 두고, "다시 살리기"로 언제든 되살릴 수 있어요. 뒤로가기·"이 시점으로"·맨 처음으로는 그 뒤의 작업을 모두 뒤로 보내므로 꼭 필요할 때만 쓰세요. "뒤로 감" 줄은 앞으로 가기나 "이 시점으로"로 다시 적용할 수 있어요. 다만 뒤로 간 상태에서 누가 새 작업(기록, 승인, 학생의 공결·리액션 신청 등)을 하면 그 줄들은 사라져요. "이 작업만 되돌리기"는 뒤의 작업이 같은 기록을 바꿨으면 할 수 없고, 막는 작업을 알려줘요. 이동하기 전에 무엇이 바뀌는지 먼저 보여줘요. 보관 후 정리나 백업에서 되살리기 너머로는 갈 수 없어요.</p>`;
 }
 
 // 리액션 이월 맞추기: 엑셀로 정리하던 이월(다음 상점까지 모은 횟수 0~2)을 붙여넣어 옮긴다 (서버 reaction_adjust)

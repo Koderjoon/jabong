@@ -1184,7 +1184,14 @@ test('작업 내역: 뒤로가기·앞으로 가기, 그만두기, 이 작업만
   // 뒤로가기 → 그만두기 → 뒤로가기 → 이동
   await A.click('[data-title="뒤로가기"]');
   assert.match(await A.text('.card[style*="warn"]'), /뒤로가기.*되돌릴 작업 1개/s);
+  // 어디로 가는지와 사라질 위험을 보여 준다
+  assert.match(await A.text('.card[style*="warn"] .hist-map'), /지금\s*▶[\s\S]*과거로[\s\S]*이동 후\s*▷/);
+  assert.match(await A.text('.card[style*="warn"] .warn'), /작업 1개가 '뒤로 감' 상태가 돼요.*영영 사라져요.*이 작업만 되돌리기/s);
+  assert.equal(await A.text('[data-act="hist-run"]'), '그래도 이동하기');
+  assert.equal(await A.has('#view .rec-row.hm-mark'), true, '목록에도 이동할 곳 표시');
+  assert.equal(await A.page.locator('#view .rec-row:has(.pill:text("이동하면 되돌려짐"))').count(), 1, '되돌려질 작업 표시');
   await A.fits('뒤로가기 미리보기');
+  if (process.env.SHOT_DIR) await A.page.screenshot({ path: `${process.env.SHOT_DIR}/hist1.png` }).catch(() => {});
   await A.click('[data-act="hist-cancel"]');
   assert.equal(await A.has('[data-act="hist-run"]'), false);
   await A.click('[data-title="뒤로가기"]');
@@ -1195,8 +1202,14 @@ test('작업 내역: 뒤로가기·앞으로 가기, 그만두기, 이 작업만
   const back = '#view .warn:has-text("뒤로 간 상태")';
   assert.match(await A.text(back), /앞으로 갈 수 있는 작업 1개가 사라져요/);
   assert.equal((await one(`select count(*)::int as n from ops`)).n, nops, '이동은 작업 내역에 남지 않는다');
+  assert.match(await A.text(`${back} .hist-map`), /맨 끝\s*▷[\s\S]*가장 최근 작업[\s\S]*맨 끝으로[\s\S]*지금\s*▶/);
+  assert.match(await A.text('#view .rec-row >> nth=0'), /맨 끝/);
+  if (process.env.SHOT_DIR) await A.page.screenshot({ path: `${process.env.SHOT_DIR}/hist2.png` }).catch(() => {});
   await A.click('[data-title="앞으로 가기"]');
   assert.match(await A.text('.card[style*="warn"]'), /다시 적용할 작업 1개/);
+  assert.equal(await A.has('.card[style*="warn"] .warn'), false, '앞으로 갈 땐 경고 없음');
+  assert.equal(await A.text('[data-act="hist-run"]'), '이동');
+  assert.match(await A.text('.card[style*="warn"] .hist-map'), /이동 후\s*▷\s*맨 끝[\s\S]*최근으로[\s\S]*지금\s*▶/);
   assert.equal(await A.toast('[data-act="hist-run"]'), '이동했어요');
   assert.equal(await sig(), start);
   assert.equal(await A.has(back), false, '맨 끝이면 경고 없음');
@@ -1211,7 +1224,7 @@ test('작업 내역: 뒤로가기·앞으로 가기, 그만두기, 이 작업만
   assert.equal(await A.toast('[data-act="hist-run"]'), '다시 살렸어요');
   assert.equal(await sig(), start);
   // 겹치는 작업은 하나만 되돌릴 수 없다고 알려 준다
-  assert.match(await A.toast(`${row('명단: 추가 6')} [data-act="hist-drop-pv"]`), /이 작업만 되돌릴 수 없어요/);
+  assert.match(await A.toast(`${row('명단: 추가 6')} [data-act="hist-drop-pv"]`), /이 작업만 되돌릴 수 없어요\. 막는 작업\(최근 것부터\): ".+"\. 그 작업을 먼저 "이 작업만 되돌리기" 한 뒤/);
   // 맨 처음으로 → 명단이 비고, 맨 위 작업 "이 시점으로" → 원래대로
   await A.click('[data-title="맨 처음으로 이동"]');
   assert.equal(await A.toast('[data-act="hist-run"]'), '이동했어요');

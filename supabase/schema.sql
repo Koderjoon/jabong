@@ -1572,7 +1572,7 @@ end $$;
 create or replace function _history_one(p_token uuid, p_op bigint, p_restore boolean, p_preview boolean) returns json
 language plpgsql security definer set search_path = public as $$
 declare
-  who text := _session(p_token, true); o ops; scratch bigint; before jsonb; result json; nledger int;
+  who text := _session(p_token, true); o ops; scratch bigint; before jsonb; result json; nledger int; blockers text; nblock int; what text;
 begin
   perform _wlock();
   select * into o from ops where id = p_op and kind <> 'scratch';
@@ -1583,22 +1583,30 @@ begin
   if not p_restore and o.undone then raise exception '뒤로 가 있는 작업이에요. 먼저 앞으로 가서 적용한 뒤에 빼세요'; end if;
   -- 뒤에 적용된 작업이 같은 행을 건드렸으면 멈춘다. (_apply_op는 이미 지워진 행을 건너뛰므로,
   --  예를 들어 뒤의 작업이 이 작업이 넣은 행을 지웠으면 이것만으로는 알아채지 못한다)
-  if not o.undone and exists (
-      select 1 from op_changes a join op_changes b on b.tbl = a.tbl and b.row_key = a.row_key
+  -- 막는 뒤 작업의 이름을 알려 주고, 그것부터 하나씩 되돌리게 안내한다.
+  -- ("이 시점으로"는 뒤의 작업을 전부 뒤로 보내 새 작업 한 번에 사라질 수 있어서 권하지 않는다)
+  if not o.undone then
+    select string_agg(format('"%s"', x.summary), ', ' order by x.id desc), count(*) into blockers, nblock from (
+      select distinct l.id, l.summary from op_changes a join op_changes b on b.tbl = a.tbl and b.row_key = a.row_key
       join ops l on l.id = b.op_id
-      where a.op_id = p_op and l.id > p_op and not l.undone and not l.dropped and l.kind <> 'scratch') then
-    raise exception '"%" 작업 뒤에 같은 기록을 바꾼 작업이 있어서, 이 작업만 %수 없어요. "이 시점으로"를 써 보세요',
-      o.summary, case when p_restore then '다시 살릴 ' else '되돌릴 ' end using errcode = 'P0002';
-  end if;
-  -- 리액션 상점은 "그 학생의 아직 안 묶인 승인 리액션 3개"로 만들어지니, 뒤의 작업이 같은 학생의 리액션을 건드렸으면
-  -- 행이 겹치지 않아도 이 작업만 빼거나 살리면 3개당 1점이 어긋난다
-  if not o.undone and exists (
-      select 1 from op_changes a join op_changes b on b.tbl = 'reactions'
-        and coalesce(b.after, b.before) ->> 'student_id' = coalesce(a.after, a.before) ->> 'student_id'
-      join ops l on l.id = b.op_id
-      where a.op_id = p_op and a.tbl = 'reactions' and l.id > p_op and not l.undone and not l.dropped and l.kind <> 'scratch') then
-    raise exception '"%" 작업 뒤에 같은 학생의 리액션을 처리한 작업이 있어서, 이 작업만 %수 없어요. "이 시점으로"를 써 보세요',
-      o.summary, case when p_restore then '다시 살릴 ' else '되돌릴 ' end using errcode = 'P0002';
+      where a.op_id = p_op and l.id > p_op and not l.undone and not l.dropped and l.kind <> 'scratch'
+      order by 1 desc limit 3) x;
+    what := '같은 기록을 바꾼';
+    if nblock = 0 then
+      -- 리액션 상점은 "그 학생의 아직 안 묶인 승인 리액션 3개"로 만들어지니, 뒤의 작업이 같은 학생의 리액션을 건드렸으면
+      -- 행이 겹치지 않아도 이 작업만 빼거나 살리면 3개당 1점이 어긋난다
+      select string_agg(format('"%s"', x.summary), ', ' order by x.id desc), count(*) into blockers, nblock from (
+        select distinct l.id, l.summary from op_changes a join op_changes b on b.tbl = 'reactions'
+          and coalesce(b.after, b.before) ->> 'student_id' = coalesce(a.after, a.before) ->> 'student_id'
+        join ops l on l.id = b.op_id
+        where a.op_id = p_op and a.tbl = 'reactions' and l.id > p_op and not l.undone and not l.dropped and l.kind <> 'scratch'
+        order by 1 desc limit 3) x;
+      what := '같은 학생의 리액션을 처리한';
+    end if;
+    if nblock > 0 then
+      raise exception '"%" 작업 뒤에 % 작업이 있어서, 이 작업만 %수 없어요. 막는 작업(최근 것부터): %. 그 작업을 먼저 "이 작업만 되돌리기" 한 뒤 다시 해 보세요. 또는 해당 기록을 직접 고치거나 무효로 해도 돼요',
+        o.summary, what, case when p_restore then '다시 살릴 ' else '되돌릴 ' end, blockers using errcode = 'P0002';
+    end if;
   end if;
   before := _snap();
   select count(*) into nledger from ledger where voided_at is null;
@@ -1621,8 +1629,8 @@ begin
   exception
     when sqlstate 'P0003' then return result;
     when sqlstate 'P0002' then
-      if sqlerrm like '그렇게 하면%' then raise; end if;
-      raise exception '"%" 작업 뒤에 같은 기록을 바꾼 작업이 있거나 작업 내역 밖에서 바뀌어서, 이 작업만 %수 없어요. "이 시점으로"를 써 보세요',
+      if sqlerrm like '그렇게 하면%' or sqlerrm like '%기대는 다른 작업%' then raise; end if;
+      raise exception '"%" 작업이 바꾼 기록이 그 뒤 작업 내역 밖에서 바뀌어서, 이 작업만 %수 없어요. 해당 기록을 직접 고치거나 무효로 해 주세요',
         o.summary, case when p_restore then '다시 살릴 ' else '되돌릴 ' end using errcode = 'P0002';
   end;
   return result;
