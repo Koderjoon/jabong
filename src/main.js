@@ -329,6 +329,23 @@ function ddayDue(s) {
   if (!m) return null;
   return { day: new Date(+m[1], m[2] - 1, +m[3]), end: new Date(+m[1], m[2] - 1, +m[3], m[4] ? +m[4] : 23, m[5] ? +m[5] : 59), hm: m[4] ? `${m[4]}:${m[5]}` : '' };
 }
+// 디데이 "완료" 체크는 이 폰에만 저장한다 (학생은 로그인이 없으므로 폰별). 열쇠는 일정 id + 마감:
+// 매주 반복 일정은 같은 id로 마감만 다음 주로 넘어가므로 다음 주에는 저절로 풀린다
+const DONE_KEY = 'jabong-dday-done';
+const ddKey = (t) => `${t.id ?? t.title}|${t.due ?? ''}`;
+function ddDone() {
+  try {
+    const o = JSON.parse(localStorage.getItem(DONE_KEY) || '{}');
+    return o && typeof o === 'object' && !Array.isArray(o) ? o : {};
+  } catch {
+    return {};
+  }
+}
+function setDdDone(o) {
+  try {
+    localStorage.setItem(DONE_KEY, JSON.stringify(o));
+  } catch {}
+}
 function vDday() {
   // 총대단·부총대는 관리자 키로 (추가·수정·삭제), 학생은 보기 키로
   const src = UI.role !== 'student' ? ddayAdminUrl() : ddayUrl();
@@ -348,14 +365,28 @@ function vDday() {
     const diff = Math.round((d.day - today) / 864e5);
     groups[diff === 0 ? 'today' : diff === 1 ? 'tomorrow' : diff <= 7 ? 'week' : 'later'].push({ t, d, diff });
   });
-  const item = ({ t, d, diff }) => `<div class="card dd-item"><div class="dd-when"><div class="dd-md">${d.day.getMonth() + 1}/${d.day.getDate()}</div><div class="note">${WD[d.day.getDay()]}요일</div>
+  // 완료 표시: 지금 목록에 없는 일정(지난 마감·지운 일정)의 체크는 정리해 둔다 (새로 받은 목록일 때만)
+  const done = ddDone();
+  if (!D.err) {
+    const live = new Set(D.data.tasks.map(ddKey));
+    const kept = Object.fromEntries(Object.entries(done).filter(([k]) => k === '_hide' || live.has(k)));
+    if (Object.keys(kept).length !== Object.keys(done).length) setDdDone(kept);
+  }
+  const hideDone = ddDone()['_hide'] === 1;
+  const isDone = (t) => done[ddKey(t)] === 1;
+  const nDone = Object.values(groups).flat().filter(({ t }) => isDone(t)).length;
+  const item = ({ t, d, diff }) => `<div class="card dd-item${isDone(t) ? ' done' : ''}"><div class="dd-when"><div class="dd-md">${d.day.getMonth() + 1}/${d.day.getDate()}</div><div class="note">${WD[d.day.getDay()]}요일</div>
     <div class="dd-d ${diff === 0 ? 'hot' : diff <= 2 ? 'warm' : ''}">${diff === 0 ? 'D-day' : `D-${diff}`}</div></div>
-    <div class="dd-body"><b>${esc(t.title)}</b><div class="note">${d.hm ? `<b>${d.hm}</b>${diff === 0 ? ' 까지' : ''}` : '시각 미정 (당일 중)'}</div>
+    <div class="dd-body"><div class="dd-top"><b class="dd-title">${esc(t.title)}</b><button type="button" class="dd-check${isDone(t) ? ' on' : ''}" data-act="dd-done" data-k="${esc(ddKey(t))}" aria-pressed="${isDone(t)}" aria-label="${isDone(t) ? '완료 표시 풀기' : '완료로 표시'}">${isDone(t) ? '✓ 완료' : '완료'}</button></div><div class="note">${d.hm ? `<b>${d.hm}</b>${diff === 0 ? ' 까지' : ''}` : '시각 미정 (당일 중)'}</div>
     ${t.detail ? `<div class="dd-detail">${esc(t.detail)}</div>` : ''}${ddLink(t.link) ? `<a class="btn small dd-link" href="${esc(ddLink(t.link))}" target="_blank" rel="noopener noreferrer">${ddLinkLabel(t.link)} 열기 ↗</a>` : ''}${t.room || (adm && t.manual) ? `<div class="btns">${t.room ? `<span class="pill">${esc(t.room)}</span>` : ''}${adm && t.manual ? '<span class="pill pending">직접 입력</span>' : ''}</div>` : ''}
     ${adm && t.id != null ? ddayActs(t) : ''}</div></div>${adm && UI.ddForm?.id === String(t.id) ? ddayFormCard(D) : ''}`;
   const list = [['today', '오늘'], ['tomorrow', '내일'], ['week', '7일 이내'], ['later', '그 이후']]
     .filter(([k]) => groups[k].length)
-    .map(([k, l]) => `<h2>${l} · ${groups[k].length}</h2>${groups[k].sort((a, b) => a.d.end - b.d.end).map(item).join('')}`)
+    // 완료한 일정은 그 묶음의 맨 아래로 (숨기기를 켜면 안 보인다)
+    .map(([k, l]) => {
+      const g = groups[k].sort((a, b) => isDone(a.t) - isDone(b.t) || a.d.end - b.d.end).filter((x) => !(hideDone && isDone(x.t)));
+      return g.length ? `<h2>${l} · ${g.length}</h2>${g.map(item).join('')}` : '';
+    })
     .join('');
   const adminBar = adm
     ? `<div class="card dd-admin"><div class="req-top"><b>관리자 모드</b><div class="btns">${UI.ddForm?.id === '' ? '' : '<button class="btn small" data-act="dd-new">＋ 일정 추가</button>'}<button class="btn ghost small" data-act="dd-sync" ${UI.ddSync?.running ? 'disabled' : ''}>${UI.ddSync?.running ? '정리 중… (1~2분)' : '지금 정리'}</button></div></div>
@@ -365,7 +396,8 @@ function vDday() {
   return `${head}${D.err ? `<div class="warn">${esc(D.err)}${D.data ? ' (전에 받아 둔 목록을 보여 줘요)' : ''}</div>` : ''}
   ${adminBar}
   ${UI.role === 'student' ? vStoreLink() : ''}
-  ${list || '<p class="empty">다가오는 마감이 없어요.</p>'}
+  ${nDone || hideDone ? `<div class="req-top"><span class="note">완료 표시는 이 폰에만 저장돼요${nDone ? ` · 완료 ${nDone}개` : ''}</span><button class="btn ghost small" data-act="dd-hide-done">${hideDone ? '완료한 일정 보기' : '완료한 일정 숨기기'}</button></div>` : ''}
+  ${list || `<p class="empty">${hideDone && nDone ? '남은 일정이 없어요. 모두 완료했어요!' : '다가오는 마감이 없어요.'}</p>`}
   <div class="btns">${open}</div>`;
 }
 // 일정의 수정·삭제 버튼 (삭제는 한 번 더 묻는다)
@@ -2230,6 +2262,18 @@ const A = {
     ddayLoad(src, true);
     render();
     return toast(msg);
+  },
+  'dd-done': (d) => {
+    const o = ddDone();
+    if (o[d.k] === 1) delete o[d.k];
+    else o[d.k] = 1;
+    setDdDone(o);
+  },
+  'dd-hide-done': () => {
+    const o = ddDone();
+    if (o._hide === 1) delete o._hide;
+    else o._hide = 1;
+    setDdDone(o);
   },
   'dd-del': (d) => {
     UI.ddForm = null;

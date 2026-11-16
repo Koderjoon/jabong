@@ -2389,6 +2389,26 @@ test('디데이: 부총대가 링크(보기 키까지)를 넣으면 학생 첫 �
   assert.equal(await P.page.getAttribute('.dd-item:has-text("내일 실습") a.dd-link', 'target'), '_blank');
   assert.equal(await P.has('.dd-item:has-text("이번 주 퀴즈") a.dd-link'), false);
   await P.fits('디데이');
+  // 완료 표시 (이 폰에만): 누르면 흐려지고 취소선, 다시 열어도 그대로, 숨기기·보기, 다시 누르면 풀림
+  const it = '.dd-item:has-text("그 이후 시험")';
+  await P.page.evaluate(() => localStorage.setItem('jabong-dday-done', JSON.stringify({ 'gone|2020-01-01': 1 })));
+  await P.click(`${it} [data-act="dd-done"]`);
+  assert.match(await P.page.getAttribute(it, 'class'), /\bdone\b/);
+  assert.equal(await P.page.$eval(`${it} .dd-title`, (e) => getComputedStyle(e).textDecorationLine), 'line-through');
+  assert.equal(await P.text(`${it} [data-act="dd-done"]`), '✓ 완료');
+  assert.match(await P.text(), /완료 표시는 이 폰에만 저장돼요 · 완료 1개/);
+  assert.deepEqual(Object.keys(JSON.parse(await P.page.evaluate(() => localStorage.getItem('jabong-dday-done')))), [`t2|${day(20)}`], '목록에 없는 일정의 표시는 정리');
+  await P.fits('디데이 완료 표시');
+  await P.reload();
+  await P.page.waitForSelector(it);
+  assert.match(await P.page.getAttribute(it, 'class'), /\bdone\b/, '다시 열어도 그대로');
+  await P.click('[data-act="dd-hide-done"]');
+  assert.equal(await P.has(it), false, '숨기기');
+  assert.equal(await P.has('.dd-item:has-text("내일 실습")'), true);
+  await P.click('[data-act="dd-hide-done"]');
+  await P.click(`${it} [data-act="dd-done"]`);
+  assert.doesNotMatch(await P.page.getAttribute(it, 'class'), /\bdone\b/);
+  assert.equal(await P.has('[data-act="dd-hide-done"]'), false, '완료가 없으면 숨기기 버튼도 없음');
   // 첫 화면이 디데이여도 설치 버튼이 맨 위에 보인다
   await P.page.evaluate(() => {
     const e = new Event('beforeinstallprompt', { cancelable: true });

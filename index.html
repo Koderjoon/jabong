@@ -173,6 +173,10 @@ a.btn{text-decoration:none;display:inline-flex;align-items:center;justify-conten
 .dd-body{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px;overflow-wrap:anywhere}
 .dd-body .pill{align-self:flex-start;background:var(--sunk);color:var(--muted)}
 .dd-detail{font-size:13px;white-space:pre-wrap}
+.dd-top{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
+.dd-check{flex:none;border:1px solid var(--line);background:transparent;color:var(--muted);border-radius:999px;padding:4px 10px;font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}
+.dd-check.on{background:var(--accent-soft);color:var(--accent);border-color:transparent;font-weight:700}
+.dd-item.done{opacity:.55}.dd-item.done .dd-title{text-decoration:line-through}
 .dd-link{align-self:flex-start;margin-top:6px;text-decoration:none;display:inline-block}
 .btn.small{padding:6px 10px;font-size:13px;font-weight:500}
 .btn.danger{background:var(--pen);color:#fff}
