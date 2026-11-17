@@ -306,6 +306,10 @@ create table if not exists settings (
   recovery_locked_until timestamptz
 );
 insert into settings (id) values (1) on conflict do nothing;
+-- 점검 모드: 켜져 있으면 부총대 말고는 데이터를 바꿀 수 없다 (보기·로그인은 된다). 작업 내역·백업에는 남기지 않는다.
+alter table settings add column if not exists maint_on boolean not null default false;
+alter table settings add column if not exists maint_msg text;
+alter table settings add column if not exists maint_at timestamptz;
 
 -- 변경 알림 전용. 브라우저가 Realtime으로 구독하는 유일한 테이블이라 비밀 정보를 두지 않는다.
 create table if not exists app_version (
@@ -514,11 +518,25 @@ create or replace function _wlock() returns void language sql security definer s
   select pg_advisory_xact_lock(7243)
 $$;
 
+-- 점검 중이면 부총대(관리자 직책)가 아닌 쓰기를 멈춘다. p_actor는 직책 이름(학생이면 'n번 학생'처럼 직책이 아닌 값이나 null)
+create or replace function _maint_guard(p_actor text) returns void
+language plpgsql security definer set search_path = public as $$
+declare m settings;
+begin
+  select * into m from settings where id = 1;
+  if m.maint_on and not exists (select 1 from accounts where role = p_actor and is_admin) then
+    raise exception '지금은 앱 점검 중이라 보기만 할 수 있어요. 점검이 끝나면 다시 해 주세요%',
+      case when coalesce(m.maint_msg, '') <> '' then ' (' || m.maint_msg || ')' else '' end using errcode = 'P0503';
+  end if;
+end $$;
+
 create or replace function _op(p_actor text, p_kind text, p_summary text, p_undoable boolean default true) returns bigint
 language plpgsql security definer set search_path = public as $$
 declare nid bigint;
 begin
   perform _wlock();
+  -- 쓰기 잠금을 잡은 뒤에 보므로, 점검을 켠 순간 이후의 쓰기는 모두 막힌다
+  perform _maint_guard(p_actor);
   -- 뒤로 간 상태에서 새 작업을 하면, 앞으로 갈 수 있던 작업들은 버린다
   delete from ops where undone;
   insert into ops (actor, kind, summary, undoable) values (p_actor, p_kind, p_summary, p_undoable) returning id into nid;
@@ -569,6 +587,7 @@ create or replace function _merit_cleared() returns uuid language sql immutable 
 create or replace function _state(p_private boolean) returns json
 language sql stable security definer set search_path = public as $$
   select json_build_object(
+    'maint', (select json_build_object('on', maint_on, 'msg', coalesce(maint_msg, ''), 'since', _kst(maint_at)) from settings where id = 1),
     'students', (select coalesce(json_agg(case when p_private
         then json_build_object('id', id, 'no', no, 'name', name, 'active', active, 'exempt', exempt)
         else json_build_object('id', id, 'no', no, 'active', active, 'exempt', exempt) end order by active desc, no), '[]')
@@ -1776,6 +1795,7 @@ create or replace function student_change_pw(p_token uuid, p_cur text, p_new tex
 language plpgsql security definer set search_path = public, extensions as $$
 declare sid uuid := _student_session(p_token); h text; nm text;
 begin
+  perform _maint_guard(null);
   select pw_hash into h from student_pw where student_id = sid for update;
   select name into nm from students where id = sid;
   if h is not null and (octet_length(coalesce(p_cur, '')) > 72 or h <> crypt(coalesce(p_cur, ''), h)) then raise exception '현재 비밀번호가 맞지 않아요'; end if;
@@ -1815,6 +1835,7 @@ create or replace function grade_upload(p_token uuid, p_title text, p_list jsonb
 language plpgsql security definer set search_path = public as $$
 declare who text := _grade_session(p_token); x jsonb; sids uuid[] := '{}'; sno int; eid uuid;
 begin
+  perform _maint_guard(who);
   perform _grade_cleanup();
   if coalesce(trim(p_title), '') = '' then raise exception '시험 이름을 입력하세요'; end if;
   if length(trim(p_title)) > 60 then raise exception '시험 이름은 60자까지예요'; end if;
@@ -1848,10 +1869,26 @@ begin
       from students s left join student_pw p on p.student_id = s.id where s.active));
 end $$;
 
+-- 부총대: 점검 모드 켜기·끄기. 작업 내역에 남기지 않는다 (되돌리기 대상이 아니다).
+-- 쓰기 잠금을 잡아, 이미 진행 중인 쓰기가 끝난 뒤에 켜지게 한다. 켜고 끄면 열린 화면들이 바로 새로 불러오도록 버전을 올린다.
+create or replace function maintenance_set(p_token uuid, p_on boolean, p_msg text) returns void
+language plpgsql security definer set search_path = public as $$
+declare who text := _session(p_token, true);
+begin
+  perform _wlock();
+  if length(trim(coalesce(p_msg, ''))) > 200 then raise exception '안내 문구는 200자까지예요'; end if;
+  update settings set maint_on = coalesce(p_on, false),
+    maint_msg = case when p_on then nullif(trim(coalesce(p_msg, '')), '') end,
+    maint_at = case when p_on then now() end
+  where id = 1;
+  update app_version set version = version + 1, updated_at = now() where id = 1;
+end $$;
+
 create or replace function grade_delete(p_token uuid, p_id uuid) returns void
 language plpgsql security definer set search_path = public as $$
 declare who text := _grade_session(p_token);
 begin
+  perform _maint_guard(who);
   delete from exams where id = p_id;
   if not found then raise exception '이미 지워진 시험이에요'; end if;
 end $$;
@@ -1861,6 +1898,7 @@ create or replace function student_pw_reset(p_token uuid, p_sid uuid) returns vo
 language plpgsql security definer set search_path = public as $$
 declare who text := _grade_session(p_token);
 begin
+  perform _maint_guard(who);
   if not exists (select 1 from students where id = p_sid and active) then raise exception '명단에 없는 학생이에요'; end if;
   delete from student_pw where student_id = p_sid;
   delete from student_sessions where student_id = p_sid;
@@ -1975,12 +2013,12 @@ do $$ declare f text; begin
       'save_attendance(uuid,uuid,jsonb)', 'request_attendance(uuid,uuid,jsonb)', 'review_attendance(uuid,uuid,boolean,text)', 'add_entries(uuid,date,uuid[],text,text,numeric)', 'edit_entry(uuid,uuid,date,text,text,numeric,text)',
       'void_entry(uuid,uuid,text)', 'review_request(uuid,uuid,boolean,text)', 'review_excuse(uuid,uuid,boolean,text)',
       'roster_apply(uuid,jsonb,jsonb,date)', 'my_presets_save(uuid,jsonb)', 'my_periods_save(uuid,jsonb)', 'purge(uuid,date)', 'backup_dump()', 'restore_backup(uuid,jsonb)', 'history_move(uuid,bigint,boolean)', 'history_drop(uuid,bigint,boolean)', 'history_restore(uuid,bigint,boolean)', 'ops_list(uuid,integer)', 'set_link(uuid,text,text)',
-      'student_login(integer,text)', 'student_change_pw(uuid,text,text)', 'student_logout(uuid)', 'my_grades(uuid)', 'grade_upload(uuid,text,jsonb)', 'grade_admin(uuid)', 'grade_delete(uuid,uuid)', 'student_pw_reset(uuid,uuid)'
+      'student_login(integer,text)', 'student_change_pw(uuid,text,text)', 'student_logout(uuid)', 'my_grades(uuid)', 'grade_upload(uuid,text,jsonb)', 'grade_admin(uuid)', 'grade_delete(uuid,uuid)', 'student_pw_reset(uuid,uuid)', 'maintenance_set(uuid,boolean,text)'
     ] loop
       execute format('grant execute on function %s to anon, authenticated', f);
     end loop;
   end if;
 end $$;
 
--- 앱(PostgREST)이 새 함수를 바로 알아보게 한다
+-- 앱(PostgREST)이 새 함수를 바로 알아보게 한다 (위 권한 목록에 maintenance_set도 있다)
 notify pgrst, 'reload schema';

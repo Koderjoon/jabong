@@ -2325,6 +2325,45 @@ test('학급 매점 링크: 부총대가 관리 탭에서 넣고(https만)·바�
   await A.toast('[data-act="link-save"]');
 });
 
+test('점검 모드: 부총대가 관리 탭에서 켜면 학생·총대단은 보기만(안내 띠, 쓰기는 서버가 거절), 부총대는 띠에서 바로 끄기', async () => {
+  await A.tab('manage');
+  await A.page.fill('#maint-msg', '명단 정리 중이에요 · 30분쯤');
+  assert.equal(await A.toast('[data-act="maint-on"]'), '점검 모드를 켰어요 · 학생·총대단은 보기만 할 수 있어요');
+  assert.match(await A.text('.maint-bar'), /점검 모드가 켜져 있어요[\s\S]*보기만[\s\S]*안내: 명단 정리 중이에요 · 30분쯤/);
+  assert.match(await A.text('#maint-card'), /켜져 있어요/);
+  await A.fits('점검 띠(부총대)');
+  const no = (await one(`select no from students where active order by no desc limit 1`)).no;
+  const nrx = (await one(`select count(*)::int as n from reactions`)).n;
+  await S.reload();
+  assert.match(await S.text('.maint-bar'), /지금은 앱 점검 중이에요[\s\S]*보기만 할 수 있어요[\s\S]*명단 정리 중이에요 · 30분쯤/);
+  assert.equal(await S.has('.maint-bar [data-act="maint-off"]'), false, '학생은 끌 수 없음');
+  await S.tab('react');
+  await S.page.fill('#rx-no', String(no));
+  await S.page.fill('#rx-period', '점검교시');
+  await S.page.fill('#rx-q', '질문');
+  await S.page.fill('#rx-a', '대답');
+  assert.match(await S.toast('[data-act="rx-add"]'), /지금은 앱 점검 중이라 보기만 할 수 있어요\. 점검이 끝나면 다시 해 주세요 \(명단 정리 중이에요 · 30분쯤\)/);
+  assert.equal((await one(`select count(*)::int as n from reactions`)).n, nrx, '신청이 들어가지 않음');
+  await S.page.screenshot({ path: process.env.SHOT_DIR ? `${process.env.SHOT_DIR}/maint-s.png` : '/dev/null' }).catch(() => {});
+  await S.fits('점검 띠(학생)');
+  await O.reload();
+  assert.match(await O.text('.maint-bar'), /지금은 앱 점검 중이에요/);
+  // 부총대는 그대로 쓸 수 있다
+  await A.tab('manage');
+  await A.page.fill('#store-url', 'https://docs.google.com/spreadsheets/d/maint');
+  assert.equal(await A.toast('[data-act="link-save"]'), '매점 링크를 저장했어요 · 자봉 현황에 버튼이 생겼어요');
+  await A.page.screenshot({ path: process.env.SHOT_DIR ? `${process.env.SHOT_DIR}/maint-a.png` : '/dev/null' }).catch(() => {});
+  assert.equal(await A.toast('.maint-bar [data-act="maint-off"]'), '점검 모드를 껐어요 · 이제 모두 쓸 수 있어요');
+  assert.equal(await A.has('.maint-bar'), false);
+  assert.match(await A.text('#maint-card'), /점검 시작/);
+  // 열려 있던 학생 화면은 다시 불러오면 띠가 사라지고 다시 신청할 수 있다
+  await S.reload();
+  assert.equal(await S.has('.maint-bar'), false);
+  await A.tab('manage');
+  await A.page.fill('#store-url', 'https://docs.google.com/spreadsheets/d/1as1eph4dCO_ks_pRimG_cUM9EujuIbSwTktNSoWPVyU/edit?usp=drivesdk');
+  await A.toast('[data-act="link-save"]');
+});
+
 test('디데이: 부총대가 링크(보기 키까지)를 넣으면 학생 첫 탭이 디데이, 원본 사이트와 같은 목록, 받아 둔 목록은 끊겨도 보임, 키가 틀리면 안내, 총대단·부총대는 첫 탭에서 바로 추가·수정·삭제, 지우면 탭이 사라짐', async () => {
   const SITE = 'https://koderjoon.github.io/notice-todo/';
   const API = 'https://script.google.com/macros/s/TEST/exec';

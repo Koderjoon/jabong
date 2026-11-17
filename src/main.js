@@ -1328,7 +1328,15 @@ function vManage() {
   const KIND = { add: ['추가', 'approved'], renum: ['번호 변경', 'pending'], restore: ['복귀', 'approved'], remove: ['제외', 'rejected'] };
   const cnt = (k) => (plan ? plan.changes.filter((c) => c.kind === k).length : 0);
   const total = plan ? plan.changes.length + plan.adjs.length : 0;
+  const m = S.maint || {};
   return `<div><h1>관리</h1></div>
+  <div class="card" id="maint-card"><h2>점검 모드</h2>
+  ${m.on
+    ? `<p class="note" style="margin:0">켜져 있어요${m.since ? ` (${esc(m.since.slice(5))}부터)` : ''}. 학생·총대단은 보기만 할 수 있고, 부총대만 고칠 수 있어요. 끝나면 꼭 꺼 주세요.</p>
+    <div class="btns"><button class="btn" data-act="maint-off">점검 끝내기</button></div>`
+    : `<p class="hint" style="margin:0">앱을 고치거나 점검하는 동안 학생·총대단이 <b>보기만</b> 할 수 있게 막아요 (신청·요청·기록·성적 올리기 등). 부총대는 그대로 쓸 수 있어요. 직접 끌 때까지 켜져 있어요.</p>
+    <input id="maint-msg" maxlength="200" placeholder="안내 문구 (선택) 예: 명단 정리 중이에요 · 30분쯤 걸려요">
+    <div class="btns"><button class="btn danger" data-act="maint-on">점검 시작</button></div>`}</div>
   <div class="card"><div class="req-top"><h2>명단 붙여넣기</h2><button class="btn ghost small" data-act="roster-copy">현재 명단 복사</button></div>
   <p class="hint" style="margin:0">엑셀에서 <b>번호·이름·자봉 열</b>을 복사해 붙여넣으세요. 자봉 열은 없어도 되고, 있으면 그 점수에 맞춰 조정돼요. 제목 줄은 있어도 괜찮아요. 학생은 <b>이름으로 알아보기</b> 때문에 번호가 바뀌어도 기록이 그대로 따라가요. 지금 명단을 고치려면 "현재 명단 복사" → 엑셀에서 수정 → 다시 붙여넣기.</p>
   <textarea id="roster-text" data-bind="rosterText" data-region="roster-preview" placeholder="번호&#9;이름&#9;자봉&#10;1&#9;김민서&#9;3&#10;2&#9;이도윤&#9;-1" style="min-height:110px;font-family:var(--mono)">${esc(UI.rosterText)}</textarea>
@@ -1640,7 +1648,15 @@ function render() {
     <p class="note" style="margin:0"><b>${esc(n.by)}</b>가 <b>${esc(n.at)}</b>에 ${esc(UI.user)} 비밀번호를 재설정했어요. 직접 부탁한 게 아니라면 그 사람에게 확인해 보세요.${UI.user === '총대' ? ' 그사이 학생 성적 비밀번호가 초기화됐는지 <b>성적</b> 탭의 학생 비밀번호 목록(바꾼 시각)도 확인해 보세요.' : ''}</p>
     <div class="btns"><button class="btn small" data-act="reset-ok">확인했어요</button></div></div>`
       : '';
-  view.innerHTML = locked ? vLogin() : noticeCard + codeCard + pwCard + (UI.sid ? vDetail() : (V[UI.tab] || vBoard)());
+  // 점검 모드: 부총대에게는 켜져 있다는 띠와 끄기 버튼, 다른 사람에게는 보기만 된다는 안내 (쓰기는 서버가 막는다)
+  const m = S.maint;
+  const maintCard = !m?.on
+    ? ''
+    : !locked && UI.role === 'admin'
+      ? `<div class="warn maint-bar"><b>🔧 점검 모드가 켜져 있어요</b>${m.since ? ` (${esc(m.since.slice(5))}부터)` : ''}. 학생·총대단은 보기만 할 수 있어요.${m.msg ? `<br>안내: ${esc(m.msg)}` : ''}
+    <div class="btns" style="margin-top:6px"><button class="btn small" data-act="maint-off">점검 끝내기</button></div></div>`
+      : `<div class="warn maint-bar"><b>🔧 지금은 앱 점검 중이에요.</b> 보기만 할 수 있어요. 신청·요청·기록은 점검이 끝난 뒤에 해 주세요.${m.msg ? `<br>${esc(m.msg)}` : ''}</div>`;
+  view.innerHTML = maintCard + (locked ? vLogin() : noticeCard + codeCard + pwCard + (UI.sid ? vDetail() : (V[UI.tab] || vBoard)()));
   pwEnhance(view);
   const pc = pendingCount();
   tabs.innerHTML = locked
@@ -2030,6 +2046,18 @@ const A = {
     await refresh();
     render();
     return toast('비밀번호를 새로 정했어요 · 복구 코드가 바뀌었어요');
+  },
+  'maint-on': async () => {
+    await rpc('maintenance_set', { p_token: token(), p_on: true, p_msg: val('maint-msg').trim() });
+    await refresh();
+    render();
+    return toast('점검 모드를 켰어요 · 학생·총대단은 보기만 할 수 있어요');
+  },
+  'maint-off': async () => {
+    await rpc('maintenance_set', { p_token: token(), p_on: false, p_msg: '' });
+    await refresh();
+    render();
+    return toast('점검 모드를 껐어요 · 이제 모두 쓸 수 있어요');
   },
   'code-ok': () => {
     UI.newCode = null;

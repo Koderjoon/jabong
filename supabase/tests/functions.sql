@@ -36,8 +36,8 @@ select pg_temp.ok(
       'create_request', 'change_pw', 'reset_pw', 'new_recovery', 'ensure_period', 'delete_period', 'rename_period', 'save_attendance', 'request_attendance', 'review_attendance',
       'add_entries', 'edit_entry', 'void_entry', 'review_request', 'review_excuse', 'roster_apply', 'my_presets_save', 'my_periods_save', 'purge', 'backup_dump',
       'restore_backup', 'history_move', 'history_drop', 'history_restore', 'ops_list', 'set_link', 'set_period_hours', 'carry_rebase',
-      'student_login', 'student_change_pw', 'student_logout', 'my_grades', 'grade_upload', 'grade_admin', 'grade_delete', 'student_pw_reset']) x),
-  '브라우저(anon)에 열린 함수가 정확히 화면이 쓰는 50개');
+      'student_login', 'student_change_pw', 'student_logout', 'my_grades', 'grade_upload', 'grade_admin', 'grade_delete', 'student_pw_reset', 'maintenance_set']) x),
+  '브라우저(anon)에 열린 함수가 정확히 화면이 쓰는 51개');
 select pg_temp.ok(not exists (select 1 from pg_proc p where p.pronamespace = 'public'::regnamespace
   and has_function_privilege('anon', p.oid, 'execute') <> has_function_privilege('authenticated', p.oid, 'execute')), 'anon과 authenticated 권한이 같음');
 select pg_temp.ok(not exists (select 1 from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname !~ '^_'
@@ -1722,4 +1722,53 @@ select pg_temp.ok(login('운영부장', 'x') ->> 'resetNotice' is null, '틀린 
 set role postgres;
 select pg_temp.ok(not exists (select 1 from ops where kind = 'reset_pw') and (select reset_at is null from accounts where role = '운영부장'), '작업 내역은 그대로(이동을 막지 않게), 알림은 지워짐');
 \echo 30. 비밀번호 재설정 알림 통과
+-- ───────── 31. 점검 모드 ─────────
+set role anon;
+select (login('부총대', '1234') ->> 'token') as mt \gset
+select (login('총대', '1234') ->> 'token') as mct \gset
+select (login('실습부장 2', '1234') ->> 'token') as mpt \gset
+set role postgres;
+select id as msid, no as mno, name as mname from students where active and id not in (select student_id from student_pw) and id not in (select student_id from student_sessions) order by no limit 1 \gset
+set role anon;
+select (student_login(:mno, :'mname')::json ->> 'token') as mst \gset
+set role postgres; select max(version) as mver, count(*) as mops from app_version, ops \gset
+set role anon;
+select pg_temp.ok((public_state() -> 'maint' ->> 'on')::boolean = false, '처음엔 꺼짐');
+select pg_temp.expect(format('select maintenance_set(%L, true, %L)', :'mct', 'x'), '42501', '총대는 못 켬');
+select maintenance_set(:'mt', true, '  명단 정리 중 · 10분  ');
+set role postgres;
+select pg_temp.ok((select max(version) from app_version) > :mver and (select count(*) from ops) = :mops, '켜면 열린 화면에 알림, 작업 내역엔 안 남음');
+set role anon;
+select pg_temp.ok((public_state() -> 'maint' ->> 'on')::boolean and public_state() -> 'maint' ->> 'msg' = '명단 정리 중 · 10분'
+  and (public_state() -> 'maint' ->> 'since') ~ '^\d{4}-', '공개 상태에 점검 표시·안내·시각');
+select pg_temp.ok((private_state(:'mct') -> 'maint' ->> 'on')::boolean, '로그인 상태에도');
+-- 보기·로그인은 된다
+select pg_temp.ok(private_state(:'mpt') ->> 'students' is not null and login('운영부장', 'zzzz1111') ->> 'token' is not null, '총대단도 보기·로그인은 됨');
+select pg_temp.ok(my_grades(:'mst') is not null, '학생 성적 보기도 됨');
+-- 학생·총대단의 쓰기는 막힌다 (안내 문구 포함)
+select pg_temp.expect(format('select create_reaction(%L, %L, %L, %L)', :'msid', '1교시', 'q', 'a'), 'P0503', '학생 리액션 신청 막힘');
+select pg_temp.expect_msg(format('select create_reaction(%L, %L, %L, %L)', :'msid', '1교시', 'q', 'a'), '지금은 앱 점검 중이라 보기만 할 수 있어요. 점검이 끝나면 다시 해 주세요 (명단 정리 중 · 10분)', '안내 문구');
+select pg_temp.expect(format('select create_request(%L, %L, %L, %L, %L, %s, %L, %L)', :'mct', '2026-03-03', array[:'msid']::uuid[], '청소', '', 1, '', null), 'P0503', '총대 요청 막힘');
+select pg_temp.expect(format('select ensure_period(%L, %L, %L, false)', :'mpt', '2026-03-03', '7교시'), 'P0503', '실습부장 교시 추가 막힘');
+select pg_temp.expect(format('select my_presets_save(%L, %L)', :'mct', '[]'), 'P0503', '내 항목 저장 막힘');
+select pg_temp.expect(format('select grade_upload(%L, %L, %L)', :'mct', '점검', format('[{"sid":"%s","score":1}]', :'msid')), 'P0503', '성적 올리기 막힘');
+select pg_temp.expect(format('select grade_delete(%L, %L)', :'mct', gen_random_uuid()), 'P0503', '성적 지우기 막힘');
+select pg_temp.expect(format('select student_pw_reset(%L, %L)', :'mct', :'msid'), 'P0503', '학생 비번 초기화 막힘');
+select pg_temp.expect(format('select student_change_pw(%L, %L, %L)', :'mst', :'mname', 'abcd1234'), 'P0503', '학생 비번 바꾸기 막힘');
+set role postgres;
+select pg_temp.ok((select count(*) from ops) = :mops, '막힌 쓰기는 아무것도 남기지 않음');
+-- 부총대는 그대로 쓸 수 있다
+set role anon;
+select add_entries(:'mt', '2026-03-03', array[:'msid']::uuid[], '점검 중 부총대 기록', '', 1);
+set role postgres;
+select pg_temp.ok(exists (select 1 from ledger where item = '점검 중 부총대 기록'), '부총대 쓰기는 됨');
+select pg_temp.ok(backup_dump()::text not like '%명단 정리 중%', '점검 안내는 백업에 안 들어감');
+-- 끄면 다시 된다. 끄면 안내·시각은 지운다
+set role anon;
+select pg_temp.expect_msg(format('select maintenance_set(%L, true, %L)', :'mt', repeat('가', 201)), '안내 문구는 200자까지예요', '안내 길이');
+select maintenance_set(:'mt', false, 'ignored');
+select pg_temp.ok((public_state() -> 'maint' ->> 'on')::boolean = false and public_state() -> 'maint' ->> 'msg' = '' and public_state() -> 'maint' ->> 'since' is null, '끄면 안내 없음');
+select create_reaction(:'msid', '1교시', 'q', 'a');
+select my_presets_save(:'mct', '[]');
+\echo 31. 점검 모드 통과
 \echo 모든 서버 함수 테스트 통과
