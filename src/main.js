@@ -355,15 +355,15 @@ function vDday() {
   const open = `<a class="btn ghost small" href="${esc(src)}" target="_blank" rel="noopener noreferrer">원본 사이트 열기 ↗</a>`;
   const head = `${vInstall()}<div><h1>디데이</h1><p class="sub">카톡 공지를 AI가 자동으로 정리한 목록입니다. 빠지거나 틀릴 수 있으니 중요한 건 꼭 원문 공지를 확인하세요.</p>${D.data ? `<p class="note">마지막 정리 ${esc(String(D.data.lastSync || '').slice(5) || '-')}</p>` : ''}</div>`;
   if (!D.data) return `${head}${D.err ? `<div class="warn">${esc(D.err)}</div><div class="btns">${open}</div>` : '<p class="boot">불러오는 중…</p>'}`;
-  // 지난 마감과 날짜가 없는 것은 숨기고 오늘·내일·7일 이내·그 이후로 나눈다 (원본 사이트와 같다)
+  // 지난 마감과 날짜가 없는 것은 숨기고 날짜 하나당 묶음 하나로 나눈다 (원본 사이트와 같다)
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const groups = { today: [], tomorrow: [], week: [], later: [] };
+  const groups = {};
   D.data.tasks.forEach((t) => {
     const d = ddayDue(t?.due);
     if (!d || d.end < now) return;
     const diff = Math.round((d.day - today) / 864e5);
-    groups[diff === 0 ? 'today' : diff === 1 ? 'tomorrow' : diff <= 7 ? 'week' : 'later'].push({ t, d, diff });
+    (groups[diff] ||= []).push({ t, d, diff });
   });
   // 완료 표시: 지금 목록에 없는 일정(지난 마감·지운 일정)의 체크는 정리해 둔다 (새로 받은 목록일 때만)
   const done = ddDone();
@@ -375,17 +375,19 @@ function vDday() {
   const hideDone = ddDone()['_hide'] === 1;
   const isDone = (t) => done[ddKey(t)] === 1;
   const nDone = Object.values(groups).flat().filter(({ t }) => isDone(t)).length;
-  const item = ({ t, d, diff }) => `<div class="card dd-item${isDone(t) ? ' done' : ''}"><div class="dd-when"><div class="dd-md">${d.day.getMonth() + 1}/${d.day.getDate()}</div><div class="note">${WD[d.day.getDay()]}요일</div>
-    <div class="dd-d ${diff === 0 ? 'hot' : diff <= 2 ? 'warm' : ''}">${diff === 0 ? 'D-day' : `D-${diff}`}</div></div>
-    <div class="dd-body"><div class="dd-top"><div>${isDone(t) ? '<span class="dd-donemark">✓ 완료</span>' : ''}<b class="dd-title">${esc(t.title)}</b></div><button type="button" class="dd-check${isDone(t) ? ' on' : ''}" data-act="dd-done" data-k="${esc(ddKey(t))}" aria-pressed="${isDone(t)}" aria-label="${isDone(t) ? '완료 표시 풀기' : '완료로 표시'}">${isDone(t) ? '완료 취소' : '완료하기'}</button></div><div class="note">${d.hm ? `<b>${d.hm}</b>${diff === 0 ? ' 까지' : ''}` : '시각 미정 (당일 중)'}</div>
-    ${t.detail ? `<div class="dd-detail">${esc(t.detail)}</div>` : ''}${ddLink(t.link) ? `<a class="btn small dd-link" href="${esc(ddLink(t.link))}" target="_blank" rel="noopener noreferrer">${ddLinkLabel(t.link)} 열기 ↗</a>` : ''}${t.room || (adm && t.manual) ? `<div class="btns">${t.room ? `<span class="pill">${esc(t.room)}</span>` : ''}${adm && t.manual ? '<span class="pill pending">직접 입력</span>' : ''}</div>` : ''}
+  const item = ({ t, d, diff }) => `<div class="card dd-item${isDone(t) ? ' done' : ''}"><div class="dd-when">${d.hm ? `<div class="dd-md">${d.hm}</div>` : '<div class="note">시각<br>미정</div>'}</div>
+    <div class="dd-body"><div class="dd-top"><div>${isDone(t) ? '<span class="dd-donemark">✓ 완료</span>' : ''}<b class="dd-title">${esc(t.title)}</b></div><button type="button" class="dd-check${isDone(t) ? ' on' : ''}" data-act="dd-done" data-k="${esc(ddKey(t))}" aria-pressed="${isDone(t)}" aria-label="${isDone(t) ? '완료 표시 풀기' : '완료로 표시'}">${isDone(t) ? '완료 취소' : '완료하기'}</button></div>
+    ${t.detail ? `<div class="dd-detail">${esc(t.detail)}</div>` : ''}${ddLink(t.link) ? `<a class="btn small dd-link" href="${esc(ddLink(t.link))}" target="_blank" rel="noopener noreferrer">${ddLinkLabel(t.link)} 열기 ↗</a>` : ''}${t.room || t.repeat === 'weekly' || (adm && t.manual) ? `<div class="btns">${t.room ? `<span class="pill">${esc(t.room)}</span>` : ''}${t.repeat === 'weekly' ? '<span class="pill">매주 반복</span>' : ''}${adm && t.manual ? '<span class="pill pending">직접 입력</span>' : ''}</div>` : ''}
     ${adm && t.id != null ? ddayActs(t) : ''}</div></div>${adm && UI.ddForm?.id === String(t.id) ? ddayFormCard(D) : ''}`;
-  const list = [['today', '오늘'], ['tomorrow', '내일'], ['week', '7일 이내'], ['later', '그 이후']]
-    .filter(([k]) => groups[k].length)
-    // 완료한 일정은 그 묶음의 맨 아래로 (숨기기를 켜면 안 보인다)
-    .map(([k, l]) => {
-      const g = groups[k].sort((a, b) => isDone(a.t) - isDone(b.t) || a.d.end - b.d.end).filter((x) => !(hideDone && isDone(x.t)));
-      return g.length ? `<h2>${l} · ${g.length}</h2>${g.map(item).join('')}` : '';
+  // 묶음 제목: "11/23 (월) · D-3 · 3건". 묶음 안은 시간순(시각 미정은 그날 맨 뒤), 완료한 일정은 맨 아래로 (숨기기를 켜면 안 보인다)
+  const list = Object.keys(groups)
+    .map(Number)
+    .sort((a, b) => a - b)
+    .map((diff) => {
+      const g = groups[diff].sort((a, b) => isDone(a.t) - isDone(b.t) || a.d.end - b.d.end).filter((x) => !(hideDone && isDone(x.t)));
+      if (!g.length) return '';
+      const day = g[0].d.day;
+      return `<div class="dd-dayhd"><span class="dd-dt">${day.getMonth() + 1}/${day.getDate()} (${WD[day.getDay()]})</span><span class="dd-d ${diff === 0 ? 'hot' : diff <= 2 ? 'warm' : ''}">${diff === 0 ? '오늘' : diff === 1 ? '내일' : `D-${diff}`}</span><span class="dd-cnt">${g.length}건</span></div>${g.map(item).join('')}`;
     })
     .join('');
   const adminBar = adm

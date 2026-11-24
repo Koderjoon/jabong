@@ -2375,6 +2375,7 @@ test('디데이: 부총대가 링크(보기 키까지)를 넣으면 학생 첫 �
     { id: 't4', title: '내일 실습', due: `${day(1)} 09:00`, detail: '', room: '', link: 'https://docs.google.com/spreadsheets/d/abc' },
     { id: 't5', title: '이번 주 퀴즈', due: day(5), detail: '', room: '', link: 'javascript:alert(1)' },
     { id: 't6', title: '날짜 없음', due: '', detail: '', room: '' },
+    { id: 't7', title: '내일 아침 출석', due: `${day(1)} 08:00`, detail: '', room: '', repeat: 'weekly' },
   ];
   const calls = { site: 0, api: 0 };
   // 디데이 사이트(Apps Script)를 흉내: 보기 키는 목록만, 관리자 키는 admin과 분류 목록, POST로 추가·수정·삭제
@@ -2427,13 +2428,17 @@ test('디데이: 부총대가 링크(보기 키까지)를 넣으면 학생 첫 �
   const v = await P.text();
   assert.match(v, new RegExp(`마지막 정리 ${TODAY.slice(5)} 08:00`));
   assert.match(v, /카톡 공지를 AI가 자동으로 정리한 목록입니다\. 빠지거나 틀릴 수 있으니 중요한 건 꼭 원문 공지를 확인하세요\./);
-  // 칸마다 날짜·요일·D-숫자 다음에 제목
-  assert.match(v, /오늘 · 1[\s\S]*D-day[\s\S]*<b>오늘<\/b> 마감[\s\S]*내일 · 1[\s\S]*D-1[\s\S]*내일 실습[\s\S]*09:00[\s\S]*7일 이내 · 1[\s\S]*D-5[\s\S]*이번 주 퀴즈[\s\S]*그 이후 · 1[\s\S]*D-20[\s\S]*그 이후 시험[\s\S]*범위: 1~3장[\s\S]*해부학/);
-  assert.equal(await P.page.getAttribute('.dd-d:text-is("D-day")', 'class'), 'dd-d hot');
-  assert.equal(await P.page.getAttribute('.dd-d:text-is("D-1")', 'class'), 'dd-d warm');
+  // 원본 사이트처럼 날짜 하나당 묶음 하나: 제목에 "월/일 (요일) · 오늘/내일/D-숫자 · n건", 칸 왼쪽에는 시각만 (시각 순, 미정은 맨 뒤)
+  const hd = (n) => { const d = new Date(Date.parse(day(n) + 'T00:00:00Z')); return `${d.getUTCMonth() + 1}/${d.getUTCDate()} (${'일월화수목금토'[d.getUTCDay()]})`; };
+  assert.deepEqual(await P.page.$$eval('.dd-dayhd', (r) => r.map((x) => x.innerText.replace(/\s+/g, ' ').trim())),
+    [`${hd(0)} 오늘 1건`, `${hd(1)} 내일 2건`, `${hd(5)} D-5 1건`, `${hd(20)} D-20 1건`]);
+  assert.match(v, /<b>오늘<\/b> 마감[\s\S]*08:00[\s\S]*내일 아침 출석[\s\S]*매주 반복[\s\S]*09:00[\s\S]*내일 실습[\s\S]*이번 주 퀴즈[\s\S]*그 이후 시험[\s\S]*범위: 1~3장[\s\S]*해부학/);
+  assert.equal(await P.page.getAttribute('.dd-d:text-is("오늘")', 'class'), 'dd-d hot');
+  assert.equal(await P.page.getAttribute('.dd-d:text-is("내일")', 'class'), 'dd-d warm');
+  assert.equal(await P.page.getAttribute('.dd-d:text-is("D-5")', 'class'), 'dd-d ');
   assert.doesNotMatch(v, /지난 과제|날짜 없음|모르는 칸/);
   assert.equal(await P.has('.dd-item b b'), false, '제목의 HTML은 글자로');
-  assert.match(v, /시각 미정 \(당일 중\)/);
+  assert.match(await P.text('.dd-item:has-text("이번 주 퀴즈") .dd-when'), /시각\s*미정/);
   assert.equal(await P.page.getAttribute('a:has-text("원본 사이트 열기")', 'href'), `${SITE}#k=jnudent25`);
   // 일정의 링크(구글 시트·폼 등)는 버튼으로 새 창에 연다. http(s)가 아닌 주소는 버튼을 만들지 않는다
   assert.equal(await P.page.getAttribute('.dd-item:has-text("내일 실습") a.dd-link', 'href'), 'https://docs.google.com/spreadsheets/d/abc');
